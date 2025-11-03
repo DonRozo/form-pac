@@ -1,0 +1,250 @@
+body {
+    font-family: Arial, sans-serif;
+    background-color: #f0f2f5; /* Fondo claro */
+    margin: 20px;
+}
+
+.container {
+    max-width: 900px;
+    margin: auto;
+    background: #ffffff;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.hidden-section {
+    display: none;
+}
+
+/* --- Estilo del Encabezado (Header Box) --- */
+.header-box {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 2px solid #0056b3;
+}
+
+#titulo-subactividad {
+    color: #0056b3;
+    font-size: 1.5em;
+    margin: 0;
+}
+
+.avance-box {
+    background-color: #d1ecf1;
+    color: #0c5460;
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-weight: bold;
+}
+
+.nombre-subactividad {
+    margin-top: 15px;
+    font-size: 1.1em;
+    font-weight: normal;
+    color: #333;
+}
+
+/* --- Controles del Formulario (Selects) - AJUSTADO --- */
+.form-control-group {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 20px;
+    align-items: flex-start; /* Alinea los elementos al inicio */
+}
+
+.select-wrapper {
+    width: 50%; /* Permite que ambos selectores compartan el ancho */
+    display: flex;
+    flex-direction: column;
+}
+
+.form-control-group label {
+    font-weight: bold;
+    color: #333;
+    margin-bottom: 5px;
+}
+
+.form-control-group select {
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    width: 100%;
+    /* Manejo visual del texto largo */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis; 
+}
+
+/* Títulos de las secciones de reporte */
+h3 {
+    color: #0056b3;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 5px;
+    margin-top: 25px;
+}
+
+/* --- Estilo de la Tabla de Reporte (Unificado para Actividad y Subactividad) --- */
+.report-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+    table-layout: fixed; /* Fuerza a que las columnas respeten los anchos definidos */
+}
+
+.report-table thead th {
+    background-color: #008080; /* Verde oscuro para el encabezado general */
+    color: white;
+    padding: 10px;
+    text-align: left;
+    font-weight: bold;
+    word-break: break-word; /* Permite que el texto del encabezado se ajuste */
+}
+
+.report-table tbody td {
+    border-bottom: 1px solid #ddd;
+    padding: 10px;
+    vertical-align: top; /* Ajuste para Observaciones multilínea */
+    word-break: break-word; /* Permite que el texto del cuerpo se ajuste en varios renglones */
+}
+
+.report-table tbody tr:nth-child(even) {
+    background-color: #f9f9f9;
+}
+
+/* Columna de Registro (Input) */
+.registro-header {
+    background-color: #006400 !important;
+}
+
+/* Estilos para Inputs/Selects dentro de las celdas de la tabla */
+.registro-input,
+.table-input,
+.table-select,
+.table-textarea {
+    width: 90%;
+    padding: 8px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    background-color: #e9f5e9; /* Fondo verde muy claro */
+    box-sizing: border-box; 
+}
+
+.table-textarea {
+    resize: vertical; /* Permite redimensionar solo verticalmente */
+    min-height: 80px;
+}
+
+/* --- Estilos para Secciones Dinámicas de Subactividad --- */
+.subactividad-section {
+    border: 1px solid #ddd;
+    padding: 15px;
+    margin-bottom: 20px;
+    border-radius: 4px;
+    background-color: #fafafa;
+}
+
+.subactividad-section h4 {
+    margin-top: 0;
+    margin-bottom: 15px;
+    color: #333;
+    font-size: 1.1em;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px dashed #ccc;
+    padding-bottom: 5px;
+}
+
+.avance-badge {
+    background-color: #e6f7ff;
+    color: #004d99;
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-weight: bold;
+    font-size: 0.9em;
+}
+
+.subact-detail-table th {
+    background-color: #006400 !important; /* Cabecera verde oscuro para el detalle de subactividad */
+}
+
+
+/* --- Sección de Metadatos --- */
+.metadata-section {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 20px;
+    padding-top: 15px;
+    border-top: 1px solid #eee;
+}
+
+.metadata-item {
+    width: 48%;
+}
+
+.metadata-item label {
+    display: block;
+    font-weight: bold;
+    margin-bottom: 5px;
+    color: #333;
+}
+
+.metadata-item select,
+.metadata-item input[type="url"] {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+
+/* --- Botón y Mensaje de Estado --- */
+#btn-submit {
+    background-color: #0056b3;
+    color: white;
+    padding: 10px 15px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-top: 20px;
+    font-size: 1em;
+    width: 100%;
+}
+
+#btn-submit:hover:not(:disabled) {
+    background-color: #004085;
+}
+
+#btn-submit:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+}
+
+.mensaje-estado {
+    margin-top: 10px;
+    padding: 10px;
+    border-radius: 4px;
+    text-align: center;
+}
+
+.estado-oculto {
+    display: none;
+}
+
+.estado-exito {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.estado-error {
+    background-color: #f8d7da;
+    color: #721c24;
+}
+
+.info-message {
+    text-align: center;
+    padding: 10px;
+    color: #333;
+}

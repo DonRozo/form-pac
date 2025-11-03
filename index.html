@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reporte Trimestral PAC</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="container">
+        <div class="header-box">
+            <h2 id="titulo-subactividad">Reporte Avance Trimestral</h2>
+            <div class="avance-box">
+                % avance: <span id="avance-porcentaje">XX%</span>
+            </div>
+        </div>
+        <p class="nombre-subactividad" id="nombre-actividad-actual">Nombre de la Actividad</p>
+
+        <div class="form-control-group">
+            <div class="select-wrapper">
+                <label for="select-actividad">Seleccionar Actividad:</label>
+                <select id="select-actividad" required>
+                    <option value="">Cargando Actividades...</option>
+                </select>
+            </div>
+            <div class="select-wrapper">
+                <label for="select-trimestre">Seleccionar Trimestre:</label>
+                <select id="select-trimestre" required>
+                    <option value="T1">T1</option>
+                    <option value="T2">T2</option>
+                    <option value="T3">T3</option>
+                    <option value="T4">T4</option>
+                </select>
+            </div>
+        </div>
+        
+        <form id="reporte-form">
+            
+            <div id="actividad-report-container" class="hidden-section">
+                <h3>Reporte de Avance - Actividad</h3>
+                <table class="report-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 15%;">Valor Ejecutado</th>
+                            <th style="width: 15%;">% Avance</th>
+                            <th style="width: 15%;">Fecha Cálculo</th>
+                            <th style="width: 15%;">Origen Carga</th>
+                            <th style="width: 40%;">Observaciones</th>
+                        </tr>
+                    </thead>
+                    <tbody id="actividad-body">
+                    </tbody>
+                </table>
+            </div>
+            <div id="subactividades-report-container" class="hidden-section">
+                <h3>Detalle - Subactividades</h3>
+                <div id="subactividades-sections">
+                    </div>
+            </div>
+            <div class="metadata-section">
+                <div class="metadata-item">
+                    <label for="municipio">Municipalización</label>
+                    <select id="municipio">
+                        <option value="">Ingrese municipalización</option>
+                        </select>
+                </div>
+                <div class="metadata-item">
+                    <label for="link-evidencia">Link evidencias PAP</label>
+                    <input type="url" id="link-evidencia" placeholder="https://ejemplo.com/evidencias">
+                </div>
+            </div>
+
+            <button type="submit" id="btn-submit" disabled>Reportar Avance (General y Detalle)</button>
+            <p id="mensaje-estado" class="estado-oculto"></p>
+        </form>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
