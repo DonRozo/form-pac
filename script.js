@@ -1,415 +1,623 @@
-// Función para generar un GUID/UUID (tipo Survey123 uuid())
-function generateUUID() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-        var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
-        return v.toString(16);
-    });
+/* ===========================================================
+   DATA-PAC | Formulario Reporte Trimestral (v0)
+   Servicio: https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V0/FeatureServer
+   Capa/Tabla:
+     - REP_AvanceIndicador_PT (Layer 0)   -> applyEdits
+     - CFG_Actividad (Table 6)           -> query
+     - CFG_Indicador (Table 7)           -> query
+     - REP_ReporteNarrativo (Table 11)   -> applyEdits
+   =========================================================== */
+
+const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V0/FeatureServer";
+const URL_ACTIVIDAD = `${SERVICE_URL}/6`;
+const URL_INDICADOR = `${SERVICE_URL}/7`;
+const URL_AVANCE = `${SERVICE_URL}/0`;
+const URL_NARRATIVA = `${SERVICE_URL}/11`;
+
+// ---------- DOM ----------
+const elActividad = document.getElementById("sel-actividad");
+const elVigencia = document.getElementById("sel-vigencia");
+const elPeriodo = document.getElementById("sel-periodo");
+const elIndicadores = document.getElementById("indicadores");
+const elNarrativa = document.getElementById("txt-narrativa");
+const elStatus = document.getElementById("status");
+
+const btnGuardar = document.getElementById("btn-guardar");
+const btnLimpiar = document.getElementById("btn-limpiar");
+const btnRefresh = document.getElementById("btn-refresh");
+const btnLimpiarMapa = document.getElementById("btn-limpiar-mapa");
+const btnCentrar = document.getElementById("btn-centrar");
+const pillActive = document.getElementById("pill-active");
+
+// ---------- State ----------
+let municipiosDomain = null;   // {code: name}
+let indicadoresCache = [];     // indicators for selected activity
+let activeRowId = null;        // rowId armed for map click
+let rowGeometries = new Map(); // rowId -> {lon,lat} wkid 4326
+
+// Map
+let map, view, graphicsLayer, webMercatorUtils;
+
+// ---------- Helpers ----------
+function setStatus(msg, type="info"){
+  const prefix = type === "error" ? "❌ " : (type === "success" ? "✅ " : "ℹ️ ");
+  elStatus.textContent = prefix + msg;
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-    const serviceUrl = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/PGAR_PAC_vista_temporal/FeatureServer";
-    
-    // IDs de las tablas/capas en el Feature Service
-    const actividadLayerId = 1; 
-    const avanceActividadTableId = 2; 
-    
-    // IDs ACTUALIZADOS según tu última información:
-    const subActividadLayerId = 31; // NUEVO: SubActividad (solo lectura)
-    const avanceSubActividadTableId = 3; // NUEVO: AvanceSubActividadTrimestral (lectura/escritura)
+function escapeHtml(s){
+  return (s ?? "").toString()
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
 
-    // Elementos del DOM
-    const selectActividad = document.getElementById('select-actividad');
-    const selectTrimestre = document.getElementById('select-trimestre');
-    const actividadReportContainer = document.getElementById('actividad-report-container');
-    const actividadBody = document.getElementById('actividad-body');
-    const subactividadesReportContainer = document.getElementById('subactividades-report-container');
-    const subactividadesSections = document.getElementById('subactividades-sections'); // Nuevo contenedor
-    const reporteForm = document.getElementById('reporte-form');
-    const btnSubmit = document.getElementById('btn-submit');
-    const mensajeEstado = document.getElementById('mensaje-estado');
-    
-    // Valores de dominio para campos de selección (solo para AvanceActividadTrimestral, el resto se deja App)
-    const origenCargaDomain = [
-        { code: "Excel", name: "Excel" },
-        { code: "App", name: "App" },
-        { code: "API", name: "API" },
-        { code: "CargaMasiva", name: "Carga Masiva" },
-        { code: "Integracion", name: "Integración" }
-    ];
-    
-    /**
-     * Función de ayuda para realizar consultas REST a ArcGIS Online.
-     */
-    async function queryArcGIS(layerId, params) {
-        const url = `${serviceUrl}/${layerId}/query`;
-        const defaultParams = {
-            f: 'json',
-            outFields: '*',
-            returnGeometry: false,
-        };
-        const queryParams = new URLSearchParams({...defaultParams, ...params});
-        
-        try {
-            const response = await fetch(`${url}?${queryParams.toString()}`);
-            if (!response.ok) {
-                throw new Error(`Error HTTP ${response.status}: ${response.statusText}`);
-            }
-            const data = await response.json();
-            return data.features || [];
-        } catch (error) {
-            console.error(`Error al consultar Layer ${layerId}:`, error);
-            // No mostramos mensaje de error aquí para evitar spam de mensajes al cargar múltiples tablas
-            return [];
-        }
+function guidBraced(){
+  const s = crypto.randomUUID().toUpperCase();
+  return `{${s}}`;
+}
+
+async function fetchJson(url, params){
+  const u = new URL(url);
+  Object.entries(params || {}).forEach(([k,v]) => u.searchParams.set(k, v));
+  const r = await fetch(u.toString(), { method: "GET" });
+  if(!r.ok){
+    const txt = await r.text();
+    throw new Error(`HTTP ${r.status}: ${txt}`);
+  }
+  return await r.json();
+}
+
+async function postForm(url, formObj){
+  const form = new URLSearchParams();
+  Object.entries(formObj).forEach(([k,v]) => {
+    if (v === undefined) return;
+    form.append(k, typeof v === "string" ? v : JSON.stringify(v));
+  });
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: form
+  });
+  if(!r.ok){
+    const txt = await r.text();
+    throw new Error(`HTTP ${r.status}: ${txt}`);
+  }
+  return await r.json();
+}
+
+function parseDomainValues(domainObj){
+  if(!domainObj) return null;
+  if(Array.isArray(domainObj.codedValues)){
+    const out = {};
+    domainObj.codedValues.forEach(cv => out[String(cv.code)] = cv.name);
+    return out;
+  }
+  return null;
+}
+
+async function loadServiceDomains(){
+  const info = await fetchJson(SERVICE_URL, { f:"json" });
+  const domains = info?.domains || [];
+  const dm = {};
+  for(const d of domains){
+    if(d?.name && d?.codedValues){
+      dm[d.name] = parseDomainValues(d);
     }
+  }
+  municipiosDomain = dm["DM_Municipio"] || null;
+}
 
-    // 1. Cargar las Actividades en la lista desplegable.
-    async function loadActivities() {
-        mostrarMensaje('Cargando Actividades...', 'info');
-        
-        const activities = await queryArcGIS(actividadLayerId, {
-             where: "Estado = 'Activo'",
-             outFields: 'ActividadID, CodigoActividad, Nombre',
-             orderByFields: 'CodigoActividad'
-        });
+// ---------- Load activities ----------
+async function loadActividades(){
+  setStatus("Cargando actividades…");
+  elActividad.innerHTML = `<option value="">Cargando…</option>`;
 
-        if (activities.length > 0) {
-            selectActividad.innerHTML = '<option value="">Seleccione una Actividad</option>';
-            activities.forEach(feature => {
-                const attr = feature.attributes;
-                const option = document.createElement('option');
-                option.value = attr.ActividadID;
-                option.textContent = `${attr.CodigoActividad} - ${attr.Nombre}`;
-                selectActividad.appendChild(option);
-            });
-             mostrarMensaje('Actividades cargadas.', 'info');
-        } else {
-            selectActividad.innerHTML = '<option value="">No se encontraron Actividades activas</option>';
-            mostrarMensaje('No se encontraron actividades. Revise el Layer ID 1.', 'error');
-        }
-    }
-    
-    // 2. Cargar y renderizar el reporte a nivel de ACTIVIDAD
-    async function loadActividadReport(actividadID, trimestre) {
-        actividadBody.innerHTML = '<tr><td colspan="5" style="text-align: center;">Cargando avance de la Actividad...</td></tr>';
+  const vig = Number(elVigencia.value) || new Date().getFullYear();
 
-        const year = new Date().getFullYear();
-        
-        const avances = await queryArcGIS(avanceActividadTableId, {
-            where: `ActividadID = '${actividadID}' AND Anio = ${year} AND Trimestre = '${trimestre}'`,
-            outFields: 'ActividadID, GlobalID, ValorEjecutado, PorcentajeAvance, Observaciones, OrigenCarga, FechaCalculo'
-        });
+  const q = await fetchJson(`${URL_ACTIVIDAD}/query`, {
+    f:"json",
+    where: `Activo = 'SI' AND Vigencia = ${vig}`,
+    outFields: "ActividadID,Nombre",
+    orderByFields: "Nombre ASC",
+    returnGeometry: "false"
+  });
 
-        const avance = avances.length > 0 ? avances[0].attributes : {};
-        const globalIDAvance = avance.GlobalID || '';
-        
-        const origenOptions = origenCargaDomain.map(d => 
-            `<option value="${d.code}" ${avance.OrigenCarga === d.code ? 'selected' : ''}>${d.name}</option>`
-        ).join('');
+  const feats = q?.features || [];
+  if(feats.length === 0){
+    elActividad.innerHTML = `<option value="">No hay actividades para la vigencia ${vig}</option>`;
+    setStatus("No se encontraron actividades (verifica Vigencia y datos en CFG_Actividad).", "error");
+    return;
+  }
 
-        const fechaCalculoFormatted = avance.FechaCalculo ? new Date(avance.FechaCalculo).toISOString().split('T')[0] : '';
+  elActividad.innerHTML =
+    `<option value="">— Selecciona una actividad —</option>` +
+    feats.map(f => {
+      const a = f.attributes;
+      return `<option value="${escapeHtml(a.ActividadID)}">${escapeHtml(a.ActividadID)} — ${escapeHtml(a.Nombre)}</option>`;
+    }).join("");
 
-        actividadBody.innerHTML = `
-            <tr>
-                <td>
-                    <input type="number" step="any" min="0" class="table-input" id="act-valor-ejecutado" value="${avance.ValorEjecutado || ''}" required>
-                </td>
-                <td>
-                    <input type="number" step="any" min="0" max="100" class="table-input" id="act-porcentaje-avance" value="${avance.PorcentajeAvance || ''}">
-                </td>
-                <td>
-                    <input type="date" class="table-input" id="act-fecha-calculo" value="${fechaCalculoFormatted}">
-                </td>
-                <td>
-                    <select class="table-select" id="act-origen-carga">
-                        ${origenOptions}
-                    </select>
-                </td>
-                <td>
-                    <textarea class="table-textarea" id="act-observaciones">${avance.Observaciones || ''}</textarea>
-                </td>
-            </tr>
-        `;
-        
-        actividadReportContainer.setAttribute('data-globalid', globalIDAvance);
-        actividadReportContainer.classList.remove('hidden-section');
-    }
+  setStatus("Actividades cargadas. Selecciona una para ver indicadores.", "success");
+}
 
+// ---------- Load indicators ----------
+async function loadIndicadoresForActividad(actividadId){
+  elIndicadores.innerHTML = "";
+  indicadoresCache = [];
+  rowGeometries.clear();
+  activeRowId = null;
+  pillActive.textContent = "Registro activo: —";
+  clearMapGraphics();
 
-    /**
-     * 3. Cargar Subactividades asociadas y generar secciones de reporte individuales.
-     */
-    async function loadSubActividadSections(actividadID, trimestre) {
-        subactividadesSections.innerHTML = '<tr><td colspan="5" style="text-align: center;">Cargando Subactividades asociadas...</td></tr>';
-        subactividadesReportContainer.classList.remove('hidden-section'); // Mostrar el contenedor base
-        btnSubmit.disabled = true; // Deshabilitar hasta que los datos estén listos
+  if(!actividadId) return;
 
-        try {
-            // A. Cargar Subactividades (Layer ID 31)
-            const subactivities = await queryArcGIS(subActividadLayerId, {
-                where: `ActividadID = '${actividadID}'`,
-                outFields: 'SubActividadID, CodigoSubAct, Nombre, UnidadMedida',
-                orderByFields: 'CodigoSubAct'
-            });
+  setStatus("Cargando indicadores…");
+  const vig = Number(elVigencia.value) || new Date().getFullYear();
 
-            if (subactivities.length === 0) {
-                subactividadesSections.innerHTML = '<p class="info-message">No se encontraron Subactividades asociadas a esta Actividad.</p>';
-                btnSubmit.disabled = false;
-                return;
-            }
-            
-            const subActividadIDs = subactivities.map(s => `'${s.attributes.SubActividadID}'`);
-            const year = new Date().getFullYear(); 
+  const q = await fetchJson(`${URL_INDICADOR}/query`, {
+    f:"json",
+    where: `Activo = 'SI' AND Vigencia = ${vig} AND ActividadID = '${actividadId.replaceAll("'","''")}'`,
+    outFields: "IndicadorID,ActividadID,CodigoIndicador,NombreIndicador,UnidadMedida,MetaAnual,PesoIndicador,MetodoCalculo,Vigencia",
+    orderByFields: "CodigoIndicador ASC, NombreIndicador ASC",
+    returnGeometry: "false"
+  });
 
-            // B. Cargar Avances Trimestrales Previos de TODAS las subactividades (Layer ID 3)
-            const avances = await queryArcGIS(avanceSubActividadTableId, {
-                where: `SubActividadID IN (${subActividadIDs.join(',')}) AND Anio = ${year} AND Trimestre = '${trimestre}'`,
-                outFields: 'SubActividadID, ValorEjecutado, PorcentajeAvance, GlobalID, Observaciones'
-            });
-            const avanceMap = new Map(avances.map(f => [f.attributes.SubActividadID, f.attributes]));
-            
-            // C. Generar una sección de reporte por cada SubActividad
-            renderSubActivitiesSections(subactivities, avanceMap, year, trimestre);
+  const feats = q?.features || [];
+  if(feats.length === 0){
+    elIndicadores.innerHTML = `<div class="card"><div class="muted">No hay indicadores configurados para esta actividad y vigencia.</div></div>`;
+    setStatus("No se encontraron indicadores (verifica CFG_Indicador).", "error");
+    return;
+  }
 
-        } catch (e) {
-            subactividadesSections.innerHTML = '<p class="error-message">Error al cargar el detalle de Subactividades. Revise la consola.</p>';
-            console.error("Error loadSubActividadSections:", e);
-        } finally {
-            btnSubmit.disabled = false;
-        }
-    }
-    
-    /**
-     * 4. Renderizar las secciones HTML dinámicas de SubActividades.
-     */
-    function renderSubActivitiesSections(subactivities, avanceMap, year, trimestre) {
-        let htmlContent = '';
-        
-        subactivities.forEach((feature) => {
-            const attr = feature.attributes;
-            const subActividadID = attr.SubActividadID;
-            const avance = avanceMap.get(subActividadID);
-            
-            const globalIDAvance = avance ? avance.GlobalID : '';
-            const valorEjecutado = avance ? avance.ValorEjecutado : '';
-            const observaciones = avance ? avance.Observaciones : '';
-            const porcentajeAvance = avance ? avance.PorcentajeAvance : 'XXX';
-            
-            // Se genera una tabla de reporte simplificada para cada subactividad
-            htmlContent += `
-                <div class="subactividad-section">
-                    <h4>${attr.CodigoSubAct}: ${attr.Nombre} <span class="avance-badge">% avance: ${porcentajeAvance}%</span></h4>
-                    
-                    <table class="report-table subact-detail-table">
-                        <thead>
-                            <tr>
-                                <th style="width: 20%;">Unidad Medida</th>
-                                <th style="width: 20%;">Valor Ejecutado*</th>
-                                <th style="width: 20%;">% Avance</th>
-                                <th style="width: 40%;">Observaciones</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td>${attr.UnidadMedida || 'N/A'}</td>
-                                <td>
-                                    <input type="number" step="any" min="0" class="table-input subact-valor-ejecutado"
-                                        data-id="${subActividadID}"
-                                        data-globalid="${globalIDAvance}" 
-                                        data-anio="${year}"
-                                        data-trimestre="${trimestre}"
-                                        value="${valorEjecutado || ''}"
-                                        required>
-                                </td>
-                                <td>
-                                    <input type="number" step="any" min="0" max="100" class="table-input subact-porcentaje-avance"
-                                        value="${avance ? avance.PorcentajeAvance : ''}">
-                                </td>
-                                <td>
-                                    <textarea class="table-textarea subact-observaciones">${observaciones}</textarea>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            `;
-        });
-        
-        subactividadesSections.innerHTML = htmlContent;
-    }
+  indicadoresCache = feats.map(f => f.attributes);
+  elIndicadores.innerHTML = indicadoresCache.map(ind => indicatorCardHtml(ind)).join("");
+  wireIndicatorCardEvents();
 
-    // 5. Lógica para enviar el reporte (Reportar Avance) a AMBAS tablas
-    reporteForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        
-        btnSubmit.disabled = true;
-        mostrarMensaje('Iniciando envío de avances...', 'info');
+  setStatus("Indicadores listos. Agrega municipios y ubica puntos en el mapa.", "success");
+}
 
-        const actividadID = selectActividad.value;
-        const trimestre = selectTrimestre.value;
-        const anio = new Date().getFullYear();
-        
-        // --- A. Reporte de Avance de Actividad (Layer ID 2) ---
-        const actUpdates = [];
-        const actInserts = [];
-        const actGlobalID = actividadReportContainer.getAttribute('data-globalid');
-        const fechaCalculo = document.getElementById('act-fecha-calculo').value;
+function indicatorCardHtml(ind){
+  const code = ind.CodigoIndicador || "—";
+  const meta = (ind.MetaAnual ?? "");
+  const um = ind.UnidadMedida || "—";
+  const peso = (ind.PesoIndicador ?? "");
+  const metodo = ind.MetodoCalculo || "—";
+  const safeId = String(ind.IndicadorID).replaceAll("{","").replaceAll("}","");
 
-        const actAttributes = {
-            ActividadID: actividadID,
-            Anio: anio,
-            Trimestre: trimestre,
-            ValorEjecutado: parseFloat(document.getElementById('act-valor-ejecutado').value) || 0,
-            PorcentajeAvance: parseFloat(document.getElementById('act-porcentaje-avance').value) || 0,
-            Observaciones: document.getElementById('act-observaciones').value,
-            OrigenCarga: document.getElementById('act-origen-carga').value,
-            MetodoID: generateUUID(), 
-            ...(fechaCalculo && {FechaCalculo: new Date(fechaCalculo).getTime()}), 
-        };
+  return `
+  <div class="card" data-indicador-id="${escapeHtml(ind.IndicadorID)}">
+    <div class="card__top">
+      <div>
+        <p class="card__title">${escapeHtml(code)} — ${escapeHtml(ind.NombreIndicador)}</p>
+        <div class="card__meta">
+          <span>Unidad: <b>${escapeHtml(um)}</b></span>
+          <span>Meta anual: <b>${escapeHtml(meta)}</b></span>
+          <span>Peso: <b>${escapeHtml(peso)}</b></span>
+          <span>Método: <b>${escapeHtml(metodo)}</b></span>
+        </div>
+      </div>
+      <div class="badges">
+        <span class="badge">Indicador</span>
+        <span class="badge mono">${escapeHtml(ind.IndicadorID)}</span>
+      </div>
+    </div>
 
-        if (actGlobalID) {
-            actAttributes.GlobalID = actGlobalID;
-            actUpdates.push({ attributes: actAttributes });
-        } else {
-             actAttributes.AvanceID = generateUUID(); 
-             actInserts.push({ attributes: actAttributes });
-        }
-        
-        const resultAct = await sendEdits(avanceActividadTableId, actInserts, actUpdates);
-        
-        if (!resultAct.success) {
-            mostrarMensaje('Error al reportar Avance de Actividad. Deteniendo proceso.', 'error');
-            console.error('Error Actividad:', resultAct.result);
-            btnSubmit.disabled = false;
-            return;
-        }
-        mostrarMensaje('Avance de Actividad reportado exitosamente.', 'info');
-        
-        // --- B. Reporte de Avance de SubActividades (Layer ID 3) ---
-        const subActUpdates = [];
-        const subActInserts = [];
-        
-        // Se recorre cada sección de SubActividad para obtener los datos
-        document.querySelectorAll('.subactividad-section').forEach(section => {
-            const inputValor = section.querySelector('.subact-valor-ejecutado');
-            const inputPorcentaje = section.querySelector('.subact-porcentaje-avance');
-            const textareaObs = section.querySelector('.subact-observaciones');
+    <div class="rows" id="rows-${safeId}"></div>
 
-            const subActividadID = inputValor.dataset.id;
-            const globalIDAvance = inputValor.dataset.globalid;
-            const valor = parseFloat(inputValor.value) || 0;
-            const porcentaje = parseFloat(inputPorcentaje.value) || 0;
-            
-            const subActAttributes = {
-                SubActividadID: subActividadID,
-                Anio: anio,
-                Trimestre: trimestre,
-                ValorEjecutado: valor,
-                PorcentajeAvance: porcentaje,
-                Observaciones: textareaObs.value,
-                FechaCorte: new Date().getTime(),
-                OrigenCarga: 'App',
-            };
+    <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
+      <button class="btn btn--primary btn-add-row" data-indicador-id="${escapeHtml(ind.IndicadorID)}">+ Agregar municipio</button>
+      <button class="btn btn--ghost btn-collapse" data-rows-id="rows-${safeId}">Contraer/expandir</button>
+    </div>
+  </div>`;
+}
 
-            if (globalIDAvance) {
-                subActAttributes.GlobalID = globalIDAvance;
-                subActUpdates.push({ attributes: subActAttributes });
-            } else {
-                subActAttributes.AvanceSubID = generateUUID(); 
-                subActInserts.push({ attributes: subActAttributes });
-            }
-        });
+function municipioOptionsHtml(){
+  if(!municipiosDomain){
+    return `<option value="">(Dominio DM_Municipio no disponible)</option>`;
+  }
+  const opts = Object.entries(municipiosDomain)
+    .sort((a,b)=> a[1].localeCompare(b[1], 'es'))
+    .map(([code,name]) => `<option value="${escapeHtml(code)}">${escapeHtml(name)} (${escapeHtml(code)})</option>`)
+    .join("");
+  return `<option value="">— Selecciona municipio —</option>` + opts;
+}
 
-        const resultSub = await sendEdits(avanceSubActividadTableId, subActInserts, subActUpdates);
+function indicatorById(indicadorId){
+  return indicadoresCache.find(x => String(x.IndicadorID) === String(indicadorId));
+}
 
-        if (!resultSub.success) {
-            mostrarMensaje('Error al reportar Avance de SubActividades.', 'error');
-            console.error('Error SubActividad:', resultSub.result);
-        } else {
-            mostrarMensaje('Reporte completo (Actividad y Subactividades) exitoso.', 'exito');
-        }
-        
-        loadData(actividadID, trimestre);
-        btnSubmit.disabled = false;
+function calcPorcAvance(valor, meta){
+  const v = Number(valor);
+  const m = Number(meta);
+  if(!isFinite(v) || !isFinite(m) || m <= 0) return null;
+  const p = (v / m) * 100.0;
+  return Math.max(0, Math.min(100, p));
+}
+
+function makeRowHtml(indicadorId){
+  const rowId = crypto.randomUUID();
+  return `
+  <div class="row" data-row-id="${rowId}" data-indicador-id="${escapeHtml(indicadorId)}">
+    <div class="row__left">
+      <div class="field" style="padding:0;">
+        <label>Municipio</label>
+        <select class="row-municipio">${municipioOptionsHtml()}</select>
+      </div>
+
+      <div class="field" style="padding:0;">
+        <label>Valor ejecutado</label>
+        <input class="row-valor" type="number" step="any" placeholder="Ej: 12" />
+        <div class="row__mini">
+          <span>Porc. avance estimado: <b class="row-porc">—</b></span>
+        </div>
+      </div>
+
+      <div class="field" style="padding:0; grid-column: 1 / span 2;">
+        <label>Observaciones</label>
+        <input class="row-obs" type="text" placeholder="Descripción corta del avance municipalizado…" />
+      </div>
+
+      <div class="field" style="padding:0; grid-column: 1 / span 2;">
+        <label>Evidencia (URL)</label>
+        <input class="row-evi" type="url" placeholder="https://…" />
+      </div>
+    </div>
+
+    <div class="row__right">
+      <button class="btn btn--primary btn-activar" title="Activar este registro para ubicar punto en el mapa">Ubicar punto</button>
+      <button class="btn btn--ghost btn-ver" title="Acercar el mapa al punto de este registro">Ver punto</button>
+      <button class="btn btn--danger btn-eliminar" title="Eliminar este registro">Eliminar</button>
+      <div class="row__mini">
+        <span>Punto: <b class="row-pt">—</b></span>
+      </div>
+    </div>
+  </div>`;
+}
+
+function wireIndicatorCardEvents(){
+  document.querySelectorAll(".btn-add-row").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const indicadorId = btn.getAttribute("data-indicador-id");
+      const safeId = String(indicadorId).replaceAll("{","").replaceAll("}","");
+      const container = document.getElementById(`rows-${safeId}`);
+      container.insertAdjacentHTML("beforeend", makeRowHtml(indicadorId));
+      wireRowEvents(container.lastElementChild);
     });
-    
-    /**
-     * Función para enviar las ediciones a una tabla específica.
-     */
-    async function sendEdits(layerId, adds, updates) {
-        // ... (código sendEdits se mantiene igual) ...
-        if (adds.length === 0 && updates.length === 0) return { success: true, result: null };
+  });
 
-        const applyEditsUrl = `${serviceUrl}/${layerId}/applyEdits`;
-        const params = new URLSearchParams({
-            f: 'json',
-            adds: JSON.stringify(adds),
-            updates: JSON.stringify(updates)
-        });
-
-        try {
-            const response = await fetch(applyEditsUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: params
-            });
-            const result = await response.json();
-            
-            const success = (result.addResults || []).every(r => r.success) && 
-                            (result.updateResults || []).every(r => r.success);
-            
-            return { success: success, result: result };
-
-        } catch (error) {
-            console.error(`Error de red al enviar a Layer ${layerId}:`, error);
-            return { success: false, result: error };
-        }
-    }
-    
-    /**
-     * 6. Función maestra para cargar todos los datos al cambiar selectores.
-     */
-    function loadData(actividadID, trimestre) {
-        if (!actividadID || !trimestre) return;
-        
-        // Ocultar secciones mientras se cargan
-        actividadReportContainer.classList.add('hidden-section');
-        subactividadesReportContainer.classList.add('hidden-section');
-        subactividadesSections.innerHTML = ''; // Limpiar las secciones dinámicas
-
-        mostrarMensaje('Cargando todos los detalles de la Actividad...', 'info');
-
-        // 1. Cargar el reporte de Actividad (Layer ID 2)
-        loadActividadReport(actividadID, trimestre);
-        
-        // 2. Cargar el reporte de Subactividades (Layer ID 31 -> Layer ID 3)
-        loadSubActividadSections(actividadID, trimestre);
-    }
-
-    /**
-     * 7. Manejo de Eventos y Mensajes de la UI
-     */
-    selectActividad.addEventListener('change', () => {
-        document.getElementById('nombre-actividad-actual').textContent = selectActividad.options[selectActividad.selectedIndex].textContent.split(' - ')[1] || 'Nombre de la Actividad';
-        loadData(selectActividad.value, selectTrimestre.value);
+  document.querySelectorAll(".btn-collapse").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const rowsId = btn.getAttribute("data-rows-id");
+      const container = document.getElementById(rowsId);
+      container.style.display = (container.style.display === "none") ? "flex" : "none";
     });
+  });
+}
 
-    selectTrimestre.addEventListener('change', () => {
-        loadData(selectActividad.value, selectTrimestre.value);
-    });
+function wireRowEvents(rowEl){
+  const rowId = rowEl.getAttribute("data-row-id");
+  const indicadorId = rowEl.getAttribute("data-indicador-id");
 
-    function mostrarMensaje(mensaje, tipo) {
-        mensajeEstado.textContent = mensaje;
-        mensajeEstado.className = `mensaje-estado estado-${tipo}`; 
-        mensajeEstado.classList.remove('estado-oculto');
-        
-        if (tipo !== 'info') {
-            setTimeout(() => {
-                mensajeEstado.classList.add('estado-oculto');
-            }, 5000);
-        }
+  const inpVal = rowEl.querySelector(".row-valor");
+  const elPorc = rowEl.querySelector(".row-porc");
+
+  const btnAct = rowEl.querySelector(".btn-activar");
+  const btnVer = rowEl.querySelector(".btn-ver");
+  const btnDel = rowEl.querySelector(".btn-eliminar");
+
+  const ind = indicatorById(indicadorId);
+
+  inpVal.addEventListener("input", () => {
+    const p = calcPorcAvance(inpVal.value, ind?.MetaAnual);
+    elPorc.textContent = (p === null) ? "—" : `${p.toFixed(1)}%`;
+  });
+
+  btnAct.addEventListener("click", () => {
+    activeRowId = rowId;
+    pillActive.textContent = `Registro activo: ${rowId.slice(0,8)}…`;
+    setStatus("Registro activo seleccionado. Ahora haz clic en el mapa para ubicar el punto.", "info");
+  });
+
+  btnVer.addEventListener("click", () => {
+    const pt = rowGeometries.get(rowId);
+    if(!pt){
+      setStatus("Este registro aún no tiene punto.", "error");
+      return;
     }
+    zoomToPoint(pt.lon, pt.lat);
+  });
 
-    // Inicialización: Cargar actividades al cargar la página
-    loadActivities();
+  btnDel.addEventListener("click", () => {
+    rowGeometries.delete(rowId);
+    removeGraphicForRow(rowId);
+    if(activeRowId === rowId){
+      activeRowId = null;
+      pillActive.textContent = "Registro activo: —";
+    }
+    rowEl.remove();
+  });
+
+  elPorc.textContent = "—";
+}
+
+// ---------- Map ----------
+function initMap(){
+  return new Promise((resolve, reject) => {
+    require([
+      "esri/Map",
+      "esri/views/MapView",
+      "esri/layers/GraphicsLayer",
+      "esri/Graphic",
+      "esri/geometry/support/webMercatorUtils"
+    ], (Map, MapView, GraphicsLayer, Graphic, _webMercatorUtils) => {
+      webMercatorUtils = _webMercatorUtils;
+
+      map = new Map({ basemap: "streets-navigation-vector" });
+      graphicsLayer = new GraphicsLayer();
+      map.add(graphicsLayer);
+
+      view = new MapView({
+        container: "map",
+        map,
+        center: [-74.2, 4.7],
+        zoom: 8
+      });
+
+      view.on("click", (evt) => {
+        if(!activeRowId){
+          setStatus("Primero activa un registro con el botón “Ubicar punto”.", "error");
+          return;
+        }
+        let g = evt.mapPoint;
+        let geo = g;
+        if (g.spatialReference && g.spatialReference.isWebMercator){
+          geo = webMercatorUtils.webMercatorToGeographic(g);
+        }
+        const lon = geo.longitude;
+        const lat = geo.latitude;
+
+        rowGeometries.set(activeRowId, { lon, lat });
+        upsertGraphicForRow(activeRowId, lon, lat);
+
+        const rowEl = document.querySelector(`.row[data-row-id="${activeRowId}"]`);
+        if(rowEl){
+          rowEl.querySelector(".row-pt").textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+        }
+
+        setStatus("Punto asignado al registro activo.", "success");
+      });
+
+      btnLimpiarMapa.addEventListener("click", () => {
+        rowGeometries.clear();
+        clearMapGraphics();
+        document.querySelectorAll(".row .row-pt").forEach(x => x.textContent = "—");
+        setStatus("Se borraron todos los puntos.", "info");
+      });
+
+      btnCentrar.addEventListener("click", () => {
+        view.goTo({ center: [-74.2, 4.7], zoom: 8 });
+      });
+
+      resolve();
+    }, (err) => reject(err));
+  });
+}
+
+function clearMapGraphics(){
+  if(graphicsLayer) graphicsLayer.removeAll();
+}
+
+function upsertGraphicForRow(rowId, lon, lat){
+  require(["esri/Graphic"], (Graphic) => {
+    removeGraphicForRow(rowId);
+    const graphic = new Graphic({
+      geometry: { type: "point", longitude: lon, latitude: lat, spatialReference: { wkid: 4326 } },
+      symbol: {
+        type: "simple-marker",
+        style: "circle",
+        color: [23,151,209,0.9],
+        size: 10,
+        outline: { color: [11,82,105,1], width: 2 }
+      },
+      attributes: { rowId },
+      popupTemplate: { title: "Avance municipalizado", content: `Registro: ${rowId}` }
+    });
+    graphicsLayer.add(graphic);
+  });
+}
+
+function removeGraphicForRow(rowId){
+  if(!graphicsLayer) return;
+  const toRemove = graphicsLayer.graphics.filter(g => g?.attributes?.rowId === rowId);
+  toRemove.forEach(g => graphicsLayer.remove(g));
+}
+
+function zoomToPoint(lon, lat){
+  if(!view) return;
+  view.goTo({ center: [lon, lat], zoom: 14 });
+}
+
+// ---------- Save ----------
+function collectDraft(){
+  const actividadId = elActividad.value;
+  const vig = Number(elVigencia.value) || new Date().getFullYear();
+  const periodo = elPeriodo.value;
+
+  if(!actividadId){
+    throw new Error("Selecciona una actividad.");
+  }
+
+  const avances = [];
+
+  document.querySelectorAll(".row").forEach(rowEl => {
+    const rowId = rowEl.getAttribute("data-row-id");
+    const indicadorId = rowEl.getAttribute("data-indicador-id");
+    const municipio = rowEl.querySelector(".row-municipio").value;
+    const valor = rowEl.querySelector(".row-valor").value;
+    const obs = rowEl.querySelector(".row-obs").value;
+    const evi = rowEl.querySelector(".row-evi").value;
+
+    const pt = rowGeometries.get(rowId);
+
+    const hasAny = municipio || valor || obs || evi || pt;
+    if(!hasAny) return;
+
+    if(!municipio) throw new Error("Hay un registro sin Municipio. Selecciona el municipio o elimina el registro.");
+    if(!pt) throw new Error("Hay un registro sin Punto. Activa el registro y ubica el punto en el mapa.");
+    if(valor === "" || valor === null) throw new Error("Hay un registro sin Valor ejecutado.");
+
+    const ind = indicatorById(indicadorId);
+    const porc = calcPorcAvance(valor, ind?.MetaAnual);
+
+    avances.push({
+      attributes: {
+        RegistroID: guidBraced(),
+        IndicadorID: indicadorId,
+        ActividadID: actividadId,
+        Vigencia: vig,
+        Periodo: periodo,
+        ValorEjecutado: Number(valor),
+        PorcAvance: (porc === null) ? null : porc,
+        FechaRegistro: Date.now(),
+        Municipio: municipio,
+        Observaciones: obs || null,
+        OrigenCarga: "WEB",
+        PersonaID: null,
+        EvidenciaURL: evi || null
+      },
+      geometry: {
+        x: pt.lon,
+        y: pt.lat,
+        spatialReference: { wkid: 4326 }
+      }
+    });
+  });
+
+  if(avances.length === 0){
+    throw new Error("No hay avances para guardar. Agrega al menos un municipio en un indicador.");
+  }
+
+  const narrativaTxt = elNarrativa.value?.trim() || "";
+  const narrativa = narrativaTxt ? {
+    attributes: {
+      NarrativaID: guidBraced(),
+      ActividadID: actividadId,
+      Vigencia: vig,
+      Periodo: periodo,
+      TextoNarrativo: narrativaTxt,
+      PersonaID: null,
+      FechaRegistro: Date.now()
+    }
+  } : null;
+
+  return { avances, narrativa };
+}
+
+async function saveDraft(draft){
+  setStatus(`Guardando ${draft.avances.length} avance(s)…`);
+  const resAv = await postForm(`${URL_AVANCE}/applyEdits`, {
+    f: "json",
+    adds: draft.avances
+  });
+
+  if(resAv?.error){
+    throw new Error(resAv.error.message || "Error al guardar avances.");
+  }
+  const addResults = resAv?.addResults || [];
+  const failed = addResults.filter(r => !r.success);
+  if(failed.length){
+    console.error("addResults", addResults);
+    throw new Error(`Se guardaron con errores: ${failed.length} registro(s). Revisa consola.`);
+  }
+
+  if(draft.narrativa){
+    setStatus("Guardando reporte narrativo…");
+    const resNar = await postForm(`${URL_NARRATIVA}/applyEdits`, {
+      f: "json",
+      adds: [draft.narrativa]
+    });
+    if(resNar?.error){
+      throw new Error(resNar.error.message || "Error al guardar narrativa.");
+    }
+    const narOK = (resNar?.addResults || []).every(r => r.success);
+    if(!narOK){
+      console.error("resNar", resNar);
+      throw new Error("La narrativa no se guardó correctamente (revisa consola).");
+    }
+  }
+
+  return true;
+}
+
+// ---------- UI ----------
+function clearForm(){
+  elNarrativa.value = "";
+  document.querySelectorAll(".rows").forEach(c => c.innerHTML = "");
+  rowGeometries.clear();
+  clearMapGraphics();
+  activeRowId = null;
+  pillActive.textContent = "Registro activo: —";
+}
+
+btnGuardar.addEventListener("click", async () => {
+  try{
+    btnGuardar.disabled = true;
+    const draft = collectDraft();
+    await saveDraft(draft);
+    setStatus("Reporte guardado correctamente.", "success");
+    clearForm();
+  }catch(e){
+    console.error(e);
+    setStatus(e.message || "Error inesperado.", "error");
+  }finally{
+    btnGuardar.disabled = false;
+  }
 });
+
+btnLimpiar.addEventListener("click", () => {
+  clearForm();
+  setStatus("Formulario limpiado.", "info");
+});
+
+btnRefresh.addEventListener("click", async () => {
+  try{
+    await bootstrap(true);
+  }catch(e){
+    console.error(e);
+    setStatus("No fue posible recargar catálogos.", "error");
+  }
+});
+
+elActividad.addEventListener("change", async () => {
+  await loadIndicadoresForActividad(elActividad.value);
+});
+
+elVigencia.addEventListener("change", async () => {
+  await loadActividades();
+  await loadIndicadoresForActividad(elActividad.value);
+});
+
+// ---------- Bootstrap ----------
+async function bootstrap(forceReload=false){
+  try{
+    if(forceReload) municipiosDomain = null;
+    setStatus("Inicializando…");
+    await loadServiceDomains();
+    await loadActividades();
+    setStatus("Listo.", "success");
+  }catch(e){
+    console.error(e);
+    setStatus("Error inicializando la app. Revisa la consola.", "error");
+  }
+}
+
+(async function main(){
+  try{
+    await initMap();
+    await bootstrap(false);
+  }catch(e){
+    console.error(e);
+    setStatus("No se pudo inicializar el mapa. Revisa conexión y consola.", "error");
+  }
+})();
