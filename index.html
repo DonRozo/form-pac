@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DATA-PAC | Reporte Trimestral</title>
+
+  <!-- ArcGIS JS API -->
+  <link rel="stylesheet" href="https://js.arcgis.com/4.29/esri/themes/light/main.css" />
+
+  <!-- App styles -->
+  <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand__dot"></div>
+        <div class="brand__text">
+          <div class="brand__title">DATA-PAC</div>
+          <div class="brand__subtitle">Reporte Trimestral de Avance de Indicadores</div>
+        </div>
+      </div>
+
+      <div class="topbar__right">
+        <div class="pill" id="pill-service">Servicio: DATAPAC_V0</div>
+        <button class="btn btn--ghost" id="btn-refresh" title="Recargar catálogos">Recargar</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <!-- LEFT: Form -->
+      <section class="panel panel--form" aria-label="Formulario">
+        <div class="panel__header">
+          <h2>1) Selección</h2>
+          <p class="muted">Selecciona la actividad y el trimestre. Luego reporta cada indicador municipalizado en el mapa.</p>
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label for="sel-vigencia">Vigencia</label>
+            <input id="sel-vigencia" type="number" min="2020" max="2100" />
+          </div>
+
+          <div class="field">
+            <label for="sel-periodo">Periodo (Trimestre)</label>
+            <select id="sel-periodo">
+              <option value="T1">T1</option>
+              <option value="T2">T2</option>
+              <option value="T3">T3</option>
+              <option value="T4" selected>T4</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="sel-actividad">Actividad</label>
+          <select id="sel-actividad">
+            <option value="">Cargando actividades…</option>
+          </select>
+          <div class="help">Tip: las actividades se consultan desde <span class="mono">CFG_Actividad</span> (Tabla 6).</div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="panel__header">
+          <h2>2) Indicadores de la actividad</h2>
+          <p class="muted">Por cada indicador, agrega uno o más registros por municipio (cada registro requiere municipio + punto en el mapa).</p>
+        </div>
+
+        <div id="indicadores" class="indicadores"></div>
+
+        <div class="divider"></div>
+
+        <div class="panel__header">
+          <h2>3) Reporte narrativo (trimestral)</h2>
+          <p class="muted">Resumen ejecutivo del trimestre para la actividad seleccionada.</p>
+        </div>
+
+        <div class="field">
+          <label for="txt-narrativa">Narrativa</label>
+          <textarea id="txt-narrativa" rows="6" placeholder="Describe avances, resultados, dificultades, soportes y próximos pasos..."></textarea>
+        </div>
+
+        <div class="actions">
+          <button class="btn btn--primary" id="btn-guardar">Guardar reporte trimestral</button>
+          <button class="btn btn--danger" id="btn-limpiar">Limpiar</button>
+        </div>
+
+        <div id="status" class="status" role="status" aria-live="polite"></div>
+      </section>
+
+      <!-- RIGHT: Map -->
+      <section class="panel panel--map" aria-label="Mapa">
+        <div class="panel__header panel__header--map">
+          <div>
+            <h2>Mapa de municipalización</h2>
+            <p class="muted">Haz clic en el mapa para ubicar el punto del registro activo (municipio seleccionado).</p>
+          </div>
+
+          <div class="maptools">
+            <div class="pill" id="pill-active">Registro activo: —</div>
+            <button class="btn btn--ghost" id="btn-centrar" title="Centrar a Cundinamarca">Centrar</button>
+            <button class="btn btn--ghost" id="btn-limpiar-mapa" title="Borrar todos los puntos">Borrar puntos</button>
+          </div>
+        </div>
+
+        <div id="map" class="map"></div>
+
+        <div class="maphint">
+          <div class="maphint__title">Cómo usar</div>
+          <ol>
+            <li>En un indicador, pulsa <b>+ Agregar municipio</b>.</li>
+            <li>Selecciona un municipio y luego haz clic en el mapa para ubicar el punto.</li>
+            <li>Repite para tantos municipios como necesites.</li>
+          </ol>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span class="muted">Versión UI v0 • Servicio público • Sin autenticación (por ahora)</span>
+    </footer>
+  </div>
+
+  <!-- ArcGIS JS API -->
+  <script src="https://js.arcgis.com/4.29/"></script>
+
+  <!-- App logic -->
+  <script src="script.js"></script>
+
+  <script>
+    document.getElementById("sel-vigencia").value = new Date().getFullYear();
+  </script>
+</body>
+</html>
