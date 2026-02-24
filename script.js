@@ -1,14 +1,20 @@
 /* ===========================================================
-   DATA-PAC | Formulario Reporte Trimestral (v0)
-   Servicio: https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V0/FeatureServer
-   Capa/Tabla:
+   DATA-PAC | Formulario Reporte Trimestral (v1)
+   Servicio: DATAPAC_V1
+   Capas/Tablas usadas (por ahora):
      - REP_AvanceIndicador_PT (Layer 0)   -> applyEdits
      - CFG_Actividad (Table 6)           -> query
      - CFG_Indicador (Table 7)           -> query
      - REP_ReporteNarrativo (Table 11)   -> applyEdits
+
+   Nota: SEG_Persona / SEG_OTP / SEG_Asignacion se integran después
+   (autenticación por OTP y filtrado por asignación).
    =========================================================== */
 
-const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V0/FeatureServer";
+// ⚠️ URL corregida (FeatureServer)
+const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V1/FeatureServer";
+
+// Índices
 const URL_ACTIVIDAD = `${SERVICE_URL}/6`;
 const URL_INDICADOR = `${SERVICE_URL}/7`;
 const URL_AVANCE = `${SERVICE_URL}/0`;
@@ -97,16 +103,30 @@ function parseDomainValues(domainObj){
   return null;
 }
 
-async function loadServiceDomains(){
-  const info = await fetchJson(SERVICE_URL, { f:"json" });
-  const domains = info?.domains || [];
-  const dm = {};
-  for(const d of domains){
-    if(d?.name && d?.codedValues){
-      dm[d.name] = parseDomainValues(d);
+// ✅ Lee municipios desde DM_Municipio (servicio) o desde campo Municipio (layer)
+async function loadMunicipiosDomain(){
+  // 1) try service-level domains
+  const svc = await fetchJson(SERVICE_URL, { f:"json" });
+  if(Array.isArray(svc?.domains)){
+    const dm = {};
+    for(const d of svc.domains){
+      if(d?.name && d?.codedValues) dm[d.name] = parseDomainValues(d);
+    }
+    if(dm["DM_Municipio"]){
+      municipiosDomain = dm["DM_Municipio"];
+      return;
     }
   }
-  municipiosDomain = dm["DM_Municipio"] || null;
+
+  // 2) fallback: read domain from layer fields
+  const lyr = await fetchJson(`${URL_AVANCE}`, { f:"json" });
+  const municipioField = (lyr?.fields || []).find(f => f?.name === "Municipio");
+  if(municipioField?.domain?.codedValues){
+    municipiosDomain = parseDomainValues(municipioField.domain);
+    return;
+  }
+
+  municipiosDomain = null;
 }
 
 // ---------- Load activities ----------
@@ -171,6 +191,7 @@ async function loadIndicadoresForActividad(actividadId){
   }
 
   indicadoresCache = feats.map(f => f.attributes);
+
   elIndicadores.innerHTML = indicadoresCache.map(ind => indicatorCardHtml(ind)).join("");
   wireIndicatorCardEvents();
 
@@ -183,6 +204,7 @@ function indicatorCardHtml(ind){
   const um = ind.UnidadMedida || "—";
   const peso = (ind.PesoIndicador ?? "");
   const metodo = ind.MetodoCalculo || "—";
+
   const safeId = String(ind.IndicadorID).replaceAll("{","").replaceAll("}","");
 
   return `
@@ -444,9 +466,7 @@ function collectDraft(){
   const vig = Number(elVigencia.value) || new Date().getFullYear();
   const periodo = elPeriodo.value;
 
-  if(!actividadId){
-    throw new Error("Selecciona una actividad.");
-  }
+  if(!actividadId) throw new Error("Selecciona una actividad.");
 
   const avances = [];
 
@@ -463,8 +483,8 @@ function collectDraft(){
     const hasAny = municipio || valor || obs || evi || pt;
     if(!hasAny) return;
 
-    if(!municipio) throw new Error("Hay un registro sin Municipio. Selecciona el municipio o elimina el registro.");
-    if(!pt) throw new Error("Hay un registro sin Punto. Activa el registro y ubica el punto en el mapa.");
+    if(!municipio) throw new Error("Hay un registro sin Municipio.");
+    if(!pt) throw new Error("Hay un registro sin Punto (ubícalo en el mapa).");
     if(valor === "" || valor === null) throw new Error("Hay un registro sin Valor ejecutado.");
 
     const ind = indicatorById(indicadorId);
@@ -486,17 +506,11 @@ function collectDraft(){
         PersonaID: null,
         EvidenciaURL: evi || null
       },
-      geometry: {
-        x: pt.lon,
-        y: pt.lat,
-        spatialReference: { wkid: 4326 }
-      }
+      geometry: { x: pt.lon, y: pt.lat, spatialReference: { wkid: 4326 } }
     });
   });
 
-  if(avances.length === 0){
-    throw new Error("No hay avances para guardar. Agrega al menos un municipio en un indicador.");
-  }
+  if(avances.length === 0) throw new Error("No hay avances para guardar.");
 
   const narrativaTxt = elNarrativa.value?.trim() || "";
   const narrativa = narrativaTxt ? {
@@ -516,35 +530,18 @@ function collectDraft(){
 
 async function saveDraft(draft){
   setStatus(`Guardando ${draft.avances.length} avance(s)…`);
-  const resAv = await postForm(`${URL_AVANCE}/applyEdits`, {
-    f: "json",
-    adds: draft.avances
-  });
+  const resAv = await postForm(`${URL_AVANCE}/applyEdits`, { f: "json", adds: draft.avances });
 
-  if(resAv?.error){
-    throw new Error(resAv.error.message || "Error al guardar avances.");
-  }
-  const addResults = resAv?.addResults || [];
-  const failed = addResults.filter(r => !r.success);
-  if(failed.length){
-    console.error("addResults", addResults);
-    throw new Error(`Se guardaron con errores: ${failed.length} registro(s). Revisa consola.`);
-  }
+  if(resAv?.error) throw new Error(resAv.error.message || "Error al guardar avances.");
+
+  const failed = (resAv?.addResults || []).filter(r => !r.success);
+  if(failed.length) throw new Error(`Se guardaron con errores: ${failed.length}. Revisa consola.`);
 
   if(draft.narrativa){
     setStatus("Guardando reporte narrativo…");
-    const resNar = await postForm(`${URL_NARRATIVA}/applyEdits`, {
-      f: "json",
-      adds: [draft.narrativa]
-    });
-    if(resNar?.error){
-      throw new Error(resNar.error.message || "Error al guardar narrativa.");
-    }
-    const narOK = (resNar?.addResults || []).every(r => r.success);
-    if(!narOK){
-      console.error("resNar", resNar);
-      throw new Error("La narrativa no se guardó correctamente (revisa consola).");
-    }
+    const resNar = await postForm(`${URL_NARRATIVA}/applyEdits`, { f: "json", adds: [draft.narrativa] });
+    if(resNar?.error) throw new Error(resNar.error.message || "Error al guardar narrativa.");
+    if(!(resNar?.addResults || []).every(r => r.success)) throw new Error("La narrativa no se guardó correctamente.");
   }
 
   return true;
@@ -603,7 +600,7 @@ async function bootstrap(forceReload=false){
   try{
     if(forceReload) municipiosDomain = null;
     setStatus("Inicializando…");
-    await loadServiceDomains();
+    await loadMunicipiosDomain();
     await loadActividades();
     setStatus("Listo.", "success");
   }catch(e){

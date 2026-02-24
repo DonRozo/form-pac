@@ -24,7 +24,7 @@
       </div>
 
       <div class="topbar__right">
-        <div class="pill" id="pill-service">Servicio: DATAPAC_V0</div>
+        <div class="pill" id="pill-service">Servicio: DATAPAC_V1</div>
         <button class="btn btn--ghost" id="btn-refresh" title="Recargar catálogos">Recargar</button>
       </div>
     </header>
@@ -59,14 +59,14 @@
           <select id="sel-actividad">
             <option value="">Cargando actividades…</option>
           </select>
-          <div class="help">Tip: las actividades se consultan desde <span class="mono">CFG_Actividad</span> (Tabla 6).</div>
+          <div class="help">Tip: actividades desde <span class="mono">CFG_Actividad</span> (Tabla 6).</div>
         </div>
 
         <div class="divider"></div>
 
         <div class="panel__header">
           <h2>2) Indicadores de la actividad</h2>
-          <p class="muted">Por cada indicador, agrega uno o más registros por municipio (cada registro requiere municipio + punto en el mapa).</p>
+          <p class="muted">Por cada indicador, agrega uno o más registros por municipio (municipio + valor + punto en el mapa).</p>
         </div>
 
         <div id="indicadores" class="indicadores"></div>
@@ -96,7 +96,7 @@
         <div class="panel__header panel__header--map">
           <div>
             <h2>Mapa de municipalización</h2>
-            <p class="muted">Haz clic en el mapa para ubicar el punto del registro activo (municipio seleccionado).</p>
+            <p class="muted">Activa un registro y luego haz clic en el mapa para ubicar el punto.</p>
           </div>
 
           <div class="maptools">
@@ -112,15 +112,15 @@
           <div class="maphint__title">Cómo usar</div>
           <ol>
             <li>En un indicador, pulsa <b>+ Agregar municipio</b>.</li>
-            <li>Selecciona un municipio y luego haz clic en el mapa para ubicar el punto.</li>
-            <li>Repite para tantos municipios como necesites.</li>
+            <li>Selecciona municipio y pulsa <b>Ubicar punto</b>.</li>
+            <li>Haz clic en el mapa para guardar coordenadas.</li>
           </ol>
         </div>
       </section>
     </main>
 
     <footer class="footer">
-      <span class="muted">Versión UI v0 • Servicio público • Sin autenticación (por ahora)</span>
+      <span class="muted">Versión UI v1 • Servicio público • Sin autenticación (por ahora)</span>
     </footer>
   </div>
 
