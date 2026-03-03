@@ -30,7 +30,9 @@ const elActividad = document.getElementById("sel-actividad");
 const elVigencia = document.getElementById("sel-vigencia");
 const elPeriodo = document.getElementById("sel-periodo");
 const elIndicadores = document.getElementById("indicadores"); // container reutilizado (tarjetas)
-const elNarrativa = document.getElementById("txt-narrativa");
+const elReporteNarrativo = document.getElementById("txt-reporte-narrativo");
+const elDescLogros = document.getElementById("txt-logros-descripcion");
+const elPrincipalesLogros = document.getElementById("txt-logros-principales");
 const elStatus = document.getElementById("status");
 
 const btnGuardar = document.getElementById("btn-guardar");
@@ -293,14 +295,19 @@ function mapNarrativaFields(info){
   const fkActividad = pickField(fields, ["ActividadGlobalID", "GlobalIDActividad", "ActividadGUID", "ActividadGuid"]);
   const vigencia = pickField(fields, ["Vigencia", "Ano", "Año"]);
   const periodo = pickField(fields, ["Periodo", "Trimestre", "PeriodoTrimestre"]);
-  const texto = pickField(fields, ["TextoNarrativo", "Narrativa", "Texto", "Descripcion", "Descripción"]);
+  // DATAPAC_V2: REP_ReporteNarrativo suele tener 3 campos de texto
+  const reporte = pickField(fields, ["ReporteNarrativo", "TextoNarrativo", "Narrativa", "Texto", "Descripcion", "Descripción"]);
+  const descLogros = pickField(fields, ["DescripcionLogrosAlcanzados", "DescripciónLogrosAlcanzados", "DescripcionLogros", "DescripciónLogros", "LogrosAlcanzados", "DescripcionDeLogros", "DescripciónDeLogros"]);
+  const principales = pickField(fields, ["PrincipalesLogros", "LogrosPrincipales", "Principales", "Logros"]);
   const fecha = pickField(fields, ["FechaRegistro", "Fecha"]);
   return {
     fields,
     fkActividadField: fkActividad?.name || null,
     vigenciaField: vigencia?.name || null,
     periodoField: periodo?.name || null,
-    textoField: texto?.name || null,
+    reporteField: reporte?.name || null,
+    descLogrosField: descLogros?.name || null,
+    principalesLogrosField: principales?.name || null,
     fechaField: fecha?.name || null
   };
 }
@@ -790,18 +797,35 @@ function collectDraft(){
 
   if(avances.length === 0) throw new Error("No hay avances para guardar.");
 
-  const narrativaTxt = elNarrativa.value?.trim() || "";
-  const narrativa = narrativaTxt ? { attributes: buildNarrativaAttrs(actividadGid, vig, periodo, narrativaTxt) } : null;
+  const txtReporte = elReporteNarrativo?.value?.trim() || "";
+  const txtDescLogros = elDescLogros?.value?.trim() || "";
+  const txtPrincipales = elPrincipalesLogros?.value?.trim() || "";
+
+  const hasNarrativa = !!(txtReporte || txtDescLogros || txtPrincipales);
+  const narrativa = hasNarrativa ? { attributes: buildNarrativaAttrs(actividadGid, vig, periodo, {
+    reporte: txtReporte,
+    descLogros: txtDescLogros,
+    principales: txtPrincipales
+  }) } : null;
 
   return { avances, rowsForUbic, narrativa };
 }
 
-function buildNarrativaAttrs(actividadGid, vig, periodo, texto){
+function buildNarrativaAttrs(actividadGid, vig, periodo, payload){
   const attrs = {};
   if(narrativaInfo?.fkActividadField) attrs[narrativaInfo.fkActividadField] = actividadGid;
   if(narrativaInfo?.vigenciaField) attrs[narrativaInfo.vigenciaField] = vig;
   if(narrativaInfo?.periodoField) attrs[narrativaInfo.periodoField] = periodo;
-  if(narrativaInfo?.textoField) attrs[narrativaInfo.textoField] = texto;
+  // Soporta 3 campos (V2) o 1 campo legado
+  if(narrativaInfo?.reporteField) attrs[narrativaInfo.reporteField] = payload?.reporte || null;
+  if(narrativaInfo?.descLogrosField) attrs[narrativaInfo.descLogrosField] = payload?.descLogros || null;
+  if(narrativaInfo?.principalesLogrosField) attrs[narrativaInfo.principalesLogrosField] = payload?.principales || null;
+
+  // fallback: si solo existe un campo de texto en el servicio
+  if(!narrativaInfo?.reporteField && !narrativaInfo?.descLogrosField && !narrativaInfo?.principalesLogrosField){
+    const oneField = pickField(narrativaInfo?.fields || [], ["ReporteNarrativo", "TextoNarrativo", "Narrativa", "Texto", "Descripcion", "Descripción"]);
+    if(oneField?.name) attrs[oneField.name] = payload?.reporte || payload?.descLogros || payload?.principales || null;
+  }
   if(narrativaInfo?.fechaField) attrs[narrativaInfo.fechaField] = Date.now();
   return attrs;
 }
@@ -848,7 +872,8 @@ async function saveDraft(draft){
   }
 
   // Narrativa (opcional)
-  if(draft.narrativa && narrativaInfo?.textoField){
+  const canSaveNarrativa = !!(narrativaInfo?.reporteField || narrativaInfo?.descLogrosField || narrativaInfo?.principalesLogrosField || (narrativaInfo?.fields || []).length);
+  if(draft.narrativa && canSaveNarrativa){
     setStatus("Guardando reporte narrativo…");
     const resNar = await postForm(`${URL_NARRATIVA}/applyEdits`, { f:"json", adds: [draft.narrativa] });
     if(resNar?.error) throw new Error(resNar.error.message || "Error al guardar narrativa.");
@@ -860,7 +885,9 @@ async function saveDraft(draft){
 
 // ---------- UI ----------
 function clearForm(){
-  elNarrativa.value = "";
+  if(elReporteNarrativo) elReporteNarrativo.value = "";
+  if(elDescLogros) elDescLogros.value = "";
+  if(elPrincipalesLogros) elPrincipalesLogros.value = "";
   rowGeometries.clear();
   clearMapGraphics();
   activeRowId = null;
