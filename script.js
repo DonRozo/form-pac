@@ -165,7 +165,8 @@ async function bootstrapMeta(){
   ]);
 
   actividadInfo = {
-    codeField: pickFieldName(mAct.fields, ["CodigoActividad","Codigo","CODIGO","COD_ACTIVIDAD"]),
+    // En DATAPAC_V2 el código suele estar en ActividadID
+    codeField: pickFieldName(mAct.fields, ["ActividadID","CodigoActividad","Codigo","CODIGO","COD_ACTIVIDAD"]),
     nameField: pickFieldName(mAct.fields, ["Nombre","NombreActividad","Descripcion","Titulo"]),
     globalIdField: pickFieldName(mAct.fields, ["GlobalID","GLOBALID"]),
     activoField: pickFieldName(mAct.fields, ["Activo","Estado","Habilitado"]),
@@ -508,6 +509,10 @@ function wireTaskEvents(){
 // ---------- Map ----------
 function initMap(){
   return new Promise((resolve, reject) => {
+    if (typeof require !== "function"){
+      reject(new Error("ArcGIS JS API no cargó (require no disponible)."));
+      return;
+    }
     require([
       "esri/Map",
       "esri/views/MapView",
@@ -776,8 +781,15 @@ async function bootstrap(forceReload=false){
 }
 
 (async function main(){
+  // No bloqueamos la carga del formulario si el mapa falla.
   try{
     await initMap();
+  }catch(e){
+    console.error(e);
+    setStatus("Mapa no disponible (puedes seguir reportando sin municipalización).", "error");
+  }
+
+  try{
     await bootstrap(false);
   }catch(e){
     console.error(e);
