@@ -233,3 +233,11 @@ input:focus, select:focus, textarea:focus{
   .panel--map{min-height:460px;}
   .map{min-height:460px;}
 }
+
+/* --- DATAPAC_V2: Subactividades y tareas --- */
+.subact__header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;}
+.subact__title{font-weight:900;font-size:13px;margin:0;}
+.subact__meta{margin-top:6px;display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted);}
+.task__pill{display:inline-flex;gap:6px;align-items:center;font-size:11px;border:1px solid var(--border);padding:4px 8px;border-radius:999px;background: rgba(11,82,105,0.06);}
+.task__grid{display:grid;grid-template-columns: 1fr 1fr;gap:10px;}
+.task__grid--full{grid-column: 1 / span 2;}
