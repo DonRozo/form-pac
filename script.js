@@ -5,6 +5,9 @@
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V2/FeatureServer";
 
+// (Opcional) Token si el servicio no es público (se guarda en LocalStorage)
+let TOKEN = localStorage.getItem("DATAPAC_TOKEN") || "";
+
 const IDX = {
   CFG_Actividad: 6,
   CFG_SubActividad: 7,
@@ -81,7 +84,9 @@ function guidBraced(){
 
 async function fetchJson(url, params){
   const u = new URL(url);
-  Object.entries(params || {}).forEach(([k,v]) => u.searchParams.set(k, v));
+  const p = Object.assign({}, (params || {}));
+  if(TOKEN && !('token' in p)) p.token = TOKEN;
+  Object.entries(p).forEach(([k,v]) => u.searchParams.set(k, v));
   const r = await fetch(u.toString(), { method: "GET" });
   if(!r.ok){
     const txt = await r.text();
@@ -248,41 +253,61 @@ function municipioOptionsHtml(){
 
 // ---------- Load actividades ----------
 async function loadActividades(){
-  setStatus("Cargando actividades…");
-  elActividad.innerHTML = `<option value="">Cargando…</option>`;
-
-  const vig = Number(elVigencia.value) || new Date().getFullYear();
-
-  let where = "1=1";
-  if(actividadInfo.activoField) where += " AND (Activo = 'SI' OR Activo = 1 OR Activo = 'S' OR Activo = '1')";
-  if(actividadInfo.vigField) where += ` AND ${actividadInfo.vigField} = ${vig}`;
-
-  const q = await fetchJson(`${URL.ACT}/query`, {
-    f:"json",
-    where,
-    outFields: "*",
-    orderByFields: (actividadInfo.nameField || actividadInfo.codeField || "OBJECTID") + " ASC",
-    returnGeometry: "false"
-  });
-
-  const feats = q?.features || [];
-  if(!feats.length){
-    elActividad.innerHTML = `<option value="">No hay actividades para la vigencia ${vig}</option>`;
-    setStatus("No se encontraron actividades.", "error");
-    return;
+  try{
+      setStatus("Cargando actividades…");
+      elActividad.innerHTML = `<option value="">Cargando…</option>`;
+    
+      const vig = Number(elVigencia.value) || new Date().getFullYear();
+    
+      let where = "1=1";
+      if(actividadInfo.activoField) {
+        const f = actividadInfo.activoField;
+        where += ` AND (${f} = 'SI' OR ${f} = 'S' OR ${f} = '1' OR ${f} = 1 OR ${f} = 'TRUE' OR ${f} = 'true')`;
+      };
+      if(actividadInfo.vigField) where += ` AND ${actividadInfo.vigField} = ${vig}`;
+    
+      const q = await fetchJson(`${URL.ACT}/query`, {
+        f:"json",
+        where,
+        outFields: "*",
+        orderByFields: (actividadInfo.nameField || actividadInfo.codeField || "OBJECTID") + " ASC",
+        returnGeometry: "false"
+      });
+    
+      const feats = q?.features || [];
+      if(!feats.length){
+        elActividad.innerHTML = `<option value="">No hay actividades para la vigencia ${vig}</option>`;
+        setStatus("No se encontraron actividades.", "error");
+        return;
+      }
+    
+      elActividad.innerHTML = `<option value="">— Selecciona una actividad —</option>` + feats.map(f => {
+        const a = f.attributes || {};
+        const gid = getAttr(a,[actividadInfo.globalIdField,"GlobalID","GLOBALID","OBJECTID"]);
+        const code = getAttr(a,[actividadInfo.codeField,"CodigoActividad","Codigo","CODIGO"]) ?? "";
+        const name = getAttr(a,[actividadInfo.nameField,"Nombre","NombreActividad","Descripcion","Titulo"]) ?? "";
+        const label = (code && name) ? `${code} — ${name}` : (name || code || String(gid));
+        return `<option value="${escapeHtml(String(gid))}">${escapeHtml(label)}</option>`;
+      }).join("");
+    
+      setStatus("Actividades cargadas.", "success");
+  }catch(err){
+    console.error(err);
+    const msg = String(err?.message || err);
+    // Mensaje amigable para errores comunes de AGOL/ArcGIS REST
+    if(msg.includes('499') || msg.includes('Token') || msg.includes('token')){
+      setStatus('No se pudo leer CFG_Actividad. El servicio parece requerir autenticación (token).', 'error');
+    } else {
+      setStatus('Error cargando actividades: ' + msg, 'error');
+    }
+    elActividad.innerHTML = `<option value="">Error cargando actividades</option>`;
   }
-
-  elActividad.innerHTML = `<option value="">— Selecciona una actividad —</option>` + feats.map(f => {
-    const a = f.attributes || {};
-    const gid = getAttr(a,[actividadInfo.globalIdField,"GlobalID","GLOBALID","OBJECTID"]);
-    const code = getAttr(a,[actividadInfo.codeField,"CodigoActividad","Codigo","CODIGO"]) ?? "";
-    const name = getAttr(a,[actividadInfo.nameField,"Nombre","NombreActividad","Descripcion","Titulo"]) ?? "";
-    const label = (code && name) ? `${code} — ${name}` : (name || code || String(gid));
-    return `<option value="${escapeHtml(String(gid))}">${escapeHtml(label)}</option>`;
-  }).join("");
-
-  setStatus("Actividades cargadas.", "success");
 }
+
+window.addEventListener('unhandledrejection', (e) => {
+  console.error(e.reason);
+  setStatus('Error: ' + (e.reason?.message || e.reason), 'error');
+});
 
 // ---------- Load tree ----------
 async function loadTreeForActividad(actividadGid){
