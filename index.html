@@ -3,9 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DATA-PAC | Reporte Trimestral de Avance</title>
+  <title>DATA-PAC | Reporte Trimestral (DATAPAC_V2)</title>
 
+  <!-- ArcGIS JS API -->
   <link rel="stylesheet" href="https://js.arcgis.com/4.29/esri/themes/light/main.css" />
+
+  <!-- App styles -->
   <link rel="stylesheet" href="style.css" />
 </head>
 
@@ -27,10 +30,11 @@
     </header>
 
     <main class="layout">
+      <!-- LEFT: Form -->
       <section class="panel panel--form" aria-label="Formulario">
         <div class="panel__header">
           <h2>1) Selección</h2>
-          <p class="muted">Selecciona la actividad y el trimestre. La app mostrará subactividades y tareas asociadas para reportar avance. Si una tarea requiere municipalización, se habilitará el mapa.</p>
+          <p class="muted">Selecciona la actividad y el trimestre. Luego reporta el avance por tarea. Si una tarea requiere municipalización, se habilitará el mapa.</p>
         </div>
 
         <div class="grid2">
@@ -55,7 +59,7 @@
           <select id="sel-actividad">
             <option value="">Cargando actividades…</option>
           </select>
-          <div class="help">Fuente: <span class="mono">CFG_Actividad</span> (Tabla 6). La jerarquía se resuelve por GlobalID/relaciones.</div>
+          <div class="help">Fuente: <span class="mono">CFG_Actividad</span> (Tabla 6) del servicio DATAPAC_V2.</div>
         </div>
 
         <div class="divider"></div>
@@ -65,7 +69,7 @@
           <p class="muted">Diligencia el avance por tarea. Si la tarea es municipalizable/georreferenciable, deberás seleccionar municipio y ubicar un punto.</p>
         </div>
 
-        <div id="subactividades" class="indicadores"></div>
+        <div id="indicadores" class="indicadores"></div>
 
         <div class="divider"></div>
 
@@ -87,11 +91,12 @@
         <div id="status" class="status" role="status" aria-live="polite"></div>
       </section>
 
+      <!-- RIGHT: Map -->
       <section class="panel panel--map" aria-label="Mapa">
         <div class="panel__header panel__header--map">
           <div>
             <h2>Mapa de municipalización</h2>
-            <p class="muted">Activa una tarea municipalizable y luego haz clic en el mapa para ubicar el punto.</p>
+            <p class="muted">Activa un registro y luego haz clic en el mapa para ubicar el punto.</p>
           </div>
 
           <div class="maptools">
@@ -107,19 +112,22 @@
           <div class="maphint__title">Cómo usar</div>
           <ol>
             <li>En una tarea municipalizable, pulsa <b>Ubicar punto</b>.</li>
-            <li>Selecciona municipio y luego haz clic en el mapa.</li>
-            <li>Guarda el reporte trimestral para enviar todos los avances.</li>
+            <li>Selecciona municipio y pulsa <b>Ubicar punto</b>.</li>
+            <li>Haz clic en el mapa para guardar coordenadas.</li>
           </ol>
         </div>
       </section>
     </main>
 
     <footer class="footer">
-      <span class="muted">Versión UI v2 • Servicio público • Sin autenticación (por ahora)</span>
+      <span class="muted">Versión UI v2 • Servicio público • Sin autenticación</span>
     </footer>
   </div>
 
+  <!-- ArcGIS JS API -->
   <script src="https://js.arcgis.com/4.29/"></script>
+
+  <!-- App logic -->
   <script src="script.js"></script>
 
   <script>

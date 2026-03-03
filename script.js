@@ -1,36 +1,35 @@
 /* ===========================================================
-   DATA-PAC | Formulario Reporte Trimestral (v2)
+   DATA-PAC | Reporte Trimestral (v2)
    Servicio: DATAPAC_V2
+
+   Objetivo:
+   - Seleccionar Actividad (CFG_Actividad)
+   - Mostrar Subactividades y Tareas asociadas (CFG_SubActividad / CFG_Tarea)
+   - Reportar avance por tarea (REP_AvanceTarea)
+   - Si la tarea es municipalizable/georreferenciable: seleccionar municipio y ubicar punto (REP_TareaUbicacion_PT)
+   - Reporte narrativo trimestral (REP_ReporteNarrativo)
+
+   Nota:
+   - Esta versión mantiene UI/estilos del formulario original (v1).
+   - La lógica de lectura de campos es "tolerante" (detecta nombres reales en cada tabla).
    =========================================================== */
 
+// --- Servicio ---
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V2/FeatureServer";
 
-// (Opcional) Token si el servicio no es público (se guarda en LocalStorage)
-let TOKEN = localStorage.getItem("DATAPAC_TOKEN") || "";
-
-const IDX = {
-  CFG_Actividad: 6,
-  CFG_SubActividad: 7,
-  CFG_Tarea: 8,
-  REP_AvanceTarea: 9,
-  REP_TareaUbicacion_PT: 10,
-  REP_ReporteNarrativo: 11
-};
-
-const URL = {
-  ACT: `${SERVICE_URL}/${IDX.CFG_Actividad}`,
-  SUB: `${SERVICE_URL}/${IDX.CFG_SubActividad}`,
-  TAR: `${SERVICE_URL}/${IDX.CFG_Tarea}`,
-  AVT: `${SERVICE_URL}/${IDX.REP_AvanceTarea}`,
-  UB:  `${SERVICE_URL}/${IDX.REP_TareaUbicacion_PT}`,
-  NAR: `${SERVICE_URL}/${IDX.REP_ReporteNarrativo}`
-};
+// Índices (según configuración DATAPAC_V2)
+const URL_ACTIVIDAD = `${SERVICE_URL}/6`;
+const URL_SUBACTIVIDAD = `${SERVICE_URL}/7`;
+const URL_TAREA = `${SERVICE_URL}/8`;
+const URL_AVANCE_TAREA = `${SERVICE_URL}/9`;
+const URL_TAREA_UBICACION = `${SERVICE_URL}/10`; // layer (point)
+const URL_NARRATIVA = `${SERVICE_URL}/11`;
 
 // ---------- DOM ----------
 const elActividad = document.getElementById("sel-actividad");
 const elVigencia = document.getElementById("sel-vigencia");
 const elPeriodo = document.getElementById("sel-periodo");
-const elSubacts = document.getElementById("subactividades");
+const elIndicadores = document.getElementById("indicadores"); // container reutilizado (tarjetas)
 const elNarrativa = document.getElementById("txt-narrativa");
 const elStatus = document.getElementById("status");
 
@@ -42,22 +41,18 @@ const btnCentrar = document.getElementById("btn-centrar");
 const pillActive = document.getElementById("pill-active");
 
 // ---------- State ----------
-let municipiosDomain = null;
-const tableInfo = new Map();
+let municipiosDomain = null;          // {code: name}
+let actividadInfo = null;             // metadata + field mapping for CFG_Actividad
+let subactividadInfo = null;          // mapping for CFG_SubActividad
+let tareaInfo = null;                // mapping for CFG_Tarea
+let avanceInfo = null;               // mapping for REP_AvanceTarea
+let ubicacionInfo = null;            // mapping for REP_TareaUbicacion_PT
+let narrativaInfo = null;            // mapping for REP_ReporteNarrativo
 
-let actividadInfo = null;
-let subactInfo = null;
-let tareaInfo = null;
-let avanceInfo = null;
-let ubicInfo = null;
-let narrativaInfo = null;
-
-let subactsCache = [];
-let tareasCache = [];
-const tareasBySub = new Map();
-
-let activeRowId = null;
-const rowGeometries = new Map();
+let cacheSubactividades = [];         // [{...attributes}]
+let cacheTareas = [];                 // [{...attributes}]
+let activeRowId = null;               // rowId armed for map click
+let rowGeometries = new Map();        // rowId -> {lon,lat} wkid 4326
 
 // Map
 let map, view, graphicsLayer, webMercatorUtils;
@@ -77,16 +72,9 @@ function escapeHtml(s){
     .replaceAll("'","&#039;");
 }
 
-function guidBraced(){
-  const s = crypto.randomUUID().toUpperCase();
-  return `{${s}}`;
-}
-
 async function fetchJson(url, params){
   const u = new URL(url);
-  const p = Object.assign({}, (params || {}));
-  if(TOKEN && !('token' in p)) p.token = TOKEN;
-  Object.entries(p).forEach(([k,v]) => u.searchParams.set(k, v));
+  Object.entries(params || {}).forEach(([k,v]) => u.searchParams.set(k, v));
   const r = await fetch(u.toString(), { method: "GET" });
   if(!r.ok){
     const txt = await r.text();
@@ -123,128 +111,218 @@ function parseDomainValues(domainObj){
   return null;
 }
 
-function pickFieldName(fields, candidates){
-  const set = new Set((fields||[]).map(f => f.name));
+function normalize(s){ return (s||"").toString().toLowerCase(); }
+
+function pickField(fields, candidates){
+  const byName = new Map((fields||[]).map(f => [normalize(f.name), f]));
   for(const c of candidates){
-    if(set.has(c)) return c;
+    const f = byName.get(normalize(c));
+    if(f) return f;
   }
-  return null;
-}
-
-function getAttr(a, candidates){
-  for(const c of candidates){
-    if(a && Object.prototype.hasOwnProperty.call(a, c) && a[c] !== undefined && a[c] !== null) return a[c];
-  }
-  return null;
-}
-
-function normYes(v){
-  if(v === true) return true;
-  if(v === false) return false;
-  if(v === null || v === undefined) return false;
-  const s = String(v).trim().toUpperCase();
-  return (s === "SI" || s === "S" || s === "1" || s === "TRUE" || s === "T" || s === "Y" || s === "YES");
-}
-
-// ---------- Metadata ----------
-async function loadTableMeta(url){
-  if(tableInfo.has(url)) return tableInfo.get(url);
-  const meta = await fetchJson(url, { f:"json" });
-  tableInfo.set(url, meta);
-  return meta;
-}
-
-async function bootstrapMeta(){
-  const [mAct,mSub,mTar,mAvt,mUb,mNar] = await Promise.all([
-    loadTableMeta(URL.ACT),
-    loadTableMeta(URL.SUB),
-    loadTableMeta(URL.TAR),
-    loadTableMeta(URL.AVT),
-    loadTableMeta(URL.UB),
-    loadTableMeta(URL.NAR)
-  ]);
-
-  actividadInfo = {
-    // En DATAPAC_V2 el código suele estar en ActividadID
-    codeField: pickFieldName(mAct.fields, ["ActividadID","CodigoActividad","Codigo","CODIGO","COD_ACTIVIDAD"]),
-    nameField: pickFieldName(mAct.fields, ["Nombre","NombreActividad","Descripcion","Titulo"]),
-    globalIdField: pickFieldName(mAct.fields, ["GlobalID","GLOBALID"]),
-    activoField: pickFieldName(mAct.fields, ["Activo","Estado","Habilitado"]),
-    vigField: pickFieldName(mAct.fields, ["Vigencia","ANIO","Ano"]),
-    vigIsString: false
-  };
-  // Determina si Vigencia es texto (para armar el WHERE con comillas)
-  try{
-    if(actividadInfo.vigField){
-      const f = (mAct.fields || []).find(x => x?.name === actividadInfo.vigField);
-      actividadInfo.vigIsString = (f?.type === "esriFieldTypeString");
+  // fuzzy contains
+  for(const f of (fields||[])){
+    const n = normalize(f.name);
+    for(const c of candidates){
+      const cc = normalize(c);
+      if(n.includes(cc)) return f;
     }
-  }catch(_e){}
+  }
+  return null;
+}
 
+function fieldType(fields, name){
+  const f = (fields||[]).find(x => x.name === name);
+  return f?.type || null;
+}
 
-  subactInfo = {
-    codeField: pickFieldName(mSub.fields, ["CodigoSubActividad","Codigo","CODIGO"]),
-    nameField: pickFieldName(mSub.fields, ["Nombre","NombreSubActividad","Descripcion","Titulo"]),
-    globalIdField: pickFieldName(mSub.fields, ["GlobalID","GLOBALID"]),
-    fkActividad: pickFieldName(mSub.fields, ["ActividadGlobalID","ActividadGUID","ActividadID","FK_Actividad"])
-  };
+function quoteIfNeeded(val, esriType){
+  // esriFieldTypeString / esriFieldTypeGUID -> quote
+  if(esriType === "esriFieldTypeString" || esriType === "esriFieldTypeGUID" || esriType === "esriFieldTypeDate"){
+    return `'${String(val).replaceAll("'","''")}'`;
+  }
+  return String(val);
+}
 
-  tareaInfo = {
-    codeField: pickFieldName(mTar.fields, ["CodigoTarea","Codigo","CODIGO"]),
-    nameField: pickFieldName(mTar.fields, ["Nombre","NombreTarea","Descripcion","Titulo"]),
-    globalIdField: pickFieldName(mTar.fields, ["GlobalID","GLOBALID"]),
-    fkSub: pickFieldName(mTar.fields, ["SubActividadGlobalID","SubActividadGUID","SubActividadID","FK_SubActividad"]),
-    flagGeo: pickFieldName(mTar.fields, ["EsGeorreferenciable","EsMunicipalizable","Municipalizable","RequiereUbicacion","RequiereMunicipalizacion"])
-  };
+function toYesNo(v){
+  // normaliza para detectar municipalizable
+  const s = normalize(v);
+  if(s === "si" || s === "sí" || s === "s" || s === "1" || s === "true") return true;
+  if(s === "no" || s === "0" || s === "false") return false;
+  return null;
+}
 
-  avanceInfo = {
-    linkField: pickFieldName(mAvt.fields, ["AvanceTareaID","RegistroID","GUID","UUID"]),
-    fkTarea: pickFieldName(mAvt.fields, ["TareaGlobalID","TareaGUID","TareaID","FK_Tarea"]),
-    fkSub: pickFieldName(mAvt.fields, ["SubActividadGlobalID","SubActividadGUID","FK_SubActividad"]),
-    fkAct: pickFieldName(mAvt.fields, ["ActividadGlobalID","ActividadGUID","FK_Actividad"]),
-    vigField: pickFieldName(mAvt.fields, ["Vigencia","ANIO","Ano"]),
-    perField: pickFieldName(mAvt.fields, ["Periodo","Trimestre","PERIODO"]),
-    valField: pickFieldName(mAvt.fields, ["ValorReportado","ValorEjecutado","Avance","Valor"]),
-    obsField: pickFieldName(mAvt.fields, ["Observaciones","Observacion","Notas","Comentario"]),
-    eviField: pickFieldName(mAvt.fields, ["EvidenciaURL","Evidencia","URLSoporte","SoporteURL"]),
-    fecField: pickFieldName(mAvt.fields, ["FechaRegistro","Fecha","CreatedDate"]),
-    munField: pickFieldName(mAvt.fields, ["Municipio","CodigoMunicipio","Mun"])
-  };
+function clearMapGraphics(){
+  if(graphicsLayer) graphicsLayer.removeAll();
+}
 
-  ubicInfo = {
-    linkField: pickFieldName(mUb.fields, ["AvanceTareaID","RegistroID","GUID","UUID","AvanceTareaGlobalID"]),
-    munField: pickFieldName(mUb.fields, ["Municipio","CodigoMunicipio","Mun"]),
-    descField: pickFieldName(mUb.fields, ["DescripcionSitio","Descripcion","Sitio","Observaciones","Notas"]),
-    lonField: pickFieldName(mUb.fields, ["Longitud","Lon","X"]),
-    latField: pickFieldName(mUb.fields, ["Latitud","Lat","Y"])
-  };
+function removeGraphicForRow(rowId){
+  if(!graphicsLayer) return;
+  const toRemove = graphicsLayer.graphics.filter(g => g?.attributes?.rowId === rowId);
+  toRemove.forEach(g => graphicsLayer.remove(g));
+}
 
-  narrativaInfo = {
-    linkField: pickFieldName(mNar.fields, ["NarrativaID","RegistroID","GUID","UUID"]),
-    fkAct: pickFieldName(mNar.fields, ["ActividadGlobalID","ActividadGUID","ActividadID","FK_Actividad"]),
-    vigField: pickFieldName(mNar.fields, ["Vigencia","ANIO","Ano"]),
-    perField: pickFieldName(mNar.fields, ["Periodo","Trimestre","PERIODO"]),
-    txtField: pickFieldName(mNar.fields, ["TextoNarrativo","Narrativa","Texto","Descripcion"]),
-    fecField: pickFieldName(mNar.fields, ["FechaRegistro","Fecha","CreatedDate"])
+function upsertGraphicForRow(rowId, lon, lat){
+  require(["esri/Graphic"], (Graphic) => {
+    removeGraphicForRow(rowId);
+    const graphic = new Graphic({
+      geometry: { type: "point", longitude: lon, latitude: lat, spatialReference: { wkid: 4326 } },
+      symbol: {
+        type: "simple-marker",
+        style: "circle",
+        color: [23,151,209,0.9],
+        size: 10,
+        outline: { color: [11,82,105,1], width: 2 }
+      },
+      attributes: { rowId }
+    });
+    graphicsLayer.add(graphic);
+  });
+}
+
+function zoomToPoint(lon, lat){
+  if(!view) return;
+  view.goTo({ center: [lon, lat], zoom: 14 });
+}
+
+// ---------- Metadata + Field mapping ----------
+async function getLayerInfo(url){
+  return await fetchJson(url, { f:"json" });
+}
+
+function mapActividadFields(info){
+  const fields = info.fields || [];
+  const globalId = pickField(fields, ["GlobalID", "globalid"]);
+  const activo = pickField(fields, ["Activo", "ACTIVO", "EsActivo"]);
+  const vigencia = pickField(fields, ["Vigencia", "VIGENCIA", "Ano", "Año"]);
+  const codigo = pickField(fields, ["ActividadID", "CodigoActividad", "Codigo", "Codigo_Actividad"]);
+  const nombre = pickField(fields, ["Nombre", "NombreActividad", "Actividad", "Nombre_Actividad", "Actividades"]);
+  return {
+    fields,
+    globalIdField: globalId?.name || null,
+    activoField: activo?.name || null,
+    vigenciaField: vigencia?.name || null,
+    codigoField: codigo?.name || null,
+    nombreField: nombre?.name || null
   };
 }
 
-// ---------- Municipios ----------
+function mapSubActividadFields(info){
+  const fields = info.fields || [];
+  const globalId = pickField(fields, ["GlobalID"]);
+  const fkActividad = pickField(fields, ["ActividadGlobalID", "ActividadGuid", "ActividadGUID", "ActividadIdGlobalID", "GlobalIDActividad", "Actividad"]);
+  const codigo = pickField(fields, ["CodigoSubActividad", "SubActividadID", "Codigo", "Codigo_SubActividad"]);
+  const nombre = pickField(fields, ["NombreSubActividad", "SubActividad", "Nombre", "Nombre_SubActividad"]);
+  const activo = pickField(fields, ["Activo", "ACTIVO", "EsActivo"]);
+  const vigencia = pickField(fields, ["Vigencia", "VIGENCIA", "Ano", "Año"]);
+  return {
+    fields,
+    globalIdField: globalId?.name || null,
+    fkActividadField: fkActividad?.name || null,
+    codigoField: codigo?.name || null,
+    nombreField: nombre?.name || null,
+    activoField: activo?.name || null,
+    vigenciaField: vigencia?.name || null
+  };
+}
+
+function mapTareaFields(info){
+  const fields = info.fields || [];
+  const globalId = pickField(fields, ["GlobalID"]);
+  const fkSub = pickField(fields, ["SubActividadGlobalID", "SubActividadGuid", "SubActividadGUID", "GlobalIDSubActividad", "SubActividad"]);
+  const codigo = pickField(fields, ["CodigoTarea", "TareaID", "Codigo", "Codigo_Tarea"]);
+  const nombre = pickField(fields, ["NombreTarea", "Tarea", "Nombre", "Nombre_Tarea"]);
+  const peso = pickField(fields, ["PesoTarea", "Peso", "Ponderacion", "Ponderación"]);
+  const meta = pickField(fields, ["Meta", "MetaTarea", "MetaAnual", "ValorMeta"]);
+  const unidad = pickField(fields, ["UnidadMedida", "Unidad", "UM"]);
+  const geo = pickField(fields, ["EsGeorreferenciable", "Municipalizable", "EsMunicipalizable", "RequiereUbicacion", "RequiereMunicipalizacion"]);
+  const activo = pickField(fields, ["Activo", "ACTIVO", "EsActivo"]);
+  const vigencia = pickField(fields, ["Vigencia", "VIGENCIA", "Ano", "Año"]);
+  return {
+    fields,
+    globalIdField: globalId?.name || null,
+    fkSubActividadField: fkSub?.name || null,
+    codigoField: codigo?.name || null,
+    nombreField: nombre?.name || null,
+    pesoField: peso?.name || null,
+    metaField: meta?.name || null,
+    unidadField: unidad?.name || null,
+    geoField: geo?.name || null,
+    activoField: activo?.name || null,
+    vigenciaField: vigencia?.name || null
+  };
+}
+
+function mapAvanceFields(info){
+  const fields = info.fields || [];
+  const fkTarea = pickField(fields, ["TareaGlobalID", "GlobalIDTarea", "TareaGUID", "TareaGuid", "Tarea"]);
+  const fkActividad = pickField(fields, ["ActividadGlobalID", "GlobalIDActividad", "ActividadGUID", "ActividadGuid"]);
+  const vigencia = pickField(fields, ["Vigencia", "Ano", "Año"]);
+  const periodo = pickField(fields, ["Periodo", "Trimestre", "PeriodoTrimestre"]);
+  const valor = pickField(fields, ["ValorReportado", "ValorEjecutado", "Valor", "Avance", "AvanceValor"]);
+  const obs = pickField(fields, ["Observaciones", "Obs", "Comentario", "Comentarios"]);
+  const evi = pickField(fields, ["EvidenciaURL", "URLSoporte", "SoporteURL", "Url"]);
+  const fecha = pickField(fields, ["FechaRegistro", "Fecha", "FechaReporte"]);
+  return {
+    fields,
+    fkTareaField: fkTarea?.name || null,
+    fkActividadField: fkActividad?.name || null,
+    vigenciaField: vigencia?.name || null,
+    periodoField: periodo?.name || null,
+    valorField: valor?.name || null,
+    obsField: obs?.name || null,
+    evidenciaField: evi?.name || null,
+    fechaField: fecha?.name || null
+  };
+}
+
+function mapUbicacionFields(info){
+  const fields = info.fields || [];
+  const fkAvance = pickField(fields, ["AvanceTareaGlobalID", "GlobalIDAvanceTarea", "AvanceGUID", "AvanceGuid", "AvanceTarea"]);
+  const municipio = pickField(fields, ["Municipio", "CodigoMunicipio", "MunicipioCod"]);
+  const desc = pickField(fields, ["Descripcion", "Descripción", "Observaciones", "Lugar", "Sitio"]);
+  return {
+    fields,
+    fkAvanceField: fkAvance?.name || null,
+    municipioField: municipio?.name || null,
+    descripcionField: desc?.name || null
+  };
+}
+
+function mapNarrativaFields(info){
+  const fields = info.fields || [];
+  const fkActividad = pickField(fields, ["ActividadGlobalID", "GlobalIDActividad", "ActividadGUID", "ActividadGuid"]);
+  const vigencia = pickField(fields, ["Vigencia", "Ano", "Año"]);
+  const periodo = pickField(fields, ["Periodo", "Trimestre", "PeriodoTrimestre"]);
+  const texto = pickField(fields, ["TextoNarrativo", "Narrativa", "Texto", "Descripcion", "Descripción"]);
+  const fecha = pickField(fields, ["FechaRegistro", "Fecha"]);
+  return {
+    fields,
+    fkActividadField: fkActividad?.name || null,
+    vigenciaField: vigencia?.name || null,
+    periodoField: periodo?.name || null,
+    textoField: texto?.name || null,
+    fechaField: fecha?.name || null
+  };
+}
+
+// ---------- Municipios domain ----------
 async function loadMunicipiosDomain(){
   const svc = await fetchJson(SERVICE_URL, { f:"json" });
   if(Array.isArray(svc?.domains)){
+    const dm = {};
     for(const d of svc.domains){
-      if(d?.name === "DM_Municipio" && d?.codedValues){
-        municipiosDomain = parseDomainValues(d);
-        return;
-      }
+      if(d?.name && d?.codedValues) dm[d.name] = parseDomainValues(d);
+    }
+    if(dm["DM_Municipio"]){
+      municipiosDomain = dm["DM_Municipio"];
+      return;
     }
   }
-  // fallback desde tabla ubic
-  const mUb = await fetchJson(URL.UB, { f:"json" });
-  const mf = (mUb?.fields || []).find(f => f?.name === "Municipio" || f?.name === "CodigoMunicipio");
-  if(mf?.domain?.codedValues){
-    municipiosDomain = parseDomainValues(mf.domain);
+  // fallback: domain in ubicación layer
+  const lyr = await fetchJson(`${URL_TAREA_UBICACION}`, { f:"json" });
+  const municipioField = (lyr?.fields || []).find(f => normalize(f?.name) === "municipio");
+  if(municipioField?.domain?.codedValues){
+    municipiosDomain = parseDomainValues(municipioField.domain);
     return;
   }
   municipiosDomain = null;
@@ -261,180 +339,249 @@ function municipioOptionsHtml(){
   return `<option value="">— Selecciona municipio —</option>` + opts;
 }
 
-// ---------- Load actividades ----------
+// ---------- Load activities ----------
 async function loadActividades(){
-  try{
-      setStatus("Cargando actividades…");
-      elActividad.innerHTML = `<option value="">Cargando…</option>`;
-    
-      const vig = Number(elVigencia.value) || new Date().getFullYear();
-    
-      let where = "1=1";
-      if(actividadInfo.activoField) {
-        const f = actividadInfo.activoField;
-        where += ` AND (${f} = 'SI' OR ${f} = 'S' OR ${f} = '1' OR ${f} = 1 OR ${f} = 'TRUE' OR ${f} = 'true')`;
-      };
-      if(actividadInfo.vigField){
-        const v = actividadInfo.vigIsString ? `'${vig}'` : `${vig}`;
-        where += ` AND ${actividadInfo.vigField} = ${v}`;
-      }
-    
-      const q = await fetchJson(`${URL.ACT}/query`, {
-        f:"json",
-        where,
-        outFields: "*",
-        orderByFields: (actividadInfo.nameField || actividadInfo.codeField || "OBJECTID") + " ASC",
-        returnGeometry: "false"
-      });
-    
-      const feats = q?.features || [];
-      if(!feats.length){
-        elActividad.innerHTML = `<option value="">No hay actividades para la vigencia ${vig}</option>`;
-        setStatus("No se encontraron actividades.", "error");
-        return;
-      }
-    
-      elActividad.innerHTML = `<option value="">— Selecciona una actividad —</option>` + feats.map(f => {
-        const a = f.attributes || {};
-        const gid = getAttr(a,[actividadInfo.globalIdField,"GlobalID","GLOBALID","OBJECTID"]);
-        const code = getAttr(a,[actividadInfo.codeField,"CodigoActividad","Codigo","CODIGO"]) ?? "";
-        const name = getAttr(a,[actividadInfo.nameField,"Nombre","NombreActividad","Descripcion","Titulo"]) ?? "";
-        const label = (code && name) ? `${code} — ${name}` : (name || code || String(gid));
-        return `<option value="${escapeHtml(String(gid))}">${escapeHtml(label)}</option>`;
-      }).join("");
-    
-      setStatus("Actividades cargadas.", "success");
-  }catch(err){
-    console.error(err);
-    const msg = String(err?.message || err);
-    // Mensaje amigable para errores comunes de AGOL/ArcGIS REST
-    if(msg.includes('499') || msg.includes('Token') || msg.includes('token')){
-      setStatus('No se pudo leer CFG_Actividad. El servicio parece requerir autenticación (token).', 'error');
-    } else {
-      setStatus('Error cargando actividades: ' + msg, 'error');
-    }
-    elActividad.innerHTML = `<option value="">Error cargando actividades</option>`;
+  setStatus("Cargando actividades…");
+  elActividad.innerHTML = `<option value="">Cargando…</option>`;
+
+  const vig = Number(elVigencia.value) || new Date().getFullYear();
+  const fVig = actividadInfo.vigenciaField;
+  const fAct = actividadInfo.activoField;
+  const fGid = actividadInfo.globalIdField;
+  const fCod = actividadInfo.codigoField;
+  const fNom = actividadInfo.nombreField;
+
+  if(!fGid){
+    throw new Error("CFG_Actividad no expone campo GlobalID. Revisa la tabla 6.");
   }
+
+  // where tolerante
+  const vigType = fieldType(actividadInfo.fields, fVig);
+  const vigExpr = fVig ? `${fVig} = ${quoteIfNeeded(vig, vigType)}` : "1=1";
+
+  let actExpr = "1=1";
+  if(fAct){
+    const t = fieldType(actividadInfo.fields, fAct);
+    // intenta SI/1/true
+    if(t === "esriFieldTypeString") actExpr = `(${fAct} = 'SI' OR ${fAct} = 'Sí' OR ${fAct} = 'S' OR ${fAct} = '1' OR ${fAct} = 'TRUE')`;
+    else actExpr = `(${fAct} = 1)`;
+  }
+
+  const outFields = [fGid, fCod, fNom, fVig, fAct].filter(Boolean).join(",");
+
+  const q = await fetchJson(`${URL_ACTIVIDAD}/query`, {
+    f:"json",
+    where: `${actExpr} AND ${vigExpr}`,
+    outFields,
+    orderByFields: fNom ? `${fNom} ASC` : (fCod ? `${fCod} ASC` : ""),
+    returnGeometry: "false"
+  });
+
+  if(q?.error){
+    throw new Error(q.error.message || "Error consultando CFG_Actividad.");
+  }
+
+  const feats = q?.features || [];
+  if(feats.length === 0){
+    elActividad.innerHTML = `<option value="">No hay actividades para la vigencia ${vig}</option>`;
+    setStatus("No se encontraron actividades (verifica Vigencia y datos en CFG_Actividad).", "error");
+    return;
+  }
+
+  elActividad.innerHTML =
+    `<option value="">— Selecciona una actividad —</option>` +
+    feats.map(f => {
+      const a = f.attributes || {};
+      const gid = a[fGid];
+      const cod = fCod ? a[fCod] : "";
+      const nom = fNom ? a[fNom] : "";
+      const label = (cod ? `${cod} — ` : "") + (nom || gid);
+      return `<option value="${escapeHtml(gid)}">${escapeHtml(label)}</option>`;
+    }).join("");
+
+  setStatus("Actividades cargadas. Selecciona una para ver subactividades y tareas.", "success");
 }
 
-window.addEventListener('unhandledrejection', (e) => {
-  console.error(e.reason);
-  setStatus('Error: ' + (e.reason?.message || e.reason), 'error');
-});
-
-// ---------- Load tree ----------
-async function loadTreeForActividad(actividadGid){
-  elSubacts.innerHTML = "";
-  subactsCache = [];
-  tareasCache = [];
-  tareasBySub.clear();
+// ---------- Load subactivities + tasks ----------
+async function loadSubactividadesYTareas(actividadGlobalId){
+  elIndicadores.innerHTML = "";
+  cacheSubactividades = [];
+  cacheTareas = [];
   rowGeometries.clear();
   activeRowId = null;
   pillActive.textContent = "Registro activo: —";
   clearMapGraphics();
 
-  if(!actividadGid) return;
+  if(!actividadGlobalId) return;
 
   setStatus("Cargando subactividades y tareas…");
 
-  let whereSub = "1=1";
-  if(subactInfo.fkActividad){
-    const val1 = actividadGid;
-    const val2 = actividadGid.startsWith("{") ? actividadGid : `{${actividadGid.replaceAll(/[{}]/g,'')}}`;
-    whereSub = `(${subactInfo.fkActividad} = '${val1}' OR ${subactInfo.fkActividad} = '${val2}')`;
+  // Subactividades
+  if(!subactividadInfo.fkActividadField){
+    throw new Error("No se detectó el campo FK hacia Actividad en CFG_SubActividad (tabla 7).");
   }
 
-  const qSub = await fetchJson(`${URL.SUB}/query`, {
+  const subWhereParts = [];
+  // activo + vigencia opcional
+  if(subactividadInfo.activoField){
+    const t = fieldType(subactividadInfo.fields, subactividadInfo.activoField);
+    subWhereParts.push(t === "esriFieldTypeString"
+      ? `(${subactividadInfo.activoField} = 'SI' OR ${subactividadInfo.activoField}='1' OR ${subactividadInfo.activoField}='TRUE')`
+      : `(${subactividadInfo.activoField} = 1)`);
+  }
+  if(subactividadInfo.vigenciaField){
+    const vig = Number(elVigencia.value) || new Date().getFullYear();
+    const t = fieldType(subactividadInfo.fields, subactividadInfo.vigenciaField);
+    subWhereParts.push(`${subactividadInfo.vigenciaField} = ${quoteIfNeeded(vig, t)}`);
+  }
+  const fkType = fieldType(subactividadInfo.fields, subactividadInfo.fkActividadField);
+  subWhereParts.push(`${subactividadInfo.fkActividadField} = ${quoteIfNeeded(actividadGlobalId, fkType)}`);
+
+  const subOut = [
+    subactividadInfo.globalIdField,
+    subactividadInfo.fkActividadField,
+    subactividadInfo.codigoField,
+    subactividadInfo.nombreField,
+    subactividadInfo.activoField,
+    subactividadInfo.vigenciaField
+  ].filter(Boolean).join(",");
+
+  const subQ = await fetchJson(`${URL_SUBACTIVIDAD}/query`, {
     f:"json",
-    where: whereSub,
-    outFields: "*",
-    orderByFields: (subactInfo.codeField || subactInfo.nameField || "OBJECTID") + " ASC",
+    where: subWhereParts.join(" AND "),
+    outFields: subOut || "*",
+    orderByFields: subactividadInfo.codigoField ? `${subactividadInfo.codigoField} ASC` : "",
     returnGeometry: "false"
   });
-  subactsCache = (qSub?.features || []).map(f => f.attributes);
 
-  if(!subactsCache.length){
-    elSubacts.innerHTML = `<div class="card"><div class="muted">No hay subactividades asociadas.</div></div>`;
+  if(subQ?.error){
+    throw new Error(subQ.error.message || "Error consultando CFG_SubActividad.");
+  }
+  cacheSubactividades = (subQ.features || []).map(f => f.attributes || {});
+
+  // Tareas (traemos todas de esas subactividades)
+  if(!tareaInfo.fkSubActividadField){
+    throw new Error("No se detectó el campo FK hacia SubActividad en CFG_Tarea (tabla 8).");
+  }
+
+  const subIds = cacheSubactividades.map(s => s[subactividadInfo.globalIdField]).filter(Boolean);
+  if(subIds.length === 0){
+    elIndicadores.innerHTML = `<div class="card"><div class="muted">No hay subactividades configuradas para esta actividad/vigencia.</div></div>`;
     setStatus("No se encontraron subactividades.", "error");
     return;
   }
 
-  const subGids = subactsCache.map(a => getAttr(a,[subactInfo.globalIdField,"GlobalID","GLOBALID"])).filter(Boolean);
-  if(!subGids.length){
-    setStatus("No se pudo leer GlobalID de subactividades.", "error");
-    return;
+  // ArcGIS: IN ('a','b') para GUID string
+  const fkSubType = fieldType(tareaInfo.fields, tareaInfo.fkSubActividadField);
+  const inList = subIds.map(x => quoteIfNeeded(x, fkSubType)).join(",");
+  const tareaWhereParts = [];
+  if(tareaInfo.activoField){
+    const t = fieldType(tareaInfo.fields, tareaInfo.activoField);
+    tareaWhereParts.push(t === "esriFieldTypeString"
+      ? `(${tareaInfo.activoField}='SI' OR ${tareaInfo.activoField}='1' OR ${tareaInfo.activoField}='TRUE')`
+      : `(${tareaInfo.activoField}=1)`);
   }
-
-  let whereTar = "1=2";
-  if(tareaInfo.fkSub){
-    const parts = subGids.map(g => `'${String(g).replaceAll("'","''")}'`);
-    whereTar = `${tareaInfo.fkSub} IN (${parts.join(",")})`;
+  if(tareaInfo.vigenciaField){
+    const vig = Number(elVigencia.value) || new Date().getFullYear();
+    const t = fieldType(tareaInfo.fields, tareaInfo.vigenciaField);
+    tareaWhereParts.push(`${tareaInfo.vigenciaField} = ${quoteIfNeeded(vig, t)}`);
   }
+  tareaWhereParts.push(`${tareaInfo.fkSubActividadField} IN (${inList})`);
 
-  const qTar = await fetchJson(`${URL.TAR}/query`, {
+  const tareaOut = [
+    tareaInfo.globalIdField,
+    tareaInfo.fkSubActividadField,
+    tareaInfo.codigoField,
+    tareaInfo.nombreField,
+    tareaInfo.pesoField,
+    tareaInfo.metaField,
+    tareaInfo.unidadField,
+    tareaInfo.geoField
+  ].filter(Boolean).join(",");
+
+  const tareaQ = await fetchJson(`${URL_TAREA}/query`, {
     f:"json",
-    where: whereTar,
-    outFields: "*",
-    orderByFields: (tareaInfo.codeField || tareaInfo.nameField || "OBJECTID") + " ASC",
+    where: tareaWhereParts.join(" AND "),
+    outFields: tareaOut || "*",
+    orderByFields: (tareaInfo.codigoField ? `${tareaInfo.codigoField} ASC` : ""),
     returnGeometry: "false"
   });
-  tareasCache = (qTar?.features || []).map(f => f.attributes);
 
-  tareasCache.forEach(t => {
-    const sid = getAttr(t, [tareaInfo.fkSub]);
-    if(!sid) return;
-    const k = String(sid);
-    if(!tareasBySub.has(k)) tareasBySub.set(k, []);
-    tareasBySub.get(k).push(t);
-  });
+  if(tareaQ?.error){
+    throw new Error(tareaQ.error.message || "Error consultando CFG_Tarea.");
+  }
+  cacheTareas = (tareaQ.features || []).map(f => f.attributes || {});
 
-  elSubacts.innerHTML = subactsCache.map(sa => subactividadCardHtml(sa)).join("");
-  wireTaskEvents();
+  // Render cards
+  elIndicadores.innerHTML = cacheSubactividades.map(sa => subActividadCardHtml(sa)).join("");
+  wireCardEvents();
 
-  setStatus("Listo. Reporta avances por tarea.", "success");
+  setStatus("Subactividades y tareas listas. Reporta el avance por tarea.", "success");
 }
 
-function subactividadCardHtml(sa){
-  const subGid = getAttr(sa,[subactInfo.globalIdField,"GlobalID","GLOBALID"]);
-  const code = getAttr(sa,[subactInfo.codeField,"Codigo","CODIGO"]) ?? "—";
-  const name = getAttr(sa,[subactInfo.nameField,"Nombre","Descripcion","Titulo"]) ?? "—";
-  const tareas = tareasBySub.get(String(subGid)) || [];
-  const tareasHtml = tareas.length ? tareas.map(t => taskRowHtml(t, subGid)).join("") : `<div class="muted">No hay tareas asociadas.</div>`;
+function subActividadCardHtml(sa){
+  const gid = sa[subactividadInfo.globalIdField];
+  const cod = subactividadInfo.codigoField ? sa[subactividadInfo.codigoField] : "";
+  const nom = subactividadInfo.nombreField ? sa[subactividadInfo.nombreField] : "";
+  const title = (cod ? `${cod} — ` : "") + (nom || gid);
 
+  const safeId = String(gid).replaceAll("{","").replaceAll("}","");
   return `
-  <div class="card" data-sub-gid="${escapeHtml(String(subGid))}">
-    <div class="subact__header">
+  <div class="card" data-subgid="${escapeHtml(gid)}">
+    <div class="card__top">
       <div>
-        <p class="subact__title">${escapeHtml(code)} — ${escapeHtml(name)}</p>
-        <div class="subact__meta">
-          <span class="task__pill">Subactividad</span>
-          <span class="task__pill mono">${escapeHtml(String(subGid))}</span>
-          <span class="task__pill">Tareas: <b>${tareas.length}</b></span>
+        <p class="card__title">${escapeHtml(title)}</p>
+        <div class="card__meta">
+          <span>Subactividad</span>
+          <span class="mono">${escapeHtml(gid)}</span>
         </div>
       </div>
+      <div class="badges">
+        <span class="badge">Subactividad</span>
+      </div>
     </div>
-    <div class="rows">
-      ${tareasHtml}
+
+    <div class="rows" id="rows-${safeId}">
+      ${tareasRowsHtml(gid)}
+    </div>
+
+    <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
+      <button class="btn btn--ghost btn-collapse" data-rows-id="rows-${safeId}">Contraer/expandir</button>
     </div>
   </div>`;
 }
 
-function taskRowHtml(t, subGid){
+function tareasRowsHtml(subGid){
+  const rows = cacheTareas.filter(t => String(t[tareaInfo.fkSubActividadField]) === String(subGid));
+  if(rows.length === 0){
+    return `<div class="muted">No hay tareas para esta subactividad.</div>`;
+  }
+  return rows.map(t => tareaRowHtml(t)).join("");
+}
+
+function tareaRowHtml(t){
   const rowId = crypto.randomUUID();
-  const tarGid = getAttr(t,[tareaInfo.globalIdField,"GlobalID","GLOBALID"]);
-  const code = getAttr(t,[tareaInfo.codeField,"Codigo","CODIGO"]) ?? "—";
-  const name = getAttr(t,[tareaInfo.nameField,"Nombre","Descripcion","Titulo"]) ?? "—";
-  const isGeo = normYes(getAttr(t,[tareaInfo.flagGeo]));
+  const gid = t[tareaInfo.globalIdField];
+  const cod = tareaInfo.codigoField ? t[tareaInfo.codigoField] : "";
+  const nom = tareaInfo.nombreField ? t[tareaInfo.nombreField] : "";
+  const peso = tareaInfo.pesoField ? t[tareaInfo.pesoField] : "";
+  const meta = tareaInfo.metaField ? t[tareaInfo.metaField] : "";
+  const um = tareaInfo.unidadField ? t[tareaInfo.unidadField] : "";
+
+  const geoRaw = tareaInfo.geoField ? t[tareaInfo.geoField] : null;
+  const geo = toYesNo(geoRaw);
 
   return `
-  <div class="row" data-row-id="${rowId}" data-sub-gid="${escapeHtml(String(subGid))}" data-tar-gid="${escapeHtml(String(tarGid))}" data-geo="${isGeo ? "1":"0"}">
+  <div class="row" data-row-id="${rowId}" data-tarea-gid="${escapeHtml(gid)}" data-geo="${geo === true ? "1" : "0"}">
     <div class="row__left">
       <div class="field" style="padding:0; grid-column: 1 / span 2;">
         <label>Tarea</label>
-        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-          <span class="task__pill"><b>${escapeHtml(code)}</b></span>
-          <span>${escapeHtml(name)}</span>
-          ${isGeo ? `<span class="badge">Municipalizable</span>` : `<span class="badge">No municipalizable</span>`}
+        <div class="mono" style="font-size:12px; margin-bottom:6px;">${escapeHtml((cod?cod:""))} ${cod? "—" : ""} ${escapeHtml(nom || gid)}</div>
+        <div class="row__mini">
+          ${um ? `<span>Unidad: <b>${escapeHtml(um)}</b></span>` : ``}
+          ${meta !== "" && meta !== null && meta !== undefined ? `<span>Meta: <b>${escapeHtml(meta)}</b></span>` : ``}
+          ${peso !== "" && peso !== null && peso !== undefined ? `<span>Peso: <b>${escapeHtml(peso)}</b></span>` : ``}
+          <span>Municipalizable: <b>${geo === true ? "SI" : "NO"}</b></span>
         </div>
       </div>
 
@@ -444,113 +591,99 @@ function taskRowHtml(t, subGid){
       </div>
 
       <div class="field" style="padding:0;">
-        <label>Evidencia (URL)</label>
-        <input class="row-evi" type="url" placeholder="https://…" />
+        <label>Municipio (solo si municipalizable)</label>
+        <select class="row-municipio" ${geo === true ? "" : "disabled"}>
+          ${municipioOptionsHtml()}
+        </select>
       </div>
 
-      <div class="field task__grid--full" style="padding:0;">
+      <div class="field" style="padding:0; grid-column: 1 / span 2;">
         <label>Observaciones</label>
         <input class="row-obs" type="text" placeholder="Descripción corta del avance…" />
       </div>
 
-      <div class="field" style="padding:0; display:${isGeo ? "block":"none"};">
-        <label>Municipio</label>
-        <select class="row-municipio">${municipioOptionsHtml()}</select>
-      </div>
-
-      <div class="field" style="padding:0; display:${isGeo ? "block":"none"};">
-        <label>Descripción del sitio</label>
-        <input class="row-sitio" type="text" placeholder="Ej: obra, sede, punto de intervención…" />
+      <div class="field" style="padding:0; grid-column: 1 / span 2;">
+        <label>Evidencia (URL)</label>
+        <input class="row-evi" type="url" placeholder="https://…" />
       </div>
     </div>
 
     <div class="row__right">
-      <button class="btn btn--primary btn-ubicar" ${isGeo ? "" : "disabled"}>Ubicar punto</button>
-      <button class="btn btn--ghost btn-ver" ${isGeo ? "" : "disabled"}>Ver punto</button>
-      <button class="btn btn--danger btn-quitar" ${isGeo ? "" : "disabled"}>Quitar punto</button>
-      <div class="row__mini"><span>Punto: <b class="row-pt">—</b></span></div>
+      <button class="btn btn--primary btn-activar" ${geo === true ? "" : "disabled"} title="Activar para ubicar punto en el mapa">Ubicar punto</button>
+      <button class="btn btn--ghost btn-ver" ${geo === true ? "" : "disabled"} title="Acercar el mapa al punto">Ver punto</button>
+      <button class="btn btn--danger btn-eliminar" title="Limpiar este registro">Limpiar</button>
+      <div class="row__mini">
+        <span>Punto: <b class="row-pt">—</b></span>
+      </div>
     </div>
   </div>`;
 }
 
-function wireTaskEvents(){
-  document.querySelectorAll(".row").forEach(rowEl => {
-    const rowId = rowEl.getAttribute("data-row-id");
-    const isGeo = rowEl.getAttribute("data-geo") === "1";
-    const btnUb = rowEl.querySelector(".btn-ubicar");
-    const btnVer = rowEl.querySelector(".btn-ver");
-    const btnQt = rowEl.querySelector(".btn-quitar");
-    const selMun = rowEl.querySelector(".row-municipio");
+function wireCardEvents(){
+  document.querySelectorAll(".btn-collapse").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const rowsId = btn.getAttribute("data-rows-id");
+      const container = document.getElementById(rowsId);
+      container.style.display = (container.style.display === "none") ? "flex" : "none";
+    });
+  });
 
-    if(btnUb){
-      btnUb.addEventListener("click", () => {
-        if(!isGeo) return;
-        const mun = selMun?.value;
-        if(!mun){
-          setStatus("Selecciona municipio antes de ubicar el punto.", "error");
-          return;
-        }
-        activeRowId = rowId;
-        pillActive.textContent = `Registro activo: ${rowId.slice(0,8)}…`;
-        setStatus("Ahora haz clic en el mapa para ubicar el punto.", "info");
-      });
-    }
+  document.querySelectorAll(".row").forEach(rowEl => wireRowEvents(rowEl));
+}
 
-    if(btnVer){
-      btnVer.addEventListener("click", () => {
-        const pt = rowGeometries.get(rowId);
-        if(!pt){ setStatus("Este registro aún no tiene punto.", "error"); return; }
-        zoomToPoint(pt.lon, pt.lat);
-      });
-    }
+function wireRowEvents(rowEl){
+  const rowId = rowEl.getAttribute("data-row-id");
 
-    if(btnQt){
-      btnQt.addEventListener("click", () => {
-        rowGeometries.delete(rowId);
-        removeGraphicForRow(rowId);
-        rowEl.querySelector(".row-pt").textContent = "—";
-        if(activeRowId === rowId){
-          activeRowId = null;
-          pillActive.textContent = "Registro activo: —";
-        }
-      });
+  const btnAct = rowEl.querySelector(".btn-activar");
+  const btnVer = rowEl.querySelector(".btn-ver");
+  const btnClr = rowEl.querySelector(".btn-eliminar");
+
+  btnAct?.addEventListener("click", () => {
+    activeRowId = rowId;
+    pillActive.textContent = `Registro activo: ${rowId.slice(0,8)}…`;
+    setStatus("Registro activo seleccionado. Ahora haz clic en el mapa para ubicar el punto.", "info");
+  });
+
+  btnVer?.addEventListener("click", () => {
+    const pt = rowGeometries.get(rowId);
+    if(!pt){
+      setStatus("Este registro aún no tiene punto.", "error");
+      return;
     }
+    zoomToPoint(pt.lon, pt.lat);
+  });
+
+  btnClr?.addEventListener("click", () => {
+    rowGeometries.delete(rowId);
+    removeGraphicForRow(rowId);
+    if(activeRowId === rowId){
+      activeRowId = null;
+      pillActive.textContent = "Registro activo: —";
+    }
+    // limpiar inputs
+    rowEl.querySelector(".row-valor").value = "";
+    rowEl.querySelector(".row-obs").value = "";
+    rowEl.querySelector(".row-evi").value = "";
+    const sel = rowEl.querySelector(".row-municipio");
+    if(sel) sel.value = "";
+    const ptEl = rowEl.querySelector(".row-pt");
+    if(ptEl) ptEl.textContent = "—";
   });
 }
 
 // ---------- Map ----------
 function initMap(){
   return new Promise((resolve, reject) => {
-    if (typeof require !== "function"){
-      reject(new Error("ArcGIS JS API no cargó (require no disponible)."));
-      return;
-    }
-
-    // Basemap OSM (sin API key) para evitar pantallas en blanco.
     require([
       "esri/Map",
       "esri/views/MapView",
       "esri/layers/GraphicsLayer",
-      "esri/Graphic",
-      "esri/geometry/support/webMercatorUtils",
-      "esri/layers/WebTileLayer",
-      "esri/Basemap"
-    ], (Map, MapView, GraphicsLayer, Graphic, _webMercatorUtils, WebTileLayer, Basemap) => {
+      "esri/geometry/support/webMercatorUtils"
+    ], (Map, MapView, GraphicsLayer, _webMercatorUtils) => {
       webMercatorUtils = _webMercatorUtils;
 
-      const osmLayer = new WebTileLayer({
-        urlTemplate: "https://{subDomain}.tile.openstreetmap.org/{level}/{col}/{row}.png",
-        subDomains: ["a","b","c"],
-        copyright: "© OpenStreetMap contributors"
-      });
-
-      const osmBasemap = new Basemap({
-        baseLayers: [osmLayer],
-        title: "OpenStreetMap",
-        id: "osm-custom"
-      });
-
-      map = new Map({ basemap: osmBasemap });
+      // Basemap OSM (no requiere API key)
+      map = new Map({ basemap: "osm" });
       graphicsLayer = new GraphicsLayer();
       map.add(graphicsLayer);
 
@@ -561,20 +694,11 @@ function initMap(){
         zoom: 8
       });
 
-      view.when(() => resolve()).catch(reject);
-
       view.on("click", (evt) => {
         if(!activeRowId){
-          setStatus("Activa una tarea municipalizable con “Ubicar punto”.", "error");
+          setStatus("Primero activa un registro con el botón “Ubicar punto”.", "error");
           return;
         }
-        const rowEl = document.querySelector(`.row[data-row-id="${activeRowId}"]`);
-        const isGeo = rowEl?.getAttribute("data-geo") === "1";
-        if(!isGeo){
-          setStatus("La tarea activa no requiere municipalización.", "error");
-          return;
-        }
-
         let g = evt.mapPoint;
         let geo = g;
         if (g.spatialReference && g.spatialReference.isWebMercator){
@@ -586,170 +710,181 @@ function initMap(){
         rowGeometries.set(activeRowId, { lon, lat });
         upsertGraphicForRow(activeRowId, lon, lat);
 
+        const rowEl = document.querySelector(`.row[data-row-id="${activeRowId}"]`);
         if(rowEl){
-          const latEl = rowEl.querySelector(".js-lat");
-          const lonEl = rowEl.querySelector(".js-lon");
-          if(latEl) latEl.textContent = lat.toFixed(6);
-          if(lonEl) lonEl.textContent = lon.toFixed(6);
+          rowEl.querySelector(".row-pt").textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
         }
-        setStatus("Punto capturado.", "success");
+
+        setStatus("Punto asignado al registro activo.", "success");
       });
-    });
+
+      btnLimpiarMapa.addEventListener("click", () => {
+        rowGeometries.clear();
+        clearMapGraphics();
+        document.querySelectorAll(".row .row-pt").forEach(x => x.textContent = "—");
+        setStatus("Se borraron todos los puntos.", "info");
+      });
+
+      btnCentrar.addEventListener("click", () => {
+        view.goTo({ center: [-74.2, 4.7], zoom: 8 });
+      });
+
+      resolve();
+    }, (err) => reject(err));
   });
 }
-
-
-function clearMapGraphics(){ if(graphicsLayer) graphicsLayer.removeAll(); }
-
-function upsertGraphicForRow(rowId, lon, lat){
-  require(["esri/Graphic"], (Graphic) => {
-    removeGraphicForRow(rowId);
-    graphicsLayer.add(new Graphic({
-      geometry: { type:"point", longitude: lon, latitude: lat, spatialReference: { wkid: 4326 } },
-      symbol: {
-        type: "simple-marker",
-        style: "circle",
-        color: [23,151,209,0.9],
-        size: 10,
-        outline: { color: [11,82,105,1], width: 2 }
-      },
-      attributes: { rowId }
-    }));
-  });
-}
-
-function removeGraphicForRow(rowId){
-  if(!graphicsLayer) return;
-  const toRemove = graphicsLayer.graphics.filter(g => g?.attributes?.rowId === rowId);
-  toRemove.forEach(g => graphicsLayer.remove(g));
-}
-
-function zoomToPoint(lon, lat){ if(view) view.goTo({ center:[lon,lat], zoom:14 }); }
 
 // ---------- Save ----------
 function collectDraft(){
   const actividadGid = elActividad.value;
   const vig = Number(elVigencia.value) || new Date().getFullYear();
   const periodo = elPeriodo.value;
+
   if(!actividadGid) throw new Error("Selecciona una actividad.");
 
-  const avancesAdds = [];
-  const ubicAdds = [];
+  const avances = [];           // para REP_AvanceTarea
+  const ubicaciones = [];       // para REP_TareaUbicacion_PT (se llenan después, con globalId del avance)
+  const rowsForUbic = [];       // paralela a avances: info para ubicación
 
   document.querySelectorAll(".row").forEach(rowEl => {
-    const isGeo = rowEl.getAttribute("data-geo") === "1";
-    const tarGid = rowEl.getAttribute("data-tar-gid");
-    const subGid = rowEl.getAttribute("data-sub-gid");
     const rowId = rowEl.getAttribute("data-row-id");
+    const tareaGid = rowEl.getAttribute("data-tarea-gid");
+    const isGeo = rowEl.getAttribute("data-geo") === "1";
 
     const valor = rowEl.querySelector(".row-valor").value;
     const obs = rowEl.querySelector(".row-obs").value;
     const evi = rowEl.querySelector(".row-evi").value;
-
-    const mun = rowEl.querySelector(".row-municipio")?.value;
-    const sitio = rowEl.querySelector(".row-sitio")?.value;
+    const municipio = rowEl.querySelector(".row-municipio")?.value || "";
 
     const pt = rowGeometries.get(rowId);
 
-    const hasAny = (valor !== "") || (obs && obs.trim()) || (evi && evi.trim()) || mun || (sitio && sitio.trim()) || pt;
+    const hasAny = (valor !== "" && valor !== null) || obs || evi || municipio || pt;
     if(!hasAny) return;
 
-    if(valor === "") throw new Error("Hay una tarea con datos pero sin Valor reportado.");
+    if(valor === "" || valor === null) throw new Error("Hay una tarea con avance sin 'Valor reportado'.");
+
     if(isGeo){
-      if(!mun) throw new Error("Hay una tarea municipalizable sin Municipio.");
-      if(!pt) throw new Error("Hay una tarea municipalizable sin Punto.");
+      if(!municipio) throw new Error("Hay una tarea municipalizable sin Municipio.");
+      if(!pt) throw new Error("Hay una tarea municipalizable sin Punto (ubícalo en el mapa).");
     }
 
-    const linkId = guidBraced();
+    const attrs = {};
+    // mapeo campos avance
+    if(avanceInfo.fkTareaField) attrs[avanceInfo.fkTareaField] = tareaGid;
+    if(avanceInfo.fkActividadField) attrs[avanceInfo.fkActividadField] = actividadGid;
+    if(avanceInfo.vigenciaField) attrs[avanceInfo.vigenciaField] = vig;
+    if(avanceInfo.periodoField) attrs[avanceInfo.periodoField] = periodo;
+    if(avanceInfo.valorField) attrs[avanceInfo.valorField] = Number(valor);
+    if(avanceInfo.obsField) attrs[avanceInfo.obsField] = obs || null;
+    if(avanceInfo.evidenciaField) attrs[avanceInfo.evidenciaField] = evi || null;
+    if(avanceInfo.fechaField) attrs[avanceInfo.fechaField] = Date.now();
 
-    const a = {};
-    if(avanceInfo.linkField) a[avanceInfo.linkField] = linkId;
-    if(avanceInfo.fkTarea) a[avanceInfo.fkTarea] = tarGid;
-    if(avanceInfo.fkSub) a[avanceInfo.fkSub] = subGid;
-    if(avanceInfo.fkAct) a[avanceInfo.fkAct] = actividadGid;
-    if(avanceInfo.vigField) a[avanceInfo.vigField] = vig;
-    if(avanceInfo.perField) a[avanceInfo.perField] = periodo;
-    if(avanceInfo.valField) a[avanceInfo.valField] = Number(valor);
-    if(avanceInfo.obsField) a[avanceInfo.obsField] = obs || null;
-    if(avanceInfo.eviField) a[avanceInfo.eviField] = evi || null;
-    if(avanceInfo.fecField) a[avanceInfo.fecField] = Date.now();
-    if(avanceInfo.munField && mun) a[avanceInfo.munField] = mun;
-
-    avancesAdds.push({ attributes: a });
+    avances.push({ attributes: attrs });
 
     if(isGeo){
-      const u = {};
-      if(ubicInfo.linkField) u[ubicInfo.linkField] = (ubicInfo.linkField === "AvanceTareaGlobalID") ? null : linkId;
-      if(ubicInfo.munField) u[ubicInfo.munField] = mun;
-      if(ubicInfo.descField) u[ubicInfo.descField] = sitio || null;
-      if(ubicInfo.lonField) u[ubicInfo.lonField] = pt.lon;
-      if(ubicInfo.latField) u[ubicInfo.latField] = pt.lat;
-
-      ubicAdds.push({
-        attributes: u,
-        geometry: { x: pt.lon, y: pt.lat, spatialReference: { wkid: 4326 } }
-      });
+      rowsForUbic.push({ rowId, municipio, pt });
+    }else{
+      rowsForUbic.push(null);
     }
   });
 
-  if(!avancesAdds.length) throw new Error("No hay avances para guardar.");
+  if(avances.length === 0) throw new Error("No hay avances para guardar.");
 
   const narrativaTxt = elNarrativa.value?.trim() || "";
-  const narrativaAdd = narrativaTxt ? { attributes: (() => {
-    const n = {};
-    if(narrativaInfo.linkField) n[narrativaInfo.linkField] = guidBraced();
-    if(narrativaInfo.fkAct) n[narrativaInfo.fkAct] = actividadGid;
-    if(narrativaInfo.vigField) n[narrativaInfo.vigField] = vig;
-    if(narrativaInfo.perField) n[narrativaInfo.perField] = periodo;
-    if(narrativaInfo.txtField) n[narrativaInfo.txtField] = narrativaTxt;
-    if(narrativaInfo.fecField) n[narrativaInfo.fecField] = Date.now();
-    return n;
-  })()} : null;
+  const narrativa = narrativaTxt ? { attributes: buildNarrativaAttrs(actividadGid, vig, periodo, narrativaTxt) } : null;
 
-  return { avancesAdds, ubicAdds, narrativaAdd };
+  return { avances, rowsForUbic, narrativa };
+}
+
+function buildNarrativaAttrs(actividadGid, vig, periodo, texto){
+  const attrs = {};
+  if(narrativaInfo?.fkActividadField) attrs[narrativaInfo.fkActividadField] = actividadGid;
+  if(narrativaInfo?.vigenciaField) attrs[narrativaInfo.vigenciaField] = vig;
+  if(narrativaInfo?.periodoField) attrs[narrativaInfo.periodoField] = periodo;
+  if(narrativaInfo?.textoField) attrs[narrativaInfo.textoField] = texto;
+  if(narrativaInfo?.fechaField) attrs[narrativaInfo.fechaField] = Date.now();
+  return attrs;
 }
 
 async function saveDraft(draft){
-  setStatus(`Guardando ${draft.avancesAdds.length} avance(s)…`);
-  const resAv = await postForm(`${URL.AVT}/applyEdits`, { f:"json", adds: draft.avancesAdds });
+  setStatus(`Guardando ${draft.avances.length} avance(s)…`);
+
+  const resAv = await postForm(`${URL_AVANCE_TAREA}/applyEdits`, {
+    f: "json",
+    adds: draft.avances,
+    returnEditMoment: "true"
+  });
+
   if(resAv?.error) throw new Error(resAv.error.message || "Error al guardar avances.");
   const addResults = resAv?.addResults || [];
-  if(addResults.some(r => !r.success)) throw new Error("Uno o más avances no se guardaron.");
+  const failed = addResults.filter(r => !r.success);
+  if(failed.length) throw new Error(`Se guardaron con errores: ${failed.length}. Revisa consola.`);
 
-  if(draft.ubicAdds.length){
-    if(ubicInfo.linkField === "AvanceTareaGlobalID"){
-      for(let i=0;i<draft.ubicAdds.length;i++){
-        const gid = addResults[i]?.globalId;
-        if(gid) draft.ubicAdds[i].attributes[ubicInfo.linkField] = gid;
-      }
-    }
-    setStatus(`Guardando ${draft.ubicAdds.length} ubicación(es)…`);
-    const resUb = await postForm(`${URL.UB}/applyEdits`, { f:"json", adds: draft.ubicAdds });
+  // Guardar ubicaciones (solo las tareas geo)
+  const addsUbic = [];
+  for(let i=0; i<addResults.length; i++){
+    const ubic = draft.rowsForUbic[i];
+    if(!ubic) continue;
+
+    const globalIdAv = addResults[i]?.globalId;
+    if(!globalIdAv) continue;
+
+    const attrs = {};
+    if(ubicacionInfo.fkAvanceField) attrs[ubicacionInfo.fkAvanceField] = globalIdAv;
+    if(ubicacionInfo.municipioField) attrs[ubicacionInfo.municipioField] = ubic.municipio;
+    if(ubicacionInfo.descripcionField) attrs[ubicacionInfo.descripcionField] = null;
+
+    addsUbic.push({
+      attributes: attrs,
+      geometry: { x: ubic.pt.lon, y: ubic.pt.lat, spatialReference: { wkid: 4326 } }
+    });
+  }
+
+  if(addsUbic.length){
+    setStatus(`Guardando ${addsUbic.length} ubicación(es)…`);
+    const resUb = await postForm(`${URL_TAREA_UBICACION}/applyEdits`, { f:"json", adds: addsUbic });
     if(resUb?.error) throw new Error(resUb.error.message || "Error al guardar ubicaciones.");
-    if((resUb?.addResults || []).some(r => !r.success)) throw new Error("Una o más ubicaciones no se guardaron.");
+    if(!(resUb?.addResults || []).every(r => r.success)) throw new Error("Algunas ubicaciones no se guardaron correctamente.");
   }
 
-  if(draft.narrativaAdd){
+  // Narrativa (opcional)
+  if(draft.narrativa && narrativaInfo?.textoField){
     setStatus("Guardando reporte narrativo…");
-    const resNar = await postForm(`${URL.NAR}/applyEdits`, { f:"json", adds: [draft.narrativaAdd] });
+    const resNar = await postForm(`${URL_NARRATIVA}/applyEdits`, { f:"json", adds: [draft.narrativa] });
     if(resNar?.error) throw new Error(resNar.error.message || "Error al guardar narrativa.");
-    if((resNar?.addResults || []).some(r => !r.success)) throw new Error("La narrativa no se guardó.");
+    if(!(resNar?.addResults || []).every(r => r.success)) throw new Error("La narrativa no se guardó correctamente.");
   }
+
+  return true;
 }
 
-// ---------- UI wiring ----------
+// ---------- UI ----------
+function clearForm(){
+  elNarrativa.value = "";
+  rowGeometries.clear();
+  clearMapGraphics();
+  activeRowId = null;
+  pillActive.textContent = "Registro activo: —";
+
+  // limpia inputs
+  document.querySelectorAll(".row").forEach(rowEl => {
+    rowEl.querySelector(".row-valor").value = "";
+    rowEl.querySelector(".row-obs").value = "";
+    rowEl.querySelector(".row-evi").value = "";
+    const sel = rowEl.querySelector(".row-municipio");
+    if(sel) sel.value = "";
+    const ptEl = rowEl.querySelector(".row-pt");
+    if(ptEl) ptEl.textContent = "—";
+  });
+}
+
 btnGuardar.addEventListener("click", async () => {
   try{
     btnGuardar.disabled = true;
     const draft = collectDraft();
     await saveDraft(draft);
     setStatus("Reporte guardado correctamente.", "success");
-    await loadTreeForActividad(elActividad.value);
-    elNarrativa.value = "";
-    rowGeometries.clear();
-    clearMapGraphics();
-    activeRowId = null;
-    pillActive.textContent = "Registro activo: —";
+    clearForm();
   }catch(e){
     console.error(e);
     setStatus(e.message || "Error inesperado.", "error");
@@ -759,24 +894,12 @@ btnGuardar.addEventListener("click", async () => {
 });
 
 btnLimpiar.addEventListener("click", () => {
-  elNarrativa.value = "";
-  rowGeometries.clear();
-  clearMapGraphics();
-  activeRowId = null;
-  pillActive.textContent = "Registro activo: —";
-  document.querySelectorAll(".row-valor").forEach(i => i.value = "");
-  document.querySelectorAll(".row-obs").forEach(i => i.value = "");
-  document.querySelectorAll(".row-evi").forEach(i => i.value = "");
-  document.querySelectorAll(".row-municipio").forEach(i => i.value = "");
-  document.querySelectorAll(".row-sitio").forEach(i => i.value = "");
-  document.querySelectorAll(".row-pt").forEach(x => x.textContent = "—");
+  clearForm();
   setStatus("Formulario limpiado.", "info");
 });
 
 btnRefresh.addEventListener("click", async () => {
   try{
-    municipiosDomain = null;
-    tableInfo.clear();
     await bootstrap(true);
   }catch(e){
     console.error(e);
@@ -785,36 +908,69 @@ btnRefresh.addEventListener("click", async () => {
 });
 
 elActividad.addEventListener("change", async () => {
-  await loadTreeForActividad(elActividad.value);
+  try{
+    await loadSubactividadesYTareas(elActividad.value);
+  }catch(e){
+    console.error(e);
+    setStatus(e.message || "Error cargando subactividades/tareas.", "error");
+  }
 });
 
 elVigencia.addEventListener("change", async () => {
-  await loadActividades();
-  await loadTreeForActividad(elActividad.value);
+  try{
+    await loadActividades();
+    await loadSubactividadesYTareas(elActividad.value);
+  }catch(e){
+    console.error(e);
+    setStatus(e.message || "Error recargando por vigencia.", "error");
+  }
 });
 
 // ---------- Bootstrap ----------
 async function bootstrap(forceReload=false){
-  setStatus("Inicializando…");
-  await bootstrapMeta();
-  await loadMunicipiosDomain();
-  await loadActividades();
-  setStatus("Listo.", "success");
+  try{
+    setStatus("Inicializando…");
+
+    // metadata (solo se recarga si forceReload)
+    if(forceReload || !actividadInfo){
+      const actMeta = await getLayerInfo(URL_ACTIVIDAD);
+      actividadInfo = mapActividadFields(actMeta);
+
+      const subMeta = await getLayerInfo(URL_SUBACTIVIDAD);
+      subactividadInfo = mapSubActividadFields(subMeta);
+
+      const tarMeta = await getLayerInfo(URL_TAREA);
+      tareaInfo = mapTareaFields(tarMeta);
+
+      const avMeta = await getLayerInfo(URL_AVANCE_TAREA);
+      avanceInfo = mapAvanceFields(avMeta);
+
+      const ubMeta = await getLayerInfo(URL_TAREA_UBICACION);
+      ubicacionInfo = mapUbicacionFields(ubMeta);
+
+      const narMeta = await getLayerInfo(URL_NARRATIVA);
+      narrativaInfo = mapNarrativaFields(narMeta);
+    }
+
+    if(forceReload) municipiosDomain = null;
+    if(!municipiosDomain) await loadMunicipiosDomain();
+
+    await loadActividades();
+    setStatus("Listo.", "success");
+  }catch(e){
+    console.error(e);
+    setStatus(e.message || "Error inicializando la app. Revisa la consola.", "error");
+  }
 }
 
 (async function main(){
-  // No bloqueamos la carga del formulario si el mapa falla.
   try{
     await initMap();
-  }catch(e){
-    console.error(e);
-    setStatus("Mapa no disponible (puedes seguir reportando sin municipalización).", "error");
-  }
-
-  try{
     await bootstrap(false);
   }catch(e){
     console.error(e);
-    setStatus("No se pudo inicializar la app. Revisa consola.", "error");
+    setStatus("No se pudo inicializar el mapa. Revisa conexión y consola.", "error");
+    // aun así, intenta bootstrap para cargar tablas
+    try{ await bootstrap(false); }catch(_){}
   }
 })();
