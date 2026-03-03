@@ -170,8 +170,17 @@ async function bootstrapMeta(){
     nameField: pickFieldName(mAct.fields, ["Nombre","NombreActividad","Descripcion","Titulo"]),
     globalIdField: pickFieldName(mAct.fields, ["GlobalID","GLOBALID"]),
     activoField: pickFieldName(mAct.fields, ["Activo","Estado","Habilitado"]),
-    vigField: pickFieldName(mAct.fields, ["Vigencia","ANIO","Ano"])
+    vigField: pickFieldName(mAct.fields, ["Vigencia","ANIO","Ano"]),
+    vigIsString: false
   };
+  // Determina si Vigencia es texto (para armar el WHERE con comillas)
+  try{
+    if(actividadInfo.vigField){
+      const f = (mAct.fields || []).find(x => x?.name === actividadInfo.vigField);
+      actividadInfo.vigIsString = (f?.type === "esriFieldTypeString");
+    }
+  }catch(_e){}
+
 
   subactInfo = {
     codeField: pickFieldName(mSub.fields, ["CodigoSubActividad","Codigo","CODIGO"]),
@@ -265,7 +274,10 @@ async function loadActividades(){
         const f = actividadInfo.activoField;
         where += ` AND (${f} = 'SI' OR ${f} = 'S' OR ${f} = '1' OR ${f} = 1 OR ${f} = 'TRUE' OR ${f} = 'true')`;
       };
-      if(actividadInfo.vigField) where += ` AND ${actividadInfo.vigField} = ${vig}`;
+      if(actividadInfo.vigField){
+        const v = actividadInfo.vigIsString ? `'${vig}'` : `${vig}`;
+        where += ` AND ${actividadInfo.vigField} = ${v}`;
+      }
     
       const q = await fetchJson(`${URL.ACT}/query`, {
         f:"json",
@@ -513,16 +525,32 @@ function initMap(){
       reject(new Error("ArcGIS JS API no cargó (require no disponible)."));
       return;
     }
+
+    // Basemap OSM (sin API key) para evitar pantallas en blanco.
     require([
       "esri/Map",
       "esri/views/MapView",
       "esri/layers/GraphicsLayer",
       "esri/Graphic",
-      "esri/geometry/support/webMercatorUtils"
-    ], (Map, MapView, GraphicsLayer, Graphic, _webMercatorUtils) => {
+      "esri/geometry/support/webMercatorUtils",
+      "esri/layers/WebTileLayer",
+      "esri/Basemap"
+    ], (Map, MapView, GraphicsLayer, Graphic, _webMercatorUtils, WebTileLayer, Basemap) => {
       webMercatorUtils = _webMercatorUtils;
 
-      map = new Map({ basemap: "streets-navigation-vector" });
+      const osmLayer = new WebTileLayer({
+        urlTemplate: "https://{subDomain}.tile.openstreetmap.org/{level}/{col}/{row}.png",
+        subDomains: ["a","b","c"],
+        copyright: "© OpenStreetMap contributors"
+      });
+
+      const osmBasemap = new Basemap({
+        baseLayers: [osmLayer],
+        title: "OpenStreetMap",
+        id: "osm-custom"
+      });
+
+      map = new Map({ basemap: osmBasemap });
       graphicsLayer = new GraphicsLayer();
       map.add(graphicsLayer);
 
@@ -532,6 +560,8 @@ function initMap(){
         center: [-74.2, 4.7],
         zoom: 8
       });
+
+      view.when(() => resolve()).catch(reject);
 
       view.on("click", (evt) => {
         if(!activeRowId){
@@ -557,25 +587,17 @@ function initMap(){
         upsertGraphicForRow(activeRowId, lon, lat);
 
         if(rowEl){
-          rowEl.querySelector(".row-pt").textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+          const latEl = rowEl.querySelector(".js-lat");
+          const lonEl = rowEl.querySelector(".js-lon");
+          if(latEl) latEl.textContent = lat.toFixed(6);
+          if(lonEl) lonEl.textContent = lon.toFixed(6);
         }
-        setStatus("Punto asignado.", "success");
+        setStatus("Punto capturado.", "success");
       });
-
-      btnLimpiarMapa.addEventListener("click", () => {
-        rowGeometries.clear();
-        clearMapGraphics();
-        document.querySelectorAll(".row .row-pt").forEach(x => x.textContent = "—");
-      });
-
-      btnCentrar.addEventListener("click", () => {
-        view.goTo({ center: [-74.2, 4.7], zoom: 8 });
-      });
-
-      resolve();
-    }, reject);
+    });
   });
 }
+
 
 function clearMapGraphics(){ if(graphicsLayer) graphicsLayer.removeAll(); }
 
