@@ -2,6 +2,7 @@
    DATA-PAC | Reporte Trimestral (v2)
    Servicio: DATAPAC_V2
    Esquema: Estricto según definición JSON
+   Mejoras: Inyección de Responsable y Múltiples Ubicaciones (1:N)
    =========================================================== */
 
 // --- Servicio ---
@@ -51,8 +52,10 @@ const pillActive = document.getElementById("pill-active");
 let cacheSubactividades = [];         
 let cacheTareas = [];                 
 let activeRowId = null;               
-let rowGeometries = new Map();        
-let rowMunicipio = new Map();         
+
+// NUEVO: Manejo de múltiples ubicaciones por fila
+// rowLocations: Map<rowId, Array<{ptId, lon, lat, mun, dane, desc}>>
+let rowLocations = new Map();         
 let currentResponsable = "";          
 
 // Map
@@ -121,31 +124,32 @@ async function postForm(url, formObj){
   return await r.json();
 }
 
-// ---------- Geometría y Mapa ----------
+// ---------- Geometría y Múltiples Puntos ----------
 function clearMapGraphics(){
   if(graphicsLayer) graphicsLayer.removeAll();
 }
 
-function removeGraphicForRow(rowId){
+function removeGraphicForPoint(ptId){
+  if(!graphicsLayer) return;
+  const toRemove = graphicsLayer.graphics.filter(g => g?.attributes?.ptId === ptId);
+  toRemove.forEach(g => graphicsLayer.remove(g));
+}
+
+function removeAllGraphicsForRow(rowId){
   if(!graphicsLayer) return;
   const toRemove = graphicsLayer.graphics.filter(g => g?.attributes?.rowId === rowId);
   toRemove.forEach(g => graphicsLayer.remove(g));
 }
 
-function upsertGraphicForRow(rowId, lon, lat, Graphic){
-  removeGraphicForRow(rowId);
+function addGraphicForPoint(rowId, ptId, lon, lat, Graphic){
+  removeGraphicForPoint(ptId);
   const graphic = new Graphic({
     geometry: { type: "point", longitude: lon, latitude: lat, spatialReference: { wkid: 4326 } },
     symbol: { type: "simple-marker", style: "circle", color: [23,151,209,0.9], size: 10, outline: { color: [11,82,105,1], width: 2 } },
-    attributes: { rowId }
+    attributes: { rowId, ptId }
   });
   graphicsLayer.add(graphic);
   return graphic;
-}
-
-function zoomToPoint(lon, lat){
-  if(!view) return;
-  view.goTo({ center: [lon, lat], zoom: 14 });
 }
 
 function getGeographicLocation(p) {
@@ -155,11 +159,45 @@ function getGeographicLocation(p) {
   return p;
 }
 
-async function updateMunicipioFromCAR(rowId, lon, lat, mapPoint){
-  const rowEl = document.querySelector(`.row[data-row-id="${rowId}"]`);
-  if(!rowEl) return;
-  const isGeo = rowEl.getAttribute("data-geo") === "1";
-  if(!isGeo || !jurisdiccionLayerView) return;
+function deleteLocation(rowId, ptId) {
+  removeGraphicForPoint(ptId);
+  const locs = rowLocations.get(rowId) || [];
+  rowLocations.set(rowId, locs.filter(l => l.ptId !== ptId));
+  const el = document.getElementById(`loc-${ptId}`);
+  if(el) el.remove();
+}
+
+function appendLocationUI(rowId, ptId, lon, lat) {
+  const listEl = document.getElementById(`loc-list-${rowId}`);
+  if(!listEl) return;
+  
+  const div = document.createElement("div");
+  div.className = "loc-item";
+  div.id = `loc-${ptId}`;
+  div.innerHTML = `
+    <div class="loc-item__header">
+      <span>📍 Sitio: <span class="loc-coords">${lat.toFixed(5)}, ${lon.toFixed(5)}</span></span>
+      <button class="btn-loc-del" title="Eliminar este sitio">Eliminar</button>
+    </div>
+    <div class="field" style="padding:0;">
+      <input class="loc-desc" type="text" placeholder="Descripción del sitio (Ej: Vereda...)" />
+    </div>
+    <div class="loc-item__grid">
+      <div class="field" style="padding:0;">
+        <input class="loc-mun" type="text" placeholder="Calculando Municipio..." readonly />
+      </div>
+      <div class="field" style="padding:0;">
+        <input class="loc-dane" type="text" placeholder="Calculando DANE..." readonly />
+      </div>
+    </div>
+  `;
+  
+  div.querySelector(".btn-loc-del").addEventListener("click", () => deleteLocation(rowId, ptId));
+  listEl.appendChild(div);
+}
+
+async function updateMunicipioFromCAR(rowId, ptId, mapPoint){
+  if (!jurisdiccionLayerView) return;
 
   try{
     document.body.style.cursor = 'wait';
@@ -167,15 +205,17 @@ async function updateMunicipioFromCAR(rowId, lon, lat, mapPoint){
     const result = await jurisdiccionLayerView.queryFeatures(query);
     const feats = result.features || [];
 
-    const munEl = rowEl.querySelector(".row-mun");
-    const daneEl = rowEl.querySelector(".row-dane");
+    const locEl = document.getElementById(`loc-${ptId}`);
+    if(!locEl) return;
+    
+    const munEl = locEl.querySelector(".loc-mun");
+    const daneEl = locEl.querySelector(".loc-dane");
 
     if(!feats.length){
-      rowMunicipio.delete(rowId);
-      if(munEl) munEl.value = "";
-      if(daneEl) daneEl.value = "";
-      view.popup.open({ title: "Fuera de jurisdicción", content: "El punto no está dentro de la CAR.", location: mapPoint });
-      setStatus("El punto no está dentro de la jurisdicción de la CAR.", "error");
+      if(munEl) munEl.value = "Fuera de CAR";
+      if(daneEl) daneEl.value = "N/A";
+      view.popup.open({ title: "Fuera de jurisdicción", content: "Este punto no está dentro de la CAR.", location: mapPoint });
+      setStatus("Uno de los puntos no está dentro de la jurisdicción de la CAR.", "error");
       return;
     }
 
@@ -184,10 +224,20 @@ async function updateMunicipioFromCAR(rowId, lon, lat, mapPoint){
     const munKey = keys.find(k => normalize(k).includes("municipio") || normalize(k).includes("mpio"));
     const daneKey = keys.find(k => normalize(k).includes("dane"));
 
-    const res = { municipioNombre: munKey ? a[munKey] : "", codigoDANE: daneKey ? a[daneKey] : "" };
-    rowMunicipio.set(rowId, res);
-    if(munEl) munEl.value = res.municipioNombre;
-    if(daneEl) daneEl.value = String(res.codigoDANE ?? "");
+    const mun = munKey ? a[munKey] : "";
+    const dane = daneKey ? String(a[daneKey]) : "";
+
+    // Actualizar UI
+    if(munEl) munEl.value = mun;
+    if(daneEl) daneEl.value = dane;
+    
+    // Actualizar Memoria
+    const locs = rowLocations.get(rowId) || [];
+    const locObj = locs.find(l => l.ptId === ptId);
+    if(locObj) {
+      locObj.mun = mun;
+      locObj.dane = dane;
+    }
     
     view.popup.close();
     setStatus("Municipio y DANE calculados correctamente.", "success");
@@ -257,7 +307,7 @@ async function loadActividades(){
 
 async function loadSubactividadesYTareas(actividadGlobalId){
   elIndicadores.innerHTML = ""; cacheSubactividades = []; cacheTareas = [];
-  rowGeometries.clear(); activeRowId = null; pillActive.textContent = "Registro activo: —"; clearMapGraphics();
+  rowLocations.clear(); activeRowId = null; pillActive.textContent = "Registro activo: —"; clearMapGraphics();
 
   if(!actividadGlobalId) return;
   setStatus("Cargando estructura de tareas…");
@@ -314,6 +364,10 @@ function tareaRowHtml(t){
   const rowId = crypto.randomUUID();
   const gid = t[F_TAR.gid]; const cod = t[F_TAR.id] || ""; const nom = t[F_TAR.nom] || "";
   const um = t[F_TAR.um] || ""; const geo = toYesNo(t[F_TAR.geo]);
+  
+  // Se inicializa el array de locaciones
+  rowLocations.set(rowId, []);
+
   return `
   <div class="row" data-row-id="${rowId}" data-tarea-gid="${escapeHtml(gid)}" data-tarea-label="${escapeHtml((cod || nom || gid))}" data-geo="${geo === true ? "1" : "0"}">
     <div class="row__left">
@@ -323,16 +377,14 @@ function tareaRowHtml(t){
         <div class="row__mini">${um ? `<span>UM: <b>${escapeHtml(um)}</b></span>` : ``}<span>Mpio: <b>${geo === true ? "SI" : "NO"}</b></span></div>
       </div>
       <div class="field" style="padding:0;"><label>Valor reportado</label><input class="row-valor" type="number" step="any" placeholder="Ej: 12" /></div>
-      ${geo === true ? `<div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Descripción del sitio</label><input class="row-desc-sitio" type="text" placeholder="Ej: Vereda San Juan, finca El Recuerdo..." /></div>
-      <div class="field" style="padding:0;"><label>Municipio</label><input class="row-mun" type="text" readonly /></div>
-      <div class="field" style="padding:0;"><label>Cód. DANE</label><input class="row-dane" type="text" readonly /></div>` : ``}
       <div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Observaciones</label><input class="row-obs" type="text" /></div>
       <div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Evidencia (URL)</label><input class="row-evi" type="url" /></div>
+      
+      ${geo === true ? `<div class="loc-list" id="loc-list-${rowId}"></div>` : ``}
     </div>
     <div class="row__right">
-      ${geo === true ? `<button class="btn btn--primary btn-activar">Ubicar punto</button><button class="btn btn--ghost btn-ver">Ver punto</button>` : ``}
-      <button class="btn btn--danger btn-eliminar">Limpiar</button>
-      <div class="row__mini"><span>Punto: <b class="row-pt">—</b></span></div>
+      ${geo === true ? `<button class="btn btn--primary btn-activar">Ubicar punto(s)</button>` : ``}
+      <button class="btn btn--danger btn-eliminar">Limpiar Fila</button>
     </div>
   </div>`;
 }
@@ -351,19 +403,17 @@ function wireRowEvents(rowEl){
   const rowId = rowEl.getAttribute("data-row-id");
   rowEl.querySelector(".btn-activar")?.addEventListener("click", () => {
     activeRowId = rowId; pillActive.textContent = `Registro activo: ${rowId.slice(0,8)}…`;
-    setStatus("Registro activo seleccionado. Haz clic en el mapa.", "info");
-  });
-  rowEl.querySelector(".btn-ver")?.addEventListener("click", () => {
-    const pt = rowGeometries.get(rowId); if(pt) zoomToPoint(pt.lon, pt.lat);
+    setStatus("Registro activo seleccionado. Haz clic en el mapa tantas veces como sitios necesites.", "info");
   });
   rowEl.querySelector(".btn-eliminar")?.addEventListener("click", () => {
-    rowGeometries.delete(rowId); rowMunicipio.delete(rowId); removeGraphicForRow(rowId);
+    removeAllGraphicsForRow(rowId); 
+    rowLocations.set(rowId, []);
+    
+    const locList = document.getElementById(`loc-list-${rowId}`);
+    if(locList) locList.innerHTML = "";
+
     if(activeRowId === rowId){ activeRowId = null; pillActive.textContent = "Registro activo: —"; }
     rowEl.querySelector(".row-valor").value = ""; rowEl.querySelector(".row-obs").value = ""; rowEl.querySelector(".row-evi").value = "";
-    if(rowEl.querySelector(".row-desc-sitio")) rowEl.querySelector(".row-desc-sitio").value = "";
-    if(rowEl.querySelector(".row-mun")) rowEl.querySelector(".row-mun").value = "";
-    if(rowEl.querySelector(".row-dane")) rowEl.querySelector(".row-dane").value = "";
-    if(rowEl.querySelector(".row-pt")) rowEl.querySelector(".row-pt").textContent = "—";
   });
 }
 
@@ -388,43 +438,50 @@ function initMap(){
 
       view = new MapView({ container: "map", map, center: [-74.2, 4.7], zoom: 8, popup: { dockEnabled: true, dockOptions: { position: "top-right", breakpoint: false } } });
 
-      // NUEVO: Agregar Widget de Búsqueda (Controla el Zoom a un lugar)
       const searchWidget = new Search({ view: view });
       view.ui.add(searchWidget, "top-right");
 
-      // NUEVO: Agregar Widget de Mapa Base oculto en un Expand
-      const basemapGallery = new BasemapGallery({
-        view: view,
-        container: document.createElement("div")
-      });
-      const bgExpand = new Expand({
-        view: view,
-        content: basemapGallery,
-        expandIcon: "basemap"
-      });
+      const basemapGallery = new BasemapGallery({ view: view, container: document.createElement("div") });
+      const bgExpand = new Expand({ view: view, content: basemapGallery, expandIcon: "basemap" });
       view.ui.add(bgExpand, "top-left");
 
       view.whenLayerView(jurisdiccionLayer).then((layerView) => { jurisdiccionLayerView = layerView; });
 
       sketchVM = new SketchViewModel({ view, layer: graphicsLayer, updateOnGraphicClick: false });
 
+      // Actualizar si se mueve un punto existente
       sketchVM.on("update", async (evt) => {
         if(evt.state !== "complete") return;
-        const g = evt.graphics?.[0]; if(!g || !g.attributes?.rowId) return;
+        const g = evt.graphics?.[0]; if(!g || !g.attributes?.rowId || !g.attributes?.ptId) return;
         const geo = getGeographicLocation(g.geometry);
-        rowGeometries.set(g.attributes.rowId, { lon: geo.longitude, lat: geo.latitude });
-        document.querySelector(`.row[data-row-id="${g.attributes.rowId}"] .row-pt`).textContent = `${geo.latitude.toFixed(5)}, ${geo.longitude.toFixed(5)}`;
-        await updateMunicipioFromCAR(g.attributes.rowId, geo.longitude, geo.latitude, g.geometry);
+        
+        const rId = g.attributes.rowId;
+        const pId = g.attributes.ptId;
+        
+        const locs = rowLocations.get(rId) || [];
+        const locObj = locs.find(l => l.ptId === pId);
+        if(locObj){
+           locObj.lon = geo.longitude; locObj.lat = geo.latitude;
+           const el = document.getElementById(`loc-${pId}`);
+           if(el) el.querySelector('.loc-coords').textContent = `${geo.latitude.toFixed(5)}, ${geo.longitude.toFixed(5)}`;
+        }
+        await updateMunicipioFromCAR(rId, pId, g.geometry);
       });
 
+      // Agregar un nuevo punto por cada clic en el mapa si hay una tarea activa
       view.on("click", async (evt) => {
-        if(!activeRowId){ setStatus("Primero activa un registro.", "error"); return; }
+        if(!activeRowId){ setStatus("Primero activa un registro en el panel.", "error"); return; }
         const geo = getGeographicLocation(evt.mapPoint);
-        rowGeometries.set(activeRowId, { lon: geo.longitude, lat: geo.latitude });
-        const graphic = upsertGraphicForRow(activeRowId, geo.longitude, geo.latitude, Graphic);
-        document.querySelector(`.row[data-row-id="${activeRowId}"] .row-pt`).textContent = `${geo.latitude.toFixed(5)}, ${geo.longitude.toFixed(5)}`;
-        await updateMunicipioFromCAR(activeRowId, geo.longitude, geo.latitude, evt.mapPoint);
-        if(graphic) sketchVM.update(graphic);
+        
+        const ptId = crypto.randomUUID();
+        const locs = rowLocations.get(activeRowId) || [];
+        locs.push({ ptId, lon: geo.longitude, lat: geo.latitude, mun: "", dane: "", desc: "" });
+        rowLocations.set(activeRowId, locs);
+
+        const graphic = addGraphicForPoint(activeRowId, ptId, geo.longitude, geo.latitude, Graphic);
+        appendLocationUI(activeRowId, ptId, geo.longitude, geo.latitude);
+        
+        await updateMunicipioFromCAR(activeRowId, ptId, evt.mapPoint);
       });
       resolve(true);
     });
@@ -452,19 +509,30 @@ function collectDraft(){
     const valStr = rowEl.querySelector(".row-valor")?.value;
     const obs = rowEl.querySelector(".row-obs")?.value.trim() || "";
     const evi = rowEl.querySelector(".row-evi")?.value.trim() || "";
-    const descSitio = rowEl.querySelector(".row-desc-sitio")?.value.trim() || "";
     
-    const pt = rowGeometries.get(rowId);
-    const munInfo = rowMunicipio.get(rowId) || {};
+    // Recuperar todos los puntos reportados y capturar lo que el usuario escribió en el input de descripción
+    let validLocations = [];
+    if (isGeo) {
+      const savedLocs = rowLocations.get(rowId) || [];
+      savedLocs.forEach(loc => {
+         const domLoc = document.getElementById(`loc-${loc.ptId}`);
+         if(domLoc) {
+            loc.desc = domLoc.querySelector(".loc-desc").value.trim();
+         }
+         validLocations.push(loc);
+      });
+    }
 
-    if(!valStr && !obs && !evi && !pt && !munInfo.municipioNombre && !descSitio) return; 
+    if(!valStr && !obs && !evi && validLocations.length === 0) return; // Fila vacía
 
     if(!valStr) errors.push({rowEl, msg: `🔸 ${label}: falta Valor reportado.`});
     else if(isNaN(Number(valStr))) errors.push({rowEl, msg: `🔸 ${label}: Valor inválido.`});
     
     if(isGeo){
-      if(!pt) errors.push({rowEl, msg: `🔸 ${label}: falta ubicar el punto.`});
-      if(!munInfo.municipioNombre) errors.push({rowEl, msg: `🔸 ${label}: el punto debe estar dentro de la CAR.`});
+      if(validLocations.length === 0 && valStr) errors.push({rowEl, msg: `🔸 ${label}: reportaste avance, debes ubicar al menos un punto.`});
+      
+      const missingCAR = validLocations.some(l => !l.mun || l.mun === "Fuera de CAR");
+      if(missingCAR) errors.push({rowEl, msg: `🔸 ${label}: asegúrate de que todos los puntos estén en la CAR y no borrar el cálculo.`});
     }
 
     avances.push({ attributes: {
@@ -472,7 +540,8 @@ function collectDraft(){
       [F_AVA.val]: valStr ? Number(valStr) : null, [F_AVA.obs]: obs, [F_AVA.evi]: evi, 
       [F_AVA.fec]: epochNow, [F_AVA.resp]: currentResponsable
     }});
-    rowsForUbic.push({ rowId, isGeo, descSitio, ...munInfo, pt });
+    
+    rowsForUbic.push({ rowId, isGeo, locations: validLocations });
   });
 
   const txt1 = elReporteNarrativo?.value.trim() || "";
@@ -506,21 +575,24 @@ async function saveDraft(draft){
 
     const addsUbic = [];
     for(let i=0; i < resAv.addResults.length; i++){
-      const ubic = draft.rowsForUbic[i];
+      const ubicData = draft.rowsForUbic[i];
       const globalIdAv = resAv.addResults[i]?.globalId; 
-      if(!ubic || !ubic.isGeo || !globalIdAv) continue;
+      if(!ubicData || !ubicData.isGeo || !globalIdAv) continue;
 
-      addsUbic.push({
-        attributes: {
-          [F_UBI.fkAvance]: globalIdAv, [F_UBI.dane]: ubic.codigoDANE, [F_UBI.mun]: ubic.municipioNombre,
-          [F_UBI.desc]: ubic.descSitio, [F_UBI.fec]: epochNow
-        },
-        geometry: { x: ubic.pt.lon, y: ubic.pt.lat, spatialReference: { wkid: 4326 } }
-      });
+      // Iterar sobre TODOS los puntos generados para esa fila y empaquetarlos apuntando al mismo GlobalId del Avance
+      for(const pt of ubicData.locations) {
+        addsUbic.push({
+          attributes: {
+            [F_UBI.fkAvance]: globalIdAv, [F_UBI.dane]: pt.dane, [F_UBI.mun]: pt.mun,
+            [F_UBI.desc]: pt.desc, [F_UBI.fec]: epochNow
+          },
+          geometry: { x: pt.lon, y: pt.lat, spatialReference: { wkid: 4326 } }
+        });
+      }
     }
 
     if(addsUbic.length){
-      setStatus(`Guardando ${addsUbic.length} ubicación(es)…`);
+      setStatus(`Guardando ${addsUbic.length} ubicación(es) en total…`);
       const resUb = await postForm(`${URL_TAREA_UBICACION}/applyEdits`, { f:"json", adds: addsUbic });
       if(resUb?.error || !(resUb?.addResults || []).every(r=>r.success)) throw new Error("Error guardando geometrías.");
     }
@@ -536,15 +608,13 @@ async function saveDraft(draft){
 // ---------- UI y Eventos ----------
 function clearForm(){
   if(elReporteNarrativo) elReporteNarrativo.value = ""; if(elDescLogros) elDescLogros.value = ""; if(elPrincipalesLogros) elPrincipalesLogros.value = "";
-  rowGeometries.clear(); clearMapGraphics(); activeRowId = null; pillActive.textContent = "Registro activo: —";
+  rowLocations.clear(); clearMapGraphics(); activeRowId = null; pillActive.textContent = "Registro activo: —";
   elResponsable.textContent = "Responsable: —"; currentResponsable = "";
   
   document.querySelectorAll(".row").forEach(r => {
     r.querySelector(".row-valor").value = ""; r.querySelector(".row-obs").value = ""; r.querySelector(".row-evi").value = "";
-    if(r.querySelector(".row-desc-sitio")) r.querySelector(".row-desc-sitio").value = "";
-    if(r.querySelector(".row-mun")) r.querySelector(".row-mun").value = "";
-    if(r.querySelector(".row-dane")) r.querySelector(".row-dane").value = "";
-    if(r.querySelector(".row-pt")) r.querySelector(".row-pt").textContent = "—";
+    const locList = r.querySelector(".loc-list");
+    if(locList) locList.innerHTML = "";
   });
 }
 
@@ -574,12 +644,8 @@ elActividad.addEventListener("change", async () => {
 
 btnCentrar.addEventListener("click", () => { view.goTo({ center: [-74.2, 4.7], zoom: 8 }); });
 btnLimpiarMapa.addEventListener("click", () => {
-    clearMapGraphics(); rowGeometries.clear(); rowMunicipio.clear();
-    document.querySelectorAll(".row").forEach(r => {
-        if(r.querySelector(".row-mun")) r.querySelector(".row-mun").value = "";
-        if(r.querySelector(".row-dane")) r.querySelector(".row-dane").value = "";
-        if(r.querySelector(".row-pt")) r.querySelector(".row-pt").textContent = "—";
-    });
+    clearMapGraphics(); rowLocations.clear();
+    document.querySelectorAll(".loc-list").forEach(l => l.innerHTML = "");
 });
 
 (async function main(){

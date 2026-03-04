@@ -17,7 +17,7 @@
 
 *{box-sizing:border-box}
 
-/* NUEVO: Bloquear el scroll de la ventana general */
+/* Bloquear el scroll de la ventana general */
 html, body {
   height: 100%;
   overflow: hidden; 
@@ -31,7 +31,7 @@ body{
 }
 
 .app{
-  height: 100vh; /* NUEVO: Ocupar el 100% de la ventana */
+  height: 100vh;
   display:flex; 
   flex-direction:column;
 }
@@ -65,7 +65,7 @@ body{
   gap: 14px;
   padding: 14px;
   flex: 1;
-  min-height: 0; /* NUEVO: Permite a los hijos flex encogerse correctamente */
+  min-height: 0;
 }
 
 .panel{
@@ -75,17 +75,11 @@ body{
   box-shadow: var(--shadow);
   display:flex;
   flex-direction: column;
-  height: 100%; /* NUEVO: Usar todo el alto de la grilla */
+  height: 100%;
 }
 
-/* NUEVO: Scroll independiente para el formulario */
-.panel--form{
-  overflow-y: auto; 
-}
-
-.panel--map{
-  overflow: hidden; /* Mantiene el mapa contenido */
-}
+.panel--form{ overflow-y: auto; }
+.panel--map{ overflow: hidden; }
 
 .panel__header{padding: 16px 16px 8px 16px;}
 .panel__header--map{display:flex; justify-content:space-between; align-items:flex-start; gap:12px;}
@@ -99,7 +93,6 @@ h2{margin:0; font-size:16px;}
 .divider{height:1px; background:var(--border); margin:14px 0;}
 
 .grid2{display:grid; grid-template-columns: 1fr 1fr; gap:12px; padding: 0 16px;}
-
 .field{padding: 0 16px 12px 16px;}
 
 label{display:block; font-size:12px; font-weight:700; color: rgba(14,23,30,0.85); margin-bottom:6px;}
@@ -172,7 +165,7 @@ input:focus, select:focus, textarea:focus{
   display:grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
-  align-items:end;
+  align-items:start;
 }
 
 .row .row__right{
@@ -180,7 +173,7 @@ input:focus, select:focus, textarea:focus{
   flex-direction:column;
   gap:8px;
   align-items:stretch;
-  justify-content:flex-end;
+  justify-content:flex-start;
 }
 
 .row__mini{display:flex; gap:10px; flex-wrap:wrap; font-size:12px; color:var(--muted);}
@@ -224,11 +217,7 @@ input:focus, select:focus, textarea:focus{
   color: rgba(14,23,30,0.85);
 }
 
-.map{
-  flex:1; 
-  min-height:0; /* NUEVO: Permite al mapa ajustarse al espacio restante */
-}
-
+.map{ flex:1; min-height:0; }
 .maptools{display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;}
 
 .maphint{
@@ -246,9 +235,53 @@ input:focus, select:focus, textarea:focus{
   background: rgba(255,255,255,0.55);
 }
 
+/* --- Múltiples Ubicaciones --- */
+.loc-list {
+  grid-column: 1 / span 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.loc-item {
+  border: 1px solid rgba(23,151,209,0.3);
+  background: rgba(23,151,209,0.03);
+  padding: 10px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.loc-item__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  font-weight: bold;
+  color: var(--primary-2);
+}
+
+.loc-item__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.btn-loc-del {
+  color: #d64545;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  text-decoration: underline;
+  padding: 0;
+}
+
 /* Responsive */
 @media (max-width: 1060px){
-  html, body { overflow: auto; } /* Restaurar scroll en móviles */
+  html, body { overflow: auto; } 
   .app { height: auto; min-height: 100vh; }
   .layout{grid-template-columns: 1fr; overflow: visible;}
   .panel { height: auto; }
