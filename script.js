@@ -60,6 +60,7 @@ let cacheSubactividades = [];         // [{...attributes}]
 let cacheTareas = [];                 // [{...attributes}]
 let activeRowId = null;               // rowId armed for map click
 let rowGeometries = new Map();        // rowId -> {lon,lat} wkid 4326
+let rowMunicipio = new Map();          // rowId -> {municipioNombre,codigoDANE}
 
 // Map
 let map, view, graphicsLayer, webMercatorUtils;
@@ -69,6 +70,31 @@ function setStatus(msg, type="info"){
   const prefix = type === "error" ? "❌ " : (type === "success" ? "✅ " : "ℹ️ ");
   elStatus.textContent = prefix + msg;
 }
+
+function clearRowErrors(){
+  document.querySelectorAll(".row.row--error").forEach(el => {
+    el.classList.remove("row--error");
+    const msg = el.querySelector(".row__err");
+    if(msg) msg.remove();
+  });
+}
+
+function markRowError(rowEl, message){
+  rowEl.classList.add("row--error");
+  let msg = rowEl.querySelector(".row__err");
+  if(!msg){
+    msg = document.createElement("div");
+    msg.className = "row__err";
+    msg.style.marginTop = "8px";
+    msg.style.fontSize = "12px";
+    msg.style.color = "#b42318";
+    msg.textContent = message;
+    rowEl.querySelector(".row__left")?.appendChild(msg);
+  }else{
+    msg.textContent = message;
+  }
+}
+
 
 function escapeHtml(s){
   return (s ?? "").toString()
@@ -646,7 +672,7 @@ function tareaRowHtml(t){
   const geo = toYesNo(geoRaw);
 
   return `
-  <div class="row" data-row-id="${rowId}" data-tarea-gid="${escapeHtml(gid)}" data-geo="${geo === true ? "1" : "0"}">
+  <div class="row" data-row-id="${rowId}" data-tarea-gid="${escapeHtml(gid)}" data-tarea-label="${escapeHtml((cod || nombre || gid))}" data-unidad="${escapeHtml(um)}" data-geo="${geo === true ? "1" : "0"}">
     <div class="row__left">
       <div class="field" style="padding:0; grid-column: 1 / span 2;">
         <label>Tarea</label>
@@ -664,15 +690,17 @@ function tareaRowHtml(t){
         <input class="row-valor" type="number" step="any" placeholder="Ej: 12" />
       </div>
 
+      ${geo === true ? `
       <div class="field" style="padding:0;">
         <label>Municipio (calculado)</label>
-        <input class="row-mun" type="text" placeholder="Se calcula al ubicar el punto" readonly ${geo === true ? "" : "disabled"} />
+        <input class="row-mun" type="text" placeholder="Se calcula al ubicar el punto" readonly />
       </div>
 
       <div class="field" style="padding:0;">
         <label>Código DANE (calculado)</label>
-        <input class="row-dane" type="text" placeholder="Se calcula al ubicar el punto" readonly ${geo === true ? "" : "disabled"} />
+        <input class="row-dane" type="text" placeholder="Se calcula al ubicar el punto" readonly />
       </div>
+      ` : ``}
 
       <div class="field" style="padding:0; grid-column: 1 / span 2;">
         <label>Observaciones</label>
@@ -855,73 +883,117 @@ function initMap(){
 
 // ---------- Save ----------
 function collectDraft(){
+  clearRowErrors();
+
   const actividadGid = elActividad.value;
-  const vig = Number(elVigencia.value) || new Date().getFullYear();
+  const vigRaw = elVigencia.value;
+  const vig = (vigRaw === "" || vigRaw === null) ? (new Date().getFullYear()) : (isNaN(Number(vigRaw)) ? String(vigRaw) : Number(vigRaw));
   const periodo = elPeriodo.value;
 
-  if(!actividadGid) throw new Error("Selecciona una actividad.");
+  if(!actividadGid){
+    throw new Error("Selecciona una actividad.");
+  }
+  if(!periodo){
+    throw new Error("Selecciona el periodo (trimestre).");
+  }
 
-  const avances = [];           // para REP_AvanceTarea
-  const ubicaciones = [];       // para REP_TareaUbicacion_PT (se llenan después, con globalId del avance)
-  const rowsForUbic = [];       // paralela a avances: info para ubicación
+  const avances = [];
+  const rowsForUbic = [];
+  const errors = [];
 
-  document.querySelectorAll(".row").forEach(rowEl => {
+  const rows = Array.from(document.querySelectorAll(".row"));
+  rows.forEach(rowEl => {
     const rowId = rowEl.getAttribute("data-row-id");
     const tareaGid = rowEl.getAttribute("data-tarea-gid");
+    const label = rowEl.getAttribute("data-tarea-label") || "Tarea";
+    const unidad = (rowEl.getAttribute("data-unidad") || "").toLowerCase();
     const isGeo = rowEl.getAttribute("data-geo") === "1";
 
-    const valor = rowEl.querySelector(".row-valor").value;
-    const obs = rowEl.querySelector(".row-obs").value;
-    const evi = rowEl.querySelector(".row-evi").value;
+    const valorEl = rowEl.querySelector(".row-valor");
+    const obsEl = rowEl.querySelector(".row-obs");
+    const eviEl = rowEl.querySelector(".row-evi");
+
+    const valorStr = valorEl ? valorEl.value : "";
+    const obs = obsEl ? obsEl.value.trim() : "";
+    const evi = eviEl ? eviEl.value.trim() : "";
+
+    const pt = rowGeometries.get(rowId);
     const munInfo = rowMunicipio.get(rowId) || {};
     const municipioNombre = munInfo.municipioNombre || "";
     const codigoDANE = munInfo.codigoDANE || "";
 
-    const pt = rowGeometries.get(rowId);
-
-    const hasAny = (valor !== "" && valor !== null) || obs || evi || municipioNombre || pt;
+    const hasAny = (valorStr !== "" && valorStr !== null) || obs || evi || (isGeo && (pt || municipioNombre || codigoDANE));
     if(!hasAny) return;
 
-    if(valor === "" || valor === null) throw new Error("Hay una tarea con avance sin 'Valor reportado'.");
-
-    if(isGeo){
-      if(!municipioNombre) throw new Error("Hay una tarea municipalizable sin Municipio (calculado).");
-      if(!codigoDANE) throw new Error("Hay una tarea municipalizable sin Código DANE (calculado).");
-      if(!pt) throw new Error("Hay una tarea municipalizable sin Punto (ubícalo en el mapa).");
+    // --- Validaciones por fila ---
+    if(valorStr === "" || valorStr === null){
+      errors.push({rowEl, msg: `🔸 ${label}: falta 'Valor reportado'.`});
+    }else{
+      const valorNum = Number(valorStr);
+      if(Number.isNaN(valorNum)){
+        errors.push({rowEl, msg: `🔸 ${label}: 'Valor reportado' no es un número válido.`});
+      }else{
+        if(unidad.includes("porcentaje")){
+          if(valorNum < 0 || valorNum > 100){
+            errors.push({rowEl, msg: `🔸 ${label}: en porcentaje el valor debe estar entre 0 y 100.`});
+          }
+        }else{
+          // regla general: no negativos
+          if(valorNum < 0){
+            errors.push({rowEl, msg: `🔸 ${label}: el valor no puede ser negativo.`});
+          }
+        }
+      }
     }
 
+    if(isGeo){
+      if(!pt){
+        errors.push({rowEl, msg: `🔸 ${label}: falta ubicar el punto en el mapa.`});
+      }
+      if(!municipioNombre || !codigoDANE){
+        errors.push({rowEl, msg: `🔸 ${label}: el punto debe estar dentro de la jurisdicción CAR para calcular Municipio y DANE.`});
+      }
+    }
+
+    // Si ya hay errores, no construimos el add para esta fila aún
+    // (de todas formas se puede construir, pero preferimos bloquear el envío)
     const attrs = {};
-    // mapeo campos avance
     if(avanceInfo.fkTareaField) attrs[avanceInfo.fkTareaField] = tareaGid;
     if(avanceInfo.fkActividadField) attrs[avanceInfo.fkActividadField] = actividadGid;
     if(avanceInfo.vigenciaField) attrs[avanceInfo.vigenciaField] = vig;
     if(avanceInfo.periodoField) attrs[avanceInfo.periodoField] = periodo;
-    if(avanceInfo.valorField) attrs[avanceInfo.valorField] = Number(valor);
-    if(avanceInfo.obsField) attrs[avanceInfo.obsField] = obs || null;
-    if(avanceInfo.evidenciaField) attrs[avanceInfo.evidenciaField] = evi || null;
-    if(avanceInfo.fechaField) attrs[avanceInfo.fechaField] = Date.now();
+
+    if(avanceInfo.valorField && valorStr !== "" && valorStr !== null) attrs[avanceInfo.valorField] = Number(valorStr);
+    if(avanceInfo.obsField) attrs[avanceInfo.obsField] = obs;
+    if(avanceInfo.evidenciaField) attrs[avanceInfo.evidenciaField] = evi;
 
     avances.push({ attributes: attrs });
-
-    if(isGeo){
-      rowsForUbic.push({ rowId, municipioNombre, codigoDANE, pt });
-    }else{
-      rowsForUbic.push(null);
-    }
+    rowsForUbic.push({ rowId, isGeo, municipioNombre, codigoDANE, pt });
   });
 
-  if(avances.length === 0) throw new Error("No hay avances para guardar.");
-
+  // Narrativa
   const txtReporte = elReporteNarrativo?.value?.trim() || "";
   const txtDescLogros = elDescLogros?.value?.trim() || "";
   const txtPrincipales = elPrincipalesLogros?.value?.trim() || "";
-
   const hasNarrativa = !!(txtReporte || txtDescLogros || txtPrincipales);
   const narrativa = hasNarrativa ? { attributes: buildNarrativaAttrs(actividadGid, vig, periodo, {
     reporte: txtReporte,
     descLogros: txtDescLogros,
     principales: txtPrincipales
   }) } : null;
+
+  // Reglas globales
+  if(avances.length === 0 && !hasNarrativa){
+    throw new Error("No hay nada para enviar: registra al menos un avance o completa el reporte narrativo.");
+  }
+
+  if(errors.length){
+    // Pintar filas con error y mostrar resumen
+    errors.forEach(e => markRowError(e.rowEl, e.msg));
+    const first = errors[0].rowEl;
+    first.scrollIntoView({behavior:"smooth", block:"center"});
+    throw new Error(`Hay ${errors.length} error(es). Revisa las tareas marcadas en rojo.`);
+  }
 
   return { avances, rowsForUbic, narrativa };
 }

@@ -233,3 +233,6 @@ input:focus, select:focus, textarea:focus{
   .panel--map{min-height:460px;}
   .map{min-height:460px;}
 }
+
+/* Validación */
+.row--error{border:1px solid #f04438 !important; box-shadow:0 0 0 3px rgba(240,68,56,.15) !important;}
