@@ -18,8 +18,8 @@
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V2/FeatureServer";
 
 // --- Cartografía CAR (Jurisdicción) ---
-const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/CartografiaCAR/FeatureServer";
-const CAR_JUR_LAYER_ID = 1; // Jurisdiccion_CAR
+const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/MpiosCAR/FeatureServer";
+const CAR_JUR_LAYER_ID = 0; // Municipios_CAR (4326)
 
 
 // Índices (según configuración DATAPAC_V2)
@@ -269,10 +269,10 @@ async function updateMunicipioFromCAR(rowId, lon, lat){
     rowMunicipio.set(rowId, res);
     if(munEl) munEl.value = res.municipioNombre;
     if(daneEl) daneEl.value = String(res.codigoDANE ?? "");
-    setStatus("Municipio y DANE calculados automáticamente (Jurisdicción CAR).", "ok");
+    setStatus("Municipio y DANE calculados automáticamente (Municipios CAR).", "ok");
   }catch(e){
     console.error(e);
-    setStatus("Error consultando Jurisdicción CAR. Revisa conexión o permisos.", "error");
+    setStatus("Error consultando Municipios CAR. Revisa conexión o permisos.", "error");
   }
 }
 }
@@ -795,10 +795,10 @@ function initMap(){
 
       map = new Map({ basemap: "osm" });
 
-      // Jurisdicción CAR (polígono)
+      // Municipios CAR (polígono)
       const jurisdiccionLayer = new FeatureLayer({
         url: `${CAR_SERVICE_URL}/${CAR_JUR_LAYER_ID}`,
-        title: "Jurisdicción CAR",
+        title: "Municipios CAR",
         opacity: 0.15,
         outFields: ["Municipio","CODDANE"]
       });
