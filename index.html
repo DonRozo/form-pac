@@ -11,6 +11,29 @@
 </head>
 
 <body>
+  <div id="login-overlay" class="login-overlay">
+    <div class="login-card">
+      <h2>Ingreso a DATA-PAC</h2>
+      <p class="muted">Verificación de identidad</p>
+      
+      <div id="login-step-1" class="login-step active">
+        <label>Cédula</label>
+        <input type="text" id="login-cedula" placeholder="Ej: 10203040" />
+        <label>Correo electrónico institucional</label>
+        <input type="email" id="login-correo" placeholder="usuario@cundinamarca.gov.co" />
+        <button class="btn btn--primary" id="btn-solicitar-codigo">Solicitar Código</button>
+        <div id="login-msg-1" style="color: #d64545; font-size: 12px; margin-top: 10px; text-align: center;"></div>
+      </div>
+
+      <div id="login-step-2" class="login-step">
+        <p class="muted" style="margin-bottom: 10px;">Hemos enviado un código de 6 dígitos a tu correo.</p>
+        <label>Código de verificación (OTP)</label>
+        <input type="text" id="login-codigo" placeholder="Ej: 123456" maxlength="6" style="text-align: center; font-size: 24px; letter-spacing: 4px;" />
+        <button class="btn btn--primary" id="btn-validar-codigo">Verificar y Entrar</button>
+        <div id="login-msg-2" style="color: #d64545; font-size: 12px; margin-top: 10px; text-align: center;"></div>
+      </div>
+    </div>
+  </div>
   <div class="app">
     <header class="topbar">
       <div class="brand">

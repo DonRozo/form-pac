@@ -294,3 +294,21 @@ input:focus, select:focus, textarea:focus{
   border:1px solid #f04438 !important; 
   box-shadow:0 0 0 3px rgba(240,68,56,.15) !important;
 }
+
+/* --- LOGIN OVERLAY --- */
+.login-overlay {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  background: rgba(14,23,30,0.85); backdrop-filter: blur(8px);
+  display: flex; justify-content: center; align-items: center;
+  z-index: 9999;
+}
+.login-card {
+  background: var(--card); padding: 30px; border-radius: 16px;
+  width: 100%; max-width: 400px; box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+}
+.login-card h2 { text-align: center; margin-bottom: 8px; font-size: 20px; }
+.login-card p { text-align: center; margin-bottom: 24px; }
+.login-step { display: none; }
+.login-step.active { display: block; }
+.login-card .btn { width: 100%; margin-top: 16px; font-size: 14px; padding: 12px; }
+.login-card input { margin-bottom: 12px; font-size: 15px; padding: 12px; }
