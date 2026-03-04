@@ -4,7 +4,7 @@
   --text: #0E171E;
   --muted: #5b6674;
 
-  /* Mantén colores */
+  /* Colores */
   --primary: #1797D1;
   --primary-2: #0b5269;
   --danger: #d64545;
@@ -235,4 +235,7 @@ input:focus, select:focus, textarea:focus{
 }
 
 /* Validación */
-.row--error{border:1px solid #f04438 !important; box-shadow:0 0 0 3px rgba(240,68,56,.15) !important;}
+.row--error{
+  border:1px solid #f04438 !important; 
+  box-shadow:0 0 0 3px rgba(240,68,56,.15) !important;
+}

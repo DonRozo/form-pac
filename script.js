@@ -1,17 +1,6 @@
 /* ===========================================================
    DATA-PAC | Reporte Trimestral (v2)
    Servicio: DATAPAC_V2
-
-   Objetivo:
-   - Seleccionar Actividad (CFG_Actividad)
-   - Mostrar Subactividades y Tareas asociadas (CFG_SubActividad / CFG_Tarea)
-   - Reportar avance por tarea (REP_AvanceTarea)
-   - Si la tarea es municipalizable/georreferenciable: seleccionar municipio y ubicar punto (REP_TareaUbicacion_PT)
-   - Reporte narrativo trimestral (REP_ReporteNarrativo)
-
-   Nota:
-   - Esta versión mantiene UI/estilos del formulario original (v1).
-   - La lógica de lectura de campos es "tolerante" (detecta nombres reales en cada tabla).
    =========================================================== */
 
 // --- Servicio ---
@@ -21,20 +10,19 @@ const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/s
 const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/MpiosCAR/FeatureServer";
 const CAR_JUR_LAYER_ID = 0; // Municipios_CAR (4326)
 
-
 // Índices (según configuración DATAPAC_V2)
 const URL_ACTIVIDAD = `${SERVICE_URL}/6`;
 const URL_SUBACTIVIDAD = `${SERVICE_URL}/7`;
 const URL_TAREA = `${SERVICE_URL}/8`;
 const URL_AVANCE_TAREA = `${SERVICE_URL}/9`;
-const URL_TAREA_UBICACION = `${SERVICE_URL}/10`; // layer (point)
+const URL_TAREA_UBICACION = `${SERVICE_URL}/10`; 
 const URL_NARRATIVA = `${SERVICE_URL}/11`;
 
 // ---------- DOM ----------
 const elActividad = document.getElementById("sel-actividad");
 const elVigencia = document.getElementById("sel-vigencia");
 const elPeriodo = document.getElementById("sel-periodo");
-const elIndicadores = document.getElementById("indicadores"); // container reutilizado (tarjetas)
+const elIndicadores = document.getElementById("indicadores"); 
 const elReporteNarrativo = document.getElementById("txt-reporte-narrativo");
 const elDescLogros = document.getElementById("txt-logros-descripcion");
 const elPrincipalesLogros = document.getElementById("txt-logros-principales");
@@ -48,22 +36,23 @@ const btnCentrar = document.getElementById("btn-centrar");
 const pillActive = document.getElementById("pill-active");
 
 // ---------- State ----------
-let municipiosDomain = null;          // {code: name}
-let actividadInfo = null;             // metadata + field mapping for CFG_Actividad
-let subactividadInfo = null;          // mapping for CFG_SubActividad
-let tareaInfo = null;                // mapping for CFG_Tarea
-let avanceInfo = null;               // mapping for REP_AvanceTarea
-let ubicacionInfo = null;            // mapping for REP_TareaUbicacion_PT
-let narrativaInfo = null;            // mapping for REP_ReporteNarrativo
+let municipiosDomain = null;          
+let actividadInfo = null;             
+let subactividadInfo = null;          
+let tareaInfo = null;                
+let avanceInfo = null;               
+let ubicacionInfo = null;            
+let narrativaInfo = null;            
 
-let cacheSubactividades = [];         // [{...attributes}]
-let cacheTareas = [];                 // [{...attributes}]
-let activeRowId = null;               // rowId armed for map click
-let rowGeometries = new Map();        // rowId -> {lon,lat} wkid 4326
-let rowMunicipio = new Map();          // rowId -> {municipioNombre,codigoDANE}
+let cacheSubactividades = [];         
+let cacheTareas = [];                 
+let activeRowId = null;               
+let rowGeometries = new Map();        
+let rowMunicipio = new Map();         
 
 // Map
-let map, view, graphicsLayer, webMercatorUtils;
+let map, view, graphicsLayer, webMercatorUtils, sketchVM;
+let jurisdiccionLayerView = null; // Guardará el LayerView para consultas rápidas
 
 // ---------- Helpers ----------
 function setStatus(msg, type="info"){
@@ -94,7 +83,6 @@ function markRowError(rowEl, message){
     msg.textContent = message;
   }
 }
-
 
 function escapeHtml(s){
   return (s ?? "").toString()
@@ -152,7 +140,6 @@ function pickField(fields, candidates){
     const f = byName.get(normalize(c));
     if(f) return f;
   }
-  // fuzzy contains
   for(const f of (fields||[])){
     const n = normalize(f.name);
     for(const c of candidates){
@@ -169,7 +156,6 @@ function fieldType(fields, name){
 }
 
 function quoteIfNeeded(val, esriType){
-  // esriFieldTypeString / esriFieldTypeGUID -> quote
   if(esriType === "esriFieldTypeString" || esriType === "esriFieldTypeGUID" || esriType === "esriFieldTypeDate"){
     return `'${String(val).replaceAll("'","''")}'`;
   }
@@ -177,13 +163,13 @@ function quoteIfNeeded(val, esriType){
 }
 
 function toYesNo(v){
-  // normaliza para detectar municipalizable
   const s = normalize(v);
   if(s === "si" || s === "sí" || s === "s" || s === "1" || s === "true") return true;
   if(s === "no" || s === "0" || s === "false") return false;
   return null;
 }
 
+// ---------- Geometría y Mapa ----------
 function clearMapGraphics(){
   if(graphicsLayer) graphicsLayer.removeAll();
 }
@@ -194,218 +180,193 @@ function removeGraphicForRow(rowId){
   toRemove.forEach(g => graphicsLayer.remove(g));
 }
 
-function upsertGraphicForRow(rowId, lon, lat){
-  require(["esri/Graphic"], (Graphic) => {
-    removeGraphicForRow(rowId);
-    const graphic = new Graphic({
-      geometry: { type: "point", longitude: lon, latitude: lat, spatialReference: { wkid: 4326 } },
-      symbol: {
-        type: "simple-marker",
-        style: "circle",
-        color: [23,151,209,0.9],
-        size: 10,
-        outline: { color: [11,82,105,1], width: 2 }
-      },
-      attributes: { rowId }
-    });
-    graphicsLayer.add(graphic);
+function upsertGraphicForRow(rowId, lon, lat, Graphic){
+  removeGraphicForRow(rowId);
+  const graphic = new Graphic({
+    geometry: { type: "point", longitude: lon, latitude: lat, spatialReference: { wkid: 4326 } },
+    symbol: {
+      type: "simple-marker",
+      style: "circle",
+      color: [23,151,209,0.9],
+      size: 10,
+      outline: { color: [11,82,105,1], width: 2 }
+    },
+    attributes: { rowId }
   });
+  graphicsLayer.add(graphic);
+  return graphic;
 }
 
+// CORRECCIÓN 1: Se agrega la llave de cierre faltante
 function zoomToPoint(lon, lat){
   if(!view) return;
   view.goTo({ center: [lon, lat], zoom: 14 });
-
-async function queryJurisdiccionCAR(lon, lat){
-  // Intersectar punto (WGS84) con Jurisdiccion_CAR (polígonos)
-  const url = `${CAR_SERVICE_URL}/${CAR_JUR_LAYER_ID}/query`;
-  const params = {
-    f: "json",
-    geometry: JSON.stringify({ x: lon, y: lat, spatialReference: { wkid: 4326 } }),
-    geometryType: "esriGeometryPoint",
-    spatialRel: "esriSpatialRelIntersects",
-    inSR: 4326,
-    outFields: "Municipio,CODDANE",
-    returnGeometry: false,
-    resultRecordCount: 1
-  };
-  const j = await fetchJson(url, params);
-  const feats = j.features || [];
-  if(!feats.length) return null;
-  const a = feats[0].attributes || {};
-  return {
-    municipioNombre: a.Municipio ?? a.MUNICIPIO ?? a.municipio ?? "",
-    codigoDANE: a.CODDANE ?? a.CodDane ?? a.coddane ?? ""
-  };
 }
 
-async function updateMunicipioFromCAR(rowId, lon, lat){
+// MEJORA 4: Centralizar la conversión de geometría
+function getGeographicLocation(p) {
+  if (p.spatialReference && p.spatialReference.isWebMercator && webMercatorUtils) {
+    return webMercatorUtils.webMercatorToGeographic(p);
+  }
+  return p;
+}
+
+// MEJORAS 2, 3 Y 5: Consulta espacial en cliente (rápida), feedback visual y tolerancia de campos
+async function updateMunicipioFromCAR(rowId, lon, lat, mapPoint){
   const rowEl = document.querySelector(`.row[data-row-id="${rowId}"]`);
   if(!rowEl) return;
 
-  // Solo aplica a municipalizables
   const isGeo = rowEl.getAttribute("data-geo") === "1";
   if(!isGeo) return;
 
+  if (!jurisdiccionLayerView) {
+    setStatus("La capa de municipios aún se está cargando, inténtalo en un momento.", "error");
+    return;
+  }
+
   try{
-    const res = await queryJurisdiccionCAR(lon, lat);
+    // Feedback visual (cursor)
+    document.body.style.cursor = 'wait';
+    setStatus("Calculando jurisdicción localmente...", "info");
+
+    const query = {
+      geometry: mapPoint,
+      spatialRelationship: "intersects",
+      returnGeometry: false,
+      outFields: ["*"] // Tolera cualquier estructura de campos
+    };
+
+    const result = await jurisdiccionLayerView.queryFeatures(query);
+    const feats = result.features || [];
+
     const munEl = rowEl.querySelector(".row-mun");
     const daneEl = rowEl.querySelector(".row-dane");
-    if(!res || !res.municipioNombre){
+
+    if(!feats.length){
       rowMunicipio.delete(rowId);
       if(munEl) munEl.value = "";
       if(daneEl) daneEl.value = "";
-      // Popup
-      if(view){
-        view.popup.open({
-          title: "Fuera de jurisdicción",
-          content: "El punto no está dentro de la jurisdicción de la CAR.",
-          location: { longitude: lon, latitude: lat }
-        });
-      }
+      
+      view.popup.open({
+        title: "Fuera de jurisdicción",
+        content: "El punto no está dentro de la jurisdicción de la CAR.",
+        location: mapPoint
+      });
       setStatus("El punto no está dentro de la jurisdicción de la CAR. Ubica el punto nuevamente.", "error");
       return;
     }
+
+    const a = feats[0].attributes || {};
+    
+    // Búsqueda dinámica tolerante
+    const keys = Object.keys(a);
+    const munKey = keys.find(k => normalize(k).includes("municipio") || normalize(k).includes("mpio"));
+    const daneKey = keys.find(k => normalize(k).includes("dane"));
+
+    const res = {
+      municipioNombre: munKey ? a[munKey] : "",
+      codigoDANE: daneKey ? a[daneKey] : ""
+    };
+
     rowMunicipio.set(rowId, res);
     if(munEl) munEl.value = res.municipioNombre;
     if(daneEl) daneEl.value = String(res.codigoDANE ?? "");
-    setStatus("Municipio y DANE calculados automáticamente (Municipios CAR).", "ok");
+    
+    view.popup.close();
+    setStatus("Municipio y DANE calculados automáticamente (Cálculo rápido en cliente).", "success");
   }catch(e){
     console.error(e);
-    setStatus("Error consultando Municipios CAR. Revisa conexión o permisos.", "error");
+    setStatus("Error consultando la capa de Municipios localmente.", "error");
+  }finally{
+    document.body.style.cursor = 'default';
   }
-}
 }
 
 // ---------- Metadata + Field mapping ----------
-async function getLayerInfo(url){
-  return await fetchJson(url, { f:"json" });
-}
+async function getLayerInfo(url){ return await fetchJson(url, { f:"json" }); }
 
 function mapActividadFields(info){
   const fields = info.fields || [];
-  const globalId = pickField(fields, ["GlobalID", "globalid"]);
-  const activo = pickField(fields, ["Activo", "ACTIVO", "EsActivo"]);
-  const vigencia = pickField(fields, ["Vigencia", "VIGENCIA", "Ano", "Año"]);
-  const codigo = pickField(fields, ["ActividadID", "CodigoActividad", "Codigo", "Codigo_Actividad"]);
-  const nombre = pickField(fields, ["Nombre", "NombreActividad", "Actividad", "Nombre_Actividad", "Actividades"]);
   return {
     fields,
-    globalIdField: globalId?.name || null,
-    activoField: activo?.name || null,
-    vigenciaField: vigencia?.name || null,
-    codigoField: codigo?.name || null,
-    nombreField: nombre?.name || null
+    globalIdField: pickField(fields, ["GlobalID", "globalid"])?.name || null,
+    activoField: pickField(fields, ["Activo", "ACTIVO", "EsActivo"])?.name || null,
+    vigenciaField: pickField(fields, ["Vigencia", "VIGENCIA", "Ano", "Año"])?.name || null,
+    codigoField: pickField(fields, ["ActividadID", "CodigoActividad", "Codigo", "Codigo_Actividad"])?.name || null,
+    nombreField: pickField(fields, ["Nombre", "NombreActividad", "Actividad", "Nombre_Actividad", "Actividades"])?.name || null
   };
 }
 
 function mapSubActividadFields(info){
   const fields = info.fields || [];
-  const globalId = pickField(fields, ["GlobalID"]);
-  const fkActividad = pickField(fields, ["ActividadGlobalID", "ActividadGuid", "ActividadGUID", "ActividadIdGlobalID", "GlobalIDActividad", "Actividad"]);
-  const codigo = pickField(fields, ["CodigoSubActividad", "SubActividadID", "Codigo", "Codigo_SubActividad"]);
-  const nombre = pickField(fields, ["NombreSubActividad", "SubActividad", "Nombre", "Nombre_SubActividad"]);
-  const activo = pickField(fields, ["Activo", "ACTIVO", "EsActivo"]);
-  const vigencia = pickField(fields, ["Vigencia", "VIGENCIA", "Ano", "Año"]);
   return {
     fields,
-    globalIdField: globalId?.name || null,
-    fkActividadField: fkActividad?.name || null,
-    codigoField: codigo?.name || null,
-    nombreField: nombre?.name || null,
-    activoField: activo?.name || null,
-    vigenciaField: vigencia?.name || null
+    globalIdField: pickField(fields, ["GlobalID"])?.name || null,
+    fkActividadField: pickField(fields, ["ActividadGlobalID", "ActividadGuid", "ActividadGUID", "ActividadIdGlobalID", "GlobalIDActividad", "Actividad"])?.name || null,
+    codigoField: pickField(fields, ["CodigoSubActividad", "SubActividadID", "Codigo", "Codigo_SubActividad"])?.name || null,
+    nombreField: pickField(fields, ["NombreSubActividad", "SubActividad", "Nombre", "Nombre_SubActividad"])?.name || null,
+    activoField: pickField(fields, ["Activo", "ACTIVO", "EsActivo"])?.name || null,
+    vigenciaField: pickField(fields, ["Vigencia", "VIGENCIA", "Ano", "Año"])?.name || null
   };
 }
 
 function mapTareaFields(info){
   const fields = info.fields || [];
-  const globalId = pickField(fields, ["GlobalID"]);
-  const fkSub = pickField(fields, ["SubActividadGlobalID", "SubActividadGuid", "SubActividadGUID", "GlobalIDSubActividad", "SubActividad"]);
-  const codigo = pickField(fields, ["CodigoTarea", "TareaID", "Codigo", "Codigo_Tarea"]);
-  const nombre = pickField(fields, ["NombreTarea", "Tarea", "Nombre", "Nombre_Tarea"]);
-  const peso = pickField(fields, ["PesoTarea", "Peso", "Ponderacion", "Ponderación"]);
-  const meta = pickField(fields, ["Meta", "MetaTarea", "MetaAnual", "ValorMeta"]);
-  const unidad = pickField(fields, ["UnidadMedida", "Unidad", "UM"]);
-  const geo = pickField(fields, ["EsGeorreferenciable", "Municipalizable", "EsMunicipalizable", "RequiereUbicacion", "RequiereMunicipalizacion"]);
-  const activo = pickField(fields, ["Activo", "ACTIVO", "EsActivo"]);
-  const vigencia = pickField(fields, ["Vigencia", "VIGENCIA", "Ano", "Año"]);
   return {
     fields,
-    globalIdField: globalId?.name || null,
-    fkSubActividadField: fkSub?.name || null,
-    codigoField: codigo?.name || null,
-    nombreField: nombre?.name || null,
-    pesoField: peso?.name || null,
-    metaField: meta?.name || null,
-    unidadField: unidad?.name || null,
-    geoField: geo?.name || null,
-    activoField: activo?.name || null,
-    vigenciaField: vigencia?.name || null
+    globalIdField: pickField(fields, ["GlobalID"])?.name || null,
+    fkSubActividadField: pickField(fields, ["SubActividadGlobalID", "SubActividadGuid", "SubActividadGUID", "GlobalIDSubActividad", "SubActividad"])?.name || null,
+    codigoField: pickField(fields, ["CodigoTarea", "TareaID", "Codigo", "Codigo_Tarea"])?.name || null,
+    nombreField: pickField(fields, ["NombreTarea", "Tarea", "Nombre", "Nombre_Tarea"])?.name || null,
+    pesoField: pickField(fields, ["PesoTarea", "Peso", "Ponderacion", "Ponderación"])?.name || null,
+    metaField: pickField(fields, ["Meta", "MetaTarea", "MetaAnual", "ValorMeta"])?.name || null,
+    unidadField: pickField(fields, ["UnidadMedida", "Unidad", "UM"])?.name || null,
+    geoField: pickField(fields, ["EsGeorreferenciable", "Municipalizable", "EsMunicipalizable", "RequiereUbicacion", "RequiereMunicipalizacion"])?.name || null,
+    activoField: pickField(fields, ["Activo", "ACTIVO", "EsActivo"])?.name || null,
+    vigenciaField: pickField(fields, ["Vigencia", "VIGENCIA", "Ano", "Año"])?.name || null
   };
 }
 
 function mapAvanceFields(info){
   const fields = info.fields || [];
-  const fkTarea = pickField(fields, ["TareaGlobalID", "GlobalIDTarea", "TareaGUID", "TareaGuid", "Tarea"]);
-  const fkActividad = pickField(fields, ["ActividadGlobalID", "GlobalIDActividad", "ActividadGUID", "ActividadGuid"]);
-  const vigencia = pickField(fields, ["Vigencia", "Ano", "Año"]);
-  const periodo = pickField(fields, ["Periodo", "Trimestre", "PeriodoTrimestre"]);
-  const valor = pickField(fields, ["ValorReportado", "ValorEjecutado", "Valor", "Avance", "AvanceValor"]);
-  const obs = pickField(fields, ["Observaciones", "Obs", "Comentario", "Comentarios"]);
-  const evi = pickField(fields, ["EvidenciaURL", "URLSoporte", "SoporteURL", "Url"]);
-  const fecha = pickField(fields, ["FechaRegistro", "Fecha", "FechaReporte"]);
   return {
     fields,
-    fkTareaField: fkTarea?.name || null,
-    fkActividadField: fkActividad?.name || null,
-    vigenciaField: vigencia?.name || null,
-    periodoField: periodo?.name || null,
-    valorField: valor?.name || null,
-    obsField: obs?.name || null,
-    evidenciaField: evi?.name || null,
-    fechaField: fecha?.name || null
+    fkTareaField: pickField(fields, ["TareaGlobalID", "GlobalIDTarea", "TareaGUID", "TareaGuid", "Tarea"])?.name || null,
+    fkActividadField: pickField(fields, ["ActividadGlobalID", "GlobalIDActividad", "ActividadGUID", "ActividadGuid"])?.name || null,
+    vigenciaField: pickField(fields, ["Vigencia", "Ano", "Año"])?.name || null,
+    periodoField: pickField(fields, ["Periodo", "Trimestre", "PeriodoTrimestre"])?.name || null,
+    valorField: pickField(fields, ["ValorReportado", "ValorEjecutado", "Valor", "Avance", "AvanceValor"])?.name || null,
+    obsField: pickField(fields, ["Observaciones", "Obs", "Comentario", "Comentarios"])?.name || null,
+    evidenciaField: pickField(fields, ["EvidenciaURL", "URLSoporte", "SoporteURL", "Url"])?.name || null,
+    fechaField: pickField(fields, ["FechaRegistro", "Fecha", "FechaReporte"])?.name || null
   };
 }
 
 function mapUbicacionFields(info){
   const fields = info.fields || [];
-  const fkAvance = pickField(fields, ["AvanceTareaGlobalID", "GlobalIDAvanceTarea", "AvanceGUID", "AvanceGuid", "AvanceTarea", "AvanceTareaID"]);
-  const municipioNombre = pickField(fields, ["MunicipioNombre", "Municipio", "NombreMunicipio", "Municipio_Nombre"]);
-  const codigoDane = pickField(fields, ["CodigoDANE", "CODDANE", "CodDANE", "CodigoDane", "Codigo_DANE"]);
-  const desc = pickField(fields, ["Descripcion", "Descripción", "Observaciones", "Lugar", "Sitio"]);
   return {
     fields,
-    fkAvanceField: fkAvance?.name || null,
-    municipioNombreField: municipioNombre?.name || null,
-    codigoDaneField: codigoDane?.name || null,
-    descripcionField: desc?.name || null
+    fkAvanceField: pickField(fields, ["AvanceTareaGlobalID", "GlobalIDAvanceTarea", "AvanceGUID", "AvanceGuid", "AvanceTarea", "AvanceTareaID"])?.name || null,
+    municipioNombreField: pickField(fields, ["MunicipioNombre", "Municipio", "NombreMunicipio", "Municipio_Nombre"])?.name || null,
+    codigoDaneField: pickField(fields, ["CodigoDANE", "CODDANE", "CodDANE", "CodigoDane", "Codigo_DANE"])?.name || null,
+    descripcionField: pickField(fields, ["Descripcion", "Descripción", "Observaciones", "Lugar", "Sitio"])?.name || null
   };
 }
 
 function mapNarrativaFields(info){
   const fields = info.fields || [];
-  const fkActividad = pickField(fields, ["ActividadGlobalID", "GlobalIDActividad", "ActividadGUID", "ActividadGuid"]);
-  const vigencia = pickField(fields, ["Vigencia", "Ano", "Año"]);
-  const periodo = pickField(fields, ["Periodo", "Trimestre", "PeriodoTrimestre"]);
-  // DATAPAC_V2: REP_ReporteNarrativo suele tener 3 campos de texto
-  const reporte = pickField(fields, ["ReporteNarrativo", "TextoNarrativo", "Narrativa", "Texto", "Descripcion", "Descripción"]);
-  const descLogros = pickField(fields, ["DescripcionLogrosAlcanzados", "DescripciónLogrosAlcanzados", "DescripcionLogros", "DescripciónLogros", "LogrosAlcanzados", "DescripcionDeLogros", "DescripciónDeLogros"]);
-  const principales = pickField(fields, ["PrincipalesLogros", "LogrosPrincipales", "Principales", "Logros"]);
-  const fecha = pickField(fields, ["FechaRegistro", "Fecha"]);
   return {
     fields,
-    fkActividadField: fkActividad?.name || null,
-    vigenciaField: vigencia?.name || null,
-    periodoField: periodo?.name || null,
-    reporteField: reporte?.name || null,
-    descLogrosField: descLogros?.name || null,
-    principalesLogrosField: principales?.name || null,
-    fechaField: fecha?.name || null
+    fkActividadField: pickField(fields, ["ActividadGlobalID", "GlobalIDActividad", "ActividadGUID", "ActividadGuid"])?.name || null,
+    vigenciaField: pickField(fields, ["Vigencia", "Ano", "Año"])?.name || null,
+    periodoField: pickField(fields, ["Periodo", "Trimestre", "PeriodoTrimestre"])?.name || null,
+    reporteField: pickField(fields, ["ReporteNarrativo", "TextoNarrativo", "Narrativa", "Texto", "Descripcion", "Descripción"])?.name || null,
+    descLogrosField: pickField(fields, ["DescripcionLogrosAlcanzados", "DescripciónLogrosAlcanzados", "DescripcionLogros", "DescripciónLogros", "LogrosAlcanzados", "DescripcionDeLogros", "DescripciónDeLogros"])?.name || null,
+    principalesLogrosField: pickField(fields, ["PrincipalesLogros", "LogrosPrincipales", "Principales", "Logros"])?.name || null,
+    fechaField: pickField(fields, ["FechaRegistro", "Fecha"])?.name || null
   };
 }
 
-// ---------- Municipios domain ----------
 async function loadMunicipiosDomain(){
   const svc = await fetchJson(SERVICE_URL, { f:"json" });
   if(Array.isArray(svc?.domains)){
@@ -418,7 +379,6 @@ async function loadMunicipiosDomain(){
       return;
     }
   }
-  // fallback: domain in ubicación layer
   const lyr = await fetchJson(`${URL_TAREA_UBICACION}`, { f:"json" });
   const municipioField = (lyr?.fields || []).find(f => normalize(f?.name) === "municipio");
   if(municipioField?.domain?.codedValues){
@@ -426,17 +386,6 @@ async function loadMunicipiosDomain(){
     return;
   }
   municipiosDomain = null;
-}
-
-function municipioOptionsHtml(){
-  if(!municipiosDomain){
-    return `<option value="">(Dominio DM_Municipio no disponible)</option>`;
-  }
-  const opts = Object.entries(municipiosDomain)
-    .sort((a,b)=> a[1].localeCompare(b[1], 'es'))
-    .map(([code,name]) => `<option value="${escapeHtml(code)}">${escapeHtml(name)} (${escapeHtml(code)})</option>`)
-    .join("");
-  return `<option value="">— Selecciona municipio —</option>` + opts;
 }
 
 // ---------- Load activities ----------
@@ -451,18 +400,14 @@ async function loadActividades(){
   const fCod = actividadInfo.codigoField;
   const fNom = actividadInfo.nombreField;
 
-  if(!fGid){
-    throw new Error("CFG_Actividad no expone campo GlobalID. Revisa la tabla 6.");
-  }
+  if(!fGid) throw new Error("CFG_Actividad no expone campo GlobalID. Revisa la tabla 6.");
 
-  // where tolerante
   const vigType = fieldType(actividadInfo.fields, fVig);
   const vigExpr = fVig ? `${fVig} = ${quoteIfNeeded(vig, vigType)}` : "1=1";
 
   let actExpr = "1=1";
   if(fAct){
     const t = fieldType(actividadInfo.fields, fAct);
-    // intenta SI/1/true
     if(t === "esriFieldTypeString") actExpr = `(${fAct} = 'SI' OR ${fAct} = 'Sí' OR ${fAct} = 'S' OR ${fAct} = '1' OR ${fAct} = 'TRUE')`;
     else actExpr = `(${fAct} = 1)`;
   }
@@ -477,9 +422,7 @@ async function loadActividades(){
     returnGeometry: "false"
   });
 
-  if(q?.error){
-    throw new Error(q.error.message || "Error consultando CFG_Actividad.");
-  }
+  if(q?.error) throw new Error(q.error.message || "Error consultando CFG_Actividad.");
 
   const feats = q?.features || [];
   if(feats.length === 0){
@@ -516,13 +459,11 @@ async function loadSubactividadesYTareas(actividadGlobalId){
 
   setStatus("Cargando subactividades y tareas…");
 
-  // Subactividades
   if(!subactividadInfo.fkActividadField){
     throw new Error("No se detectó el campo FK hacia Actividad en CFG_SubActividad (tabla 7).");
   }
 
   const subWhereParts = [];
-  // activo + vigencia opcional
   if(subactividadInfo.activoField){
     const t = fieldType(subactividadInfo.fields, subactividadInfo.activoField);
     subWhereParts.push(t === "esriFieldTypeString"
@@ -554,12 +495,9 @@ async function loadSubactividadesYTareas(actividadGlobalId){
     returnGeometry: "false"
   });
 
-  if(subQ?.error){
-    throw new Error(subQ.error.message || "Error consultando CFG_SubActividad.");
-  }
+  if(subQ?.error) throw new Error(subQ.error.message || "Error consultando CFG_SubActividad.");
   cacheSubactividades = (subQ.features || []).map(f => f.attributes || {});
 
-  // Tareas (traemos todas de esas subactividades)
   if(!tareaInfo.fkSubActividadField){
     throw new Error("No se detectó el campo FK hacia SubActividad en CFG_Tarea (tabla 8).");
   }
@@ -571,7 +509,6 @@ async function loadSubactividadesYTareas(actividadGlobalId){
     return;
   }
 
-  // ArcGIS: IN ('a','b') para GUID string
   const fkSubType = fieldType(tareaInfo.fields, tareaInfo.fkSubActividadField);
   const inList = subIds.map(x => quoteIfNeeded(x, fkSubType)).join(",");
   const tareaWhereParts = [];
@@ -607,12 +544,9 @@ async function loadSubactividadesYTareas(actividadGlobalId){
     returnGeometry: "false"
   });
 
-  if(tareaQ?.error){
-    throw new Error(tareaQ.error.message || "Error consultando CFG_Tarea.");
-  }
+  if(tareaQ?.error) throw new Error(tareaQ.error.message || "Error consultando CFG_Tarea.");
   cacheTareas = (tareaQ.features || []).map(f => f.attributes || {});
 
-  // Render cards
   elIndicadores.innerHTML = cacheSubactividades.map(sa => subActividadCardHtml(sa)).join("");
   wireCardEvents();
 
@@ -667,12 +601,11 @@ function tareaRowHtml(t){
   const peso = tareaInfo.pesoField ? t[tareaInfo.pesoField] : "";
   const meta = tareaInfo.metaField ? t[tareaInfo.metaField] : "";
   const um = tareaInfo.unidadField ? t[tareaInfo.unidadField] : "";
-
   const geoRaw = tareaInfo.geoField ? t[tareaInfo.geoField] : null;
   const geo = toYesNo(geoRaw);
 
   return `
-  <div class="row" data-row-id="${rowId}" data-tarea-gid="${escapeHtml(gid)}" data-tarea-label="${escapeHtml((cod || nombre || gid))}" data-unidad="${escapeHtml(um)}" data-geo="${geo === true ? "1" : "0"}">
+  <div class="row" data-row-id="${rowId}" data-tarea-gid="${escapeHtml(gid)}" data-tarea-label="${escapeHtml((cod || nom || gid))}" data-unidad="${escapeHtml(um)}" data-geo="${geo === true ? "1" : "0"}">
     <div class="row__left">
       <div class="field" style="padding:0; grid-column: 1 / span 2;">
         <label>Tarea</label>
@@ -738,7 +671,6 @@ function wireCardEvents(){
 
 function wireRowEvents(rowEl){
   const rowId = rowEl.getAttribute("data-row-id");
-
   const btnAct = rowEl.querySelector(".btn-activar");
   const btnVer = rowEl.querySelector(".btn-ver");
   const btnClr = rowEl.querySelector(".btn-eliminar");
@@ -766,7 +698,6 @@ function wireRowEvents(rowEl){
       activeRowId = null;
       pillActive.textContent = "Registro activo: —";
     }
-    // limpiar inputs
     rowEl.querySelector(".row-valor").value = "";
     rowEl.querySelector(".row-obs").value = "";
     rowEl.querySelector(".row-evi").value = "";
@@ -795,12 +726,11 @@ function initMap(){
 
       map = new Map({ basemap: "osm" });
 
-      // Municipios CAR (polígono)
       const jurisdiccionLayer = new FeatureLayer({
         url: `${CAR_SERVICE_URL}/${CAR_JUR_LAYER_ID}`,
         title: "Municipios CAR",
         opacity: 0.15,
-        outFields: ["Municipio","CODDANE"]
+        outFields: ["*"] 
       });
       map.add(jurisdiccionLayer);
 
@@ -815,13 +745,17 @@ function initMap(){
         popup: { dockEnabled: true, dockOptions: { position: "top-right", breakpoint: false } }
       });
 
+      // Extraer LayerView para consulta local rápida
+      view.whenLayerView(jurisdiccionLayer).then((layerView) => {
+        jurisdiccionLayerView = layerView;
+      });
+
       sketchVM = new SketchViewModel({
         view,
         layer: graphicsLayer,
         updateOnGraphicClick: false
       });
 
-      // Cuando termina de mover el punto: recalcular municipio/dane
       sketchVM.on("update", async (evt) => {
         if(evt.state !== "complete") return;
         const g = (evt.graphics && evt.graphics[0]) ? evt.graphics[0] : null;
@@ -829,11 +763,7 @@ function initMap(){
         const rowId = g.attributes?.rowId;
         if(!rowId) return;
 
-        let p = g.geometry;
-        let geo = p;
-        if (p.spatialReference && p.spatialReference.isWebMercator){
-          geo = webMercatorUtils.webMercatorToGeographic(p);
-        }
+        const geo = getGeographicLocation(g.geometry);
         const lon = geo.longitude;
         const lat = geo.latitude;
 
@@ -843,7 +773,7 @@ function initMap(){
           const ptEl = rowEl.querySelector(".row-pt");
           if(ptEl) ptEl.textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
         }
-        await updateMunicipioFromCAR(rowId, lon, lat);
+        await updateMunicipioFromCAR(rowId, lon, lat, g.geometry);
       });
 
       view.on("click", async (evt) => {
@@ -851,11 +781,8 @@ function initMap(){
           setStatus("Primero activa un registro con el botón “Ubicar punto”.", "error");
           return;
         }
-        let p = evt.mapPoint;
-        let geo = p;
-        if (p.spatialReference && p.spatialReference.isWebMercator){
-          geo = webMercatorUtils.webMercatorToGeographic(p);
-        }
+
+        const geo = getGeographicLocation(evt.mapPoint);
         const lon = geo.longitude;
         const lat = geo.latitude;
 
@@ -868,9 +795,8 @@ function initMap(){
           if(ptEl) ptEl.textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
         }
 
-        await updateMunicipioFromCAR(activeRowId, lon, lat);
+        await updateMunicipioFromCAR(activeRowId, lon, lat, evt.mapPoint);
 
-        // permitir mover antes de guardar
         if(graphic){
           sketchVM.update(graphic);
         }
@@ -890,12 +816,8 @@ function collectDraft(){
   const vig = (vigRaw === "" || vigRaw === null) ? (new Date().getFullYear()) : (isNaN(Number(vigRaw)) ? String(vigRaw) : Number(vigRaw));
   const periodo = elPeriodo.value;
 
-  if(!actividadGid){
-    throw new Error("Selecciona una actividad.");
-  }
-  if(!periodo){
-    throw new Error("Selecciona el periodo (trimestre).");
-  }
+  if(!actividadGid) throw new Error("Selecciona una actividad.");
+  if(!periodo) throw new Error("Selecciona el periodo (trimestre).");
 
   const avances = [];
   const rowsForUbic = [];
@@ -925,7 +847,6 @@ function collectDraft(){
     const hasAny = (valorStr !== "" && valorStr !== null) || obs || evi || (isGeo && (pt || municipioNombre || codigoDANE));
     if(!hasAny) return;
 
-    // --- Validaciones por fila ---
     if(valorStr === "" || valorStr === null){
       errors.push({rowEl, msg: `🔸 ${label}: falta 'Valor reportado'.`});
     }else{
@@ -938,10 +859,7 @@ function collectDraft(){
             errors.push({rowEl, msg: `🔸 ${label}: en porcentaje el valor debe estar entre 0 y 100.`});
           }
         }else{
-          // regla general: no negativos
-          if(valorNum < 0){
-            errors.push({rowEl, msg: `🔸 ${label}: el valor no puede ser negativo.`});
-          }
+          if(valorNum < 0) errors.push({rowEl, msg: `🔸 ${label}: el valor no puede ser negativo.`});
         }
       }
     }
@@ -955,8 +873,6 @@ function collectDraft(){
       }
     }
 
-    // Si ya hay errores, no construimos el add para esta fila aún
-    // (de todas formas se puede construir, pero preferimos bloquear el envío)
     const attrs = {};
     if(avanceInfo.fkTareaField) attrs[avanceInfo.fkTareaField] = tareaGid;
     if(avanceInfo.fkActividadField) attrs[avanceInfo.fkActividadField] = actividadGid;
@@ -971,7 +887,6 @@ function collectDraft(){
     rowsForUbic.push({ rowId, isGeo, municipioNombre, codigoDANE, pt });
   });
 
-  // Narrativa
   const txtReporte = elReporteNarrativo?.value?.trim() || "";
   const txtDescLogros = elDescLogros?.value?.trim() || "";
   const txtPrincipales = elPrincipalesLogros?.value?.trim() || "";
@@ -982,13 +897,11 @@ function collectDraft(){
     principales: txtPrincipales
   }) } : null;
 
-  // Reglas globales
   if(avances.length === 0 && !hasNarrativa){
     throw new Error("No hay nada para enviar: registra al menos un avance o completa el reporte narrativo.");
   }
 
   if(errors.length){
-    // Pintar filas con error y mostrar resumen
     errors.forEach(e => markRowError(e.rowEl, e.msg));
     const first = errors[0].rowEl;
     first.scrollIntoView({behavior:"smooth", block:"center"});
@@ -1003,12 +916,11 @@ function buildNarrativaAttrs(actividadGid, vig, periodo, payload){
   if(narrativaInfo?.fkActividadField) attrs[narrativaInfo.fkActividadField] = actividadGid;
   if(narrativaInfo?.vigenciaField) attrs[narrativaInfo.vigenciaField] = vig;
   if(narrativaInfo?.periodoField) attrs[narrativaInfo.periodoField] = periodo;
-  // Soporta 3 campos (V2) o 1 campo legado
+  
   if(narrativaInfo?.reporteField) attrs[narrativaInfo.reporteField] = payload?.reporte || null;
   if(narrativaInfo?.descLogrosField) attrs[narrativaInfo.descLogrosField] = payload?.descLogros || null;
   if(narrativaInfo?.principalesLogrosField) attrs[narrativaInfo.principalesLogrosField] = payload?.principales || null;
 
-  // fallback: si solo existe un campo de texto en el servicio
   if(!narrativaInfo?.reporteField && !narrativaInfo?.descLogrosField && !narrativaInfo?.principalesLogrosField){
     const oneField = pickField(narrativaInfo?.fields || [], ["ReporteNarrativo", "TextoNarrativo", "Narrativa", "Texto", "Descripcion", "Descripción"]);
     if(oneField?.name) attrs[oneField.name] = payload?.reporte || payload?.descLogros || payload?.principales || null;
@@ -1031,7 +943,6 @@ async function saveDraft(draft){
   const failed = addResults.filter(r => !r.success);
   if(failed.length) throw new Error(`Se guardaron con errores: ${failed.length}. Revisa consola.`);
 
-  // Guardar ubicaciones (solo las tareas geo)
   const addsUbic = [];
   for(let i=0; i<addResults.length; i++){
     const ubic = draft.rowsForUbic[i];
@@ -1059,7 +970,6 @@ async function saveDraft(draft){
     if(!(resUb?.addResults || []).every(r => r.success)) throw new Error("Algunas ubicaciones no se guardaron correctamente.");
   }
 
-  // Narrativa (opcional)
   const canSaveNarrativa = !!(narrativaInfo?.reporteField || narrativaInfo?.descLogrosField || narrativaInfo?.principalesLogrosField || (narrativaInfo?.fields || []).length);
   if(draft.narrativa && canSaveNarrativa){
     setStatus("Guardando reporte narrativo…");
@@ -1081,7 +991,6 @@ function clearForm(){
   activeRowId = null;
   pillActive.textContent = "Registro activo: —";
 
-  // limpia inputs
   document.querySelectorAll(".row").forEach(rowEl => {
     rowEl.querySelector(".row-valor").value = "";
     rowEl.querySelector(".row-obs").value = "";
@@ -1147,8 +1056,6 @@ elVigencia.addEventListener("change", async () => {
 async function bootstrap(forceReload=false){
   try{
     setStatus("Inicializando…");
-
-    // metadata (solo se recarga si forceReload)
     if(forceReload || !actividadInfo){
       const actMeta = await getLayerInfo(URL_ACTIVIDAD);
       actividadInfo = mapActividadFields(actMeta);
@@ -1187,7 +1094,6 @@ async function bootstrap(forceReload=false){
   }catch(e){
     console.error(e);
     setStatus("No se pudo inicializar el mapa. Revisa conexión y consola.", "error");
-    // aun así, intenta bootstrap para cargar tablas
     try{ await bootstrap(false); }catch(_){}
   }
 })();
