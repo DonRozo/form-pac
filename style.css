@@ -16,7 +16,12 @@
 }
 
 *{box-sizing:border-box}
-html, body{height:100%}
+
+/* NUEVO: Bloquear el scroll de la ventana general */
+html, body {
+  height: 100%;
+  overflow: hidden; 
+}
 
 body{
   margin:0;
@@ -25,7 +30,11 @@ body{
   color: var(--text);
 }
 
-.app{min-height:100%; display:flex; flex-direction:column;}
+.app{
+  height: 100vh; /* NUEVO: Ocupar el 100% de la ventana */
+  display:flex; 
+  flex-direction:column;
+}
 
 .topbar{
   position: sticky;
@@ -56,6 +65,7 @@ body{
   gap: 14px;
   padding: 14px;
   flex: 1;
+  min-height: 0; /* NUEVO: Permite a los hijos flex encogerse correctamente */
 }
 
 .panel{
@@ -63,16 +73,22 @@ body{
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  overflow: hidden;
   display:flex;
   flex-direction: column;
+  height: 100%; /* NUEVO: Usar todo el alto de la grilla */
+}
+
+/* NUEVO: Scroll independiente para el formulario */
+.panel--form{
+  overflow-y: auto; 
+}
+
+.panel--map{
+  overflow: hidden; /* Mantiene el mapa contenido */
 }
 
 .panel__header{padding: 16px 16px 8px 16px;}
 .panel__header--map{display:flex; justify-content:space-between; align-items:flex-start; gap:12px;}
-
-.panel--form{overflow:auto;}
-.panel--map{min-height:520px;}
 
 h2{margin:0; font-size:16px;}
 .muted{color:var(--muted); font-size:12px; margin:6px 0 0;}
@@ -208,7 +224,10 @@ input:focus, select:focus, textarea:focus{
   color: rgba(14,23,30,0.85);
 }
 
-.map{flex:1; min-height:520px;}
+.map{
+  flex:1; 
+  min-height:0; /* NUEVO: Permite al mapa ajustarse al espacio restante */
+}
 
 .maptools{display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;}
 
@@ -229,7 +248,10 @@ input:focus, select:focus, textarea:focus{
 
 /* Responsive */
 @media (max-width: 1060px){
-  .layout{grid-template-columns: 1fr;}
+  html, body { overflow: auto; } /* Restaurar scroll en móviles */
+  .app { height: auto; min-height: 100vh; }
+  .layout{grid-template-columns: 1fr; overflow: visible;}
+  .panel { height: auto; }
   .panel--map{min-height:460px;}
   .map{min-height:460px;}
 }

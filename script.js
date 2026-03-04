@@ -2,7 +2,6 @@
    DATA-PAC | Reporte Trimestral (v2)
    Servicio: DATAPAC_V2
    Esquema: Estricto según definición JSON
-   Mejoras: Inyección de Responsable y Descripción de Sitio
    =========================================================== */
 
 // --- Servicio ---
@@ -54,7 +53,7 @@ let cacheTareas = [];
 let activeRowId = null;               
 let rowGeometries = new Map();        
 let rowMunicipio = new Map();         
-let currentResponsable = "";          // Almacena el responsable actual
+let currentResponsable = "";          
 
 // Map
 let map, view, graphicsLayer, webMercatorUtils, sketchVM;
@@ -91,12 +90,7 @@ function markRowError(rowEl, message){
 }
 
 function escapeHtml(s){
-  return (s ?? "").toString()
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
+  return (s ?? "").toString().replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
 }
 
 function normalize(s){ return (s||"").toString().toLowerCase(); }
@@ -122,11 +116,7 @@ async function postForm(url, formObj){
     if (v === undefined || v === null) return;
     form.append(k, typeof v === "string" ? v : JSON.stringify(v));
   });
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: form
-  });
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form });
   if(!r.ok) throw new Error(`HTTP ${r.status}`);
   return await r.json();
 }
@@ -146,10 +136,7 @@ function upsertGraphicForRow(rowId, lon, lat, Graphic){
   removeGraphicForRow(rowId);
   const graphic = new Graphic({
     geometry: { type: "point", longitude: lon, latitude: lat, spatialReference: { wkid: 4326 } },
-    symbol: {
-      type: "simple-marker", style: "circle", color: [23,151,209,0.9],
-      size: 10, outline: { color: [11,82,105,1], width: 2 }
-    },
+    symbol: { type: "simple-marker", style: "circle", color: [23,151,209,0.9], size: 10, outline: { color: [11,82,105,1], width: 2 } },
     attributes: { rowId }
   });
   graphicsLayer.add(graphic);
@@ -171,11 +158,8 @@ function getGeographicLocation(p) {
 async function updateMunicipioFromCAR(rowId, lon, lat, mapPoint){
   const rowEl = document.querySelector(`.row[data-row-id="${rowId}"]`);
   if(!rowEl) return;
-
   const isGeo = rowEl.getAttribute("data-geo") === "1";
-  if(!isGeo) return;
-
-  if (!jurisdiccionLayerView) return;
+  if(!isGeo || !jurisdiccionLayerView) return;
 
   try{
     document.body.style.cursor = 'wait';
@@ -218,32 +202,22 @@ async function updateMunicipioFromCAR(rowId, lon, lat, mapPoint){
 async function fetchResponsable(actividadId, vigencia) {
   try {
     if(!actividadId) return "";
-    
-    // 1. Consultar PersonaGlobalID en SEG_Asignacion
     const qAsig = await fetchJson(`${URL_ASIGNACION}/query`, {
-      f: "json",
-      where: `${F_ASIG.actId} = '${actividadId}' AND ${F_ASIG.vig} = ${vigencia} AND ${F_ASIG.act} = 'SI'`,
-      outFields: F_ASIG.fkPers,
-      returnGeometry: "false"
+      f: "json", where: `${F_ASIG.actId} = '${actividadId}' AND ${F_ASIG.vig} = ${vigencia} AND ${F_ASIG.act} = 'SI'`,
+      outFields: F_ASIG.fkPers, returnGeometry: "false"
     });
-    
     const asigFeats = qAsig?.features || [];
     if(asigFeats.length === 0) return "";
     const personaId = asigFeats[0].attributes[F_ASIG.fkPers];
     if(!personaId) return "";
 
-    // 2. Consultar Nombre en SEG_Persona
     const qPers = await fetchJson(`${URL_PERSONA}/query`, {
-      f: "json",
-      where: `${F_PERS.gid} = '${personaId}' AND ${F_PERS.act} = 'SI'`,
-      outFields: F_PERS.nom,
-      returnGeometry: "false"
+      f: "json", where: `${F_PERS.gid} = '${personaId}' AND ${F_PERS.act} = 'SI'`,
+      outFields: F_PERS.nom, returnGeometry: "false"
     });
-    
     const persFeats = qPers?.features || [];
     if(persFeats.length === 0) return "";
     return persFeats[0].attributes[F_PERS.nom] || "";
-    
   } catch(e) {
     console.error("Error obteniendo responsable:", e);
     return "";
@@ -257,13 +231,9 @@ async function loadActividades(){
   currentResponsable = "";
 
   const vig = Number(elVigencia.value) || new Date().getFullYear();
-  
   const q = await fetchJson(`${URL_ACTIVIDAD}/query`, {
-    f: "json",
-    where: `${F_ACT.act} = 'SI' AND ${F_ACT.vig} = ${vig}`,
-    outFields: `${F_ACT.gid},${F_ACT.id},${F_ACT.nom}`,
-    orderByFields: `${F_ACT.id} ASC`,
-    returnGeometry: "false"
+    f: "json", where: `${F_ACT.act} = 'SI' AND ${F_ACT.vig} = ${vig}`,
+    outFields: `${F_ACT.gid},${F_ACT.id},${F_ACT.nom}`, orderByFields: `${F_ACT.id} ASC`, returnGeometry: "false"
   });
 
   if(q?.error) throw new Error(q.error.message);
@@ -286,45 +256,29 @@ async function loadActividades(){
 }
 
 async function loadSubactividadesYTareas(actividadGlobalId){
-  elIndicadores.innerHTML = "";
-  cacheSubactividades = [];
-  cacheTareas = [];
-  rowGeometries.clear();
-  activeRowId = null;
-  pillActive.textContent = "Registro activo: —";
-  clearMapGraphics();
+  elIndicadores.innerHTML = ""; cacheSubactividades = []; cacheTareas = [];
+  rowGeometries.clear(); activeRowId = null; pillActive.textContent = "Registro activo: —"; clearMapGraphics();
 
   if(!actividadGlobalId) return;
-
   setStatus("Cargando estructura de tareas…");
 
   const subQ = await fetchJson(`${URL_SUBACTIVIDAD}/query`, {
-    f: "json",
-    where: `${F_SUB.fkAct} = '${actividadGlobalId}'`,
-    outFields: "*",
-    orderByFields: `${F_SUB.id} ASC`,
-    returnGeometry: "false"
+    f: "json", where: `${F_SUB.fkAct} = '${actividadGlobalId}'`,
+    outFields: "*", orderByFields: `${F_SUB.id} ASC`, returnGeometry: "false"
   });
-
   if(subQ?.error) throw new Error(subQ.error.message);
   cacheSubactividades = (subQ.features || []).map(f => f.attributes || {});
 
   const subIds = cacheSubactividades.map(s => s[F_SUB.gid]).filter(Boolean);
   if(subIds.length === 0){
     elIndicadores.innerHTML = `<div class="card"><div class="muted">No hay subactividades configuradas.</div></div>`;
-    setStatus("No se encontraron subactividades.", "error");
-    return;
+    setStatus("No se encontraron subactividades.", "error"); return;
   }
 
   const inList = subIds.map(x => `'${x}'`).join(",");
   const tareaQ = await fetchJson(`${URL_TAREA}/query`, {
-    f: "json",
-    where: `${F_TAR.fkSub} IN (${inList})`,
-    outFields: "*",
-    orderByFields: `${F_TAR.id} ASC`,
-    returnGeometry: "false"
+    f: "json", where: `${F_TAR.fkSub} IN (${inList})`, outFields: "*", orderByFields: `${F_TAR.id} ASC`, returnGeometry: "false"
   });
-
   if(tareaQ?.error) throw new Error(tareaQ.error.message);
   cacheTareas = (tareaQ.features || []).map(f => f.attributes || {});
 
@@ -334,24 +288,16 @@ async function loadSubactividadesYTareas(actividadGlobalId){
 }
 
 function subActividadCardHtml(sa){
-  const gid = sa[F_SUB.gid];
-  const cod = sa[F_SUB.id] || "";
-  const nom = sa[F_SUB.nom] || "";
+  const gid = sa[F_SUB.gid]; const cod = sa[F_SUB.id] || ""; const nom = sa[F_SUB.nom] || "";
   const title = (cod ? `${cod} — ` : "") + (nom || gid);
   const safeId = String(gid).replaceAll("{","").replaceAll("}","").replaceAll("-","");
-
   return `
   <div class="card" data-subgid="${escapeHtml(gid)}">
     <div class="card__top">
-      <div>
-        <p class="card__title">${escapeHtml(title)}</p>
-        <div class="card__meta"><span>Subactividad</span></div>
-      </div>
+      <div><p class="card__title">${escapeHtml(title)}</p><div class="card__meta"><span>Subactividad</span></div></div>
       <div class="badges"><span class="badge">Estructura</span></div>
     </div>
-    <div class="rows" id="rows-${safeId}">
-      ${tareasRowsHtml(gid)}
-    </div>
+    <div class="rows" id="rows-${safeId}">${tareasRowsHtml(gid)}</div>
     <div style="margin-top:10px; display:flex;">
       <button class="btn btn--ghost btn-collapse" data-rows-id="rows-${safeId}">Contraer/expandir</button>
     </div>
@@ -366,43 +312,22 @@ function tareasRowsHtml(subGid){
 
 function tareaRowHtml(t){
   const rowId = crypto.randomUUID();
-  const gid = t[F_TAR.gid];
-  const cod = t[F_TAR.id] || "";
-  const nom = t[F_TAR.nom] || "";
-  const um = t[F_TAR.um] || "";
-  const geo = toYesNo(t[F_TAR.geo]);
-
+  const gid = t[F_TAR.gid]; const cod = t[F_TAR.id] || ""; const nom = t[F_TAR.nom] || "";
+  const um = t[F_TAR.um] || ""; const geo = toYesNo(t[F_TAR.geo]);
   return `
   <div class="row" data-row-id="${rowId}" data-tarea-gid="${escapeHtml(gid)}" data-tarea-label="${escapeHtml((cod || nom || gid))}" data-geo="${geo === true ? "1" : "0"}">
     <div class="row__left">
       <div class="field" style="padding:0; grid-column: 1 / span 2;">
         <label>Tarea</label>
         <div class="mono" style="font-size:12px; margin-bottom:6px;">${escapeHtml(cod)} ${cod?"—":""} ${escapeHtml(nom)}</div>
-        <div class="row__mini">
-          ${um ? `<span>UM: <b>${escapeHtml(um)}</b></span>` : ``}
-          <span>Mpio: <b>${geo === true ? "SI" : "NO"}</b></span>
-        </div>
+        <div class="row__mini">${um ? `<span>UM: <b>${escapeHtml(um)}</b></span>` : ``}<span>Mpio: <b>${geo === true ? "SI" : "NO"}</b></span></div>
       </div>
-      <div class="field" style="padding:0;">
-        <label>Valor reportado</label>
-        <input class="row-valor" type="number" step="any" placeholder="Ej: 12" />
-      </div>
-      
-      ${geo === true ? `
-      <div class="field" style="padding:0; grid-column: 1 / span 2;">
-        <label>Descripción del sitio</label>
-        <input class="row-desc-sitio" type="text" placeholder="Ej: Vereda San Juan, finca El Recuerdo..." />
-      </div>
+      <div class="field" style="padding:0;"><label>Valor reportado</label><input class="row-valor" type="number" step="any" placeholder="Ej: 12" /></div>
+      ${geo === true ? `<div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Descripción del sitio</label><input class="row-desc-sitio" type="text" placeholder="Ej: Vereda San Juan, finca El Recuerdo..." /></div>
       <div class="field" style="padding:0;"><label>Municipio</label><input class="row-mun" type="text" readonly /></div>
-      <div class="field" style="padding:0;"><label>Cód. DANE</label><input class="row-dane" type="text" readonly /></div>
-      ` : ``}
-      
-      <div class="field" style="padding:0; grid-column: 1 / span 2;">
-        <label>Observaciones</label><input class="row-obs" type="text" />
-      </div>
-      <div class="field" style="padding:0; grid-column: 1 / span 2;">
-        <label>Evidencia (URL)</label><input class="row-evi" type="url" />
-      </div>
+      <div class="field" style="padding:0;"><label>Cód. DANE</label><input class="row-dane" type="text" readonly /></div>` : ``}
+      <div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Observaciones</label><input class="row-obs" type="text" /></div>
+      <div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Evidencia (URL)</label><input class="row-evi" type="url" /></div>
     </div>
     <div class="row__right">
       ${geo === true ? `<button class="btn btn--primary btn-activar">Ubicar punto</button><button class="btn btn--ghost btn-ver">Ver punto</button>` : ``}
@@ -415,8 +340,7 @@ function tareaRowHtml(t){
 function wireCardEvents(){
   document.querySelectorAll(".btn-collapse").forEach(btn => {
     btn.addEventListener("click", () => {
-      const rowsId = btn.getAttribute("data-rows-id");
-      const container = document.getElementById(rowsId);
+      const rowsId = btn.getAttribute("data-rows-id"); const container = document.getElementById(rowsId);
       container.style.display = (container.style.display === "none") ? "flex" : "none";
     });
   });
@@ -426,13 +350,11 @@ function wireCardEvents(){
 function wireRowEvents(rowEl){
   const rowId = rowEl.getAttribute("data-row-id");
   rowEl.querySelector(".btn-activar")?.addEventListener("click", () => {
-    activeRowId = rowId;
-    pillActive.textContent = `Registro activo: ${rowId.slice(0,8)}…`;
+    activeRowId = rowId; pillActive.textContent = `Registro activo: ${rowId.slice(0,8)}…`;
     setStatus("Registro activo seleccionado. Haz clic en el mapa.", "info");
   });
   rowEl.querySelector(".btn-ver")?.addEventListener("click", () => {
-    const pt = rowGeometries.get(rowId);
-    if(pt) zoomToPoint(pt.lon, pt.lat);
+    const pt = rowGeometries.get(rowId); if(pt) zoomToPoint(pt.lon, pt.lat);
   });
   rowEl.querySelector(".btn-eliminar")?.addEventListener("click", () => {
     rowGeometries.delete(rowId); rowMunicipio.delete(rowId); removeGraphicForRow(rowId);
@@ -450,8 +372,9 @@ function initMap(){
   return new Promise((resolve, reject) => {
     require([
       "esri/Map", "esri/views/MapView", "esri/layers/GraphicsLayer", "esri/layers/FeatureLayer",
-      "esri/Graphic", "esri/widgets/Sketch/SketchViewModel", "esri/geometry/support/webMercatorUtils"
-    ], (Map, MapView, GraphicsLayer, FeatureLayer, Graphic, SketchViewModel, _webMercatorUtils) => {
+      "esri/Graphic", "esri/widgets/Sketch/SketchViewModel", "esri/geometry/support/webMercatorUtils",
+      "esri/widgets/Search", "esri/widgets/BasemapGallery", "esri/widgets/Expand"
+    ], (Map, MapView, GraphicsLayer, FeatureLayer, Graphic, SketchViewModel, _webMercatorUtils, Search, BasemapGallery, Expand) => {
       webMercatorUtils = _webMercatorUtils;
       map = new Map({ basemap: "osm" });
 
@@ -464,6 +387,22 @@ function initMap(){
       map.add(graphicsLayer);
 
       view = new MapView({ container: "map", map, center: [-74.2, 4.7], zoom: 8, popup: { dockEnabled: true, dockOptions: { position: "top-right", breakpoint: false } } });
+
+      // NUEVO: Agregar Widget de Búsqueda (Controla el Zoom a un lugar)
+      const searchWidget = new Search({ view: view });
+      view.ui.add(searchWidget, "top-right");
+
+      // NUEVO: Agregar Widget de Mapa Base oculto en un Expand
+      const basemapGallery = new BasemapGallery({
+        view: view,
+        container: document.createElement("div")
+      });
+      const bgExpand = new Expand({
+        view: view,
+        content: basemapGallery,
+        expandIcon: "basemap"
+      });
+      view.ui.add(bgExpand, "top-left");
 
       view.whenLayerView(jurisdiccionLayer).then((layerView) => { jurisdiccionLayerView = layerView; });
 
@@ -518,7 +457,7 @@ function collectDraft(){
     const pt = rowGeometries.get(rowId);
     const munInfo = rowMunicipio.get(rowId) || {};
 
-    if(!valStr && !obs && !evi && !pt && !munInfo.municipioNombre && !descSitio) return; // Fila vacía
+    if(!valStr && !obs && !evi && !pt && !munInfo.municipioNombre && !descSitio) return; 
 
     if(!valStr) errors.push({rowEl, msg: `🔸 ${label}: falta Valor reportado.`});
     else if(isNaN(Number(valStr))) errors.push({rowEl, msg: `🔸 ${label}: Valor inválido.`});
@@ -558,7 +497,6 @@ function collectDraft(){
 async function saveDraft(draft){
   const epochNow = Date.now();
   
-  // 1. Guardar Avances
   if (draft.avances.length > 0) {
     setStatus(`Guardando ${draft.avances.length} avance(s)…`);
     const resAv = await postForm(`${URL_AVANCE_TAREA}/applyEdits`, { f: "json", adds: draft.avances });
@@ -566,7 +504,6 @@ async function saveDraft(draft){
     const failed = (resAv.addResults || []).filter(r => !r.success);
     if(failed.length) throw new Error(`Fallaron ${failed.length} avances.`);
 
-    // 2. Guardar Ubicaciones
     const addsUbic = [];
     for(let i=0; i < resAv.addResults.length; i++){
       const ubic = draft.rowsForUbic[i];
@@ -575,11 +512,8 @@ async function saveDraft(draft){
 
       addsUbic.push({
         attributes: {
-          [F_UBI.fkAvance]: globalIdAv, 
-          [F_UBI.dane]: ubic.codigoDANE, 
-          [F_UBI.mun]: ubic.municipioNombre,
-          [F_UBI.desc]: ubic.descSitio,
-          [F_UBI.fec]: epochNow
+          [F_UBI.fkAvance]: globalIdAv, [F_UBI.dane]: ubic.codigoDANE, [F_UBI.mun]: ubic.municipioNombre,
+          [F_UBI.desc]: ubic.descSitio, [F_UBI.fec]: epochNow
         },
         geometry: { x: ubic.pt.lon, y: ubic.pt.lat, spatialReference: { wkid: 4326 } }
       });
@@ -592,7 +526,6 @@ async function saveDraft(draft){
     }
   }
 
-  // 3. Guardar Narrativa
   if(draft.narrativa){
     setStatus("Guardando reporte narrativo…");
     const resNar = await postForm(`${URL_NARRATIVA}/applyEdits`, { f:"json", adds: [draft.narrativa] });
@@ -602,12 +535,9 @@ async function saveDraft(draft){
 
 // ---------- UI y Eventos ----------
 function clearForm(){
-  if(elReporteNarrativo) elReporteNarrativo.value = "";
-  if(elDescLogros) elDescLogros.value = "";
-  if(elPrincipalesLogros) elPrincipalesLogros.value = "";
+  if(elReporteNarrativo) elReporteNarrativo.value = ""; if(elDescLogros) elDescLogros.value = ""; if(elPrincipalesLogros) elPrincipalesLogros.value = "";
   rowGeometries.clear(); clearMapGraphics(); activeRowId = null; pillActive.textContent = "Registro activo: —";
-  elResponsable.textContent = "Responsable: —";
-  currentResponsable = "";
+  elResponsable.textContent = "Responsable: —"; currentResponsable = "";
   
   document.querySelectorAll(".row").forEach(r => {
     r.querySelector(".row-valor").value = ""; r.querySelector(".row-obs").value = ""; r.querySelector(".row-evi").value = "";
@@ -627,11 +557,9 @@ btnLimpiar.addEventListener("click", () => { clearForm(); setStatus("Formulario 
 btnRefresh.addEventListener("click", loadActividades);
 elVigencia.addEventListener("change", () => { loadActividades(); elIndicadores.innerHTML=""; });
 
-// Evento: Al cambiar actividad, se extrae el código y se busca el Responsable
 elActividad.addEventListener("change", async () => {
   const selectedOption = elActividad.options[elActividad.selectedIndex];
-  const actividadGid = selectedOption.value;
-  const actividadCod = selectedOption.getAttribute("data-codigo");
+  const actividadGid = selectedOption.value; const actividadCod = selectedOption.getAttribute("data-codigo");
   const vig = Number(elVigencia.value) || new Date().getFullYear();
 
   if(actividadGid) {
@@ -640,17 +568,13 @@ elActividad.addEventListener("change", async () => {
     elResponsable.textContent = currentResponsable ? `Responsable: ${currentResponsable}` : "Responsable: No asignado";
     await loadSubactividadesYTareas(actividadGid);
   } else {
-    elResponsable.textContent = "Responsable: —";
-    currentResponsable = "";
-    elIndicadores.innerHTML = "";
+    elResponsable.textContent = "Responsable: —"; currentResponsable = ""; elIndicadores.innerHTML = "";
   }
 });
 
 btnCentrar.addEventListener("click", () => { view.goTo({ center: [-74.2, 4.7], zoom: 8 }); });
 btnLimpiarMapa.addEventListener("click", () => {
-    clearMapGraphics();
-    rowGeometries.clear();
-    rowMunicipio.clear();
+    clearMapGraphics(); rowGeometries.clear(); rowMunicipio.clear();
     document.querySelectorAll(".row").forEach(r => {
         if(r.querySelector(".row-mun")) r.querySelector(".row-mun").value = "";
         if(r.querySelector(".row-dane")) r.querySelector(".row-dane").value = "";
@@ -658,7 +582,6 @@ btnLimpiarMapa.addEventListener("click", () => {
     });
 });
 
-// ---------- Inicio ----------
 (async function main(){
   try{ await initMap(); await loadActividades(); }
   catch(e){ console.error(e); setStatus("Revisa la conexión a ArcGIS.", "error"); }
