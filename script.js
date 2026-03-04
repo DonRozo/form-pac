@@ -1,7 +1,8 @@
 /* ===========================================================
    DATA-PAC | Reporte Trimestral (v2)
    Servicio: DATAPAC_V2
-   Esquema: Estricto según definición JSON (Cero huérfanos)
+   Esquema: Estricto según definición JSON
+   Mejoras: Inyección de Responsable y Descripción de Sitio
    =========================================================== */
 
 // --- Servicio ---
@@ -16,14 +17,18 @@ const URL_TAREA = `${SERVICE_URL}/8`;
 const URL_AVANCE_TAREA = `${SERVICE_URL}/9`;
 const URL_TAREA_UBICACION = `${SERVICE_URL}/10`; 
 const URL_NARRATIVA = `${SERVICE_URL}/11`;
+const URL_ASIGNACION = `${SERVICE_URL}/15`; 
+const URL_PERSONA = `${SERVICE_URL}/16`; 
 
 // Mapeo Estricto de Campos (Basado en Esquema JSON)
 const F_ACT = { gid: "GlobalID", id: "ActividadID", nom: "NombreActividad", vig: "Vigencia", act: "Activo" };
 const F_SUB = { gid: "GlobalID", fkAct: "ActividadGlobalID", id: "CodigoSubActividad", nom: "NombreSubActividad" };
 const F_TAR = { gid: "GlobalID", fkSub: "SubActividadGlobalID", id: "CodigoTarea", nom: "NombreTarea", um: "UnidadMedida", geo: "EsGeorreferenciable" };
-const F_AVA = { fkTarea: "TareaGlobalID", vig: "Vigencia", per: "Periodo", val: "ValorReportado", obs: "Observaciones", evi: "EvidenciaURL", fec: "FechaRegistro" };
+const F_AVA = { fkTarea: "TareaGlobalID", vig: "Vigencia", per: "Periodo", val: "ValorReportado", obs: "Observaciones", evi: "EvidenciaURL", fec: "FechaRegistro", resp: "Responsable" };
 const F_UBI = { fkAvance: "AvanceTareaGlobalID", dane: "CodigoDANE", mun: "MunicipioNombre", desc: "DescripcionSitio", fec: "FechaRegistro" };
-const F_NAR = { fkAct: "ActividadGlobalID", vig: "Vigencia", per: "Periodo", txt1: "TextoNarrativo", txt2: "DescripcionLogrosAlcanzados", txt3: "PrincipalesLogros", fec: "FechaRegistro" };
+const F_NAR = { fkAct: "ActividadGlobalID", vig: "Vigencia", per: "Periodo", txt1: "TextoNarrativo", txt2: "DescripcionLogrosAlcanzados", txt3: "PrincipalesLogros", fec: "FechaRegistro", resp: "Responsable" };
+const F_ASIG = { fkPers: "PersonaGlobalID", actId: "ActividadID", vig: "Vigencia", act: "Activo" };
+const F_PERS = { gid: "GlobalID", nom: "Nombre", act: "Activo" };
 
 // ---------- DOM ----------
 const elActividad = document.getElementById("sel-actividad");
@@ -34,6 +39,7 @@ const elReporteNarrativo = document.getElementById("txt-reporte-narrativo");
 const elDescLogros = document.getElementById("txt-logros-descripcion");
 const elPrincipalesLogros = document.getElementById("txt-logros-principales");
 const elStatus = document.getElementById("status");
+const elResponsable = document.getElementById("lbl-responsable");
 
 const btnGuardar = document.getElementById("btn-guardar");
 const btnLimpiar = document.getElementById("btn-limpiar");
@@ -48,6 +54,7 @@ let cacheTareas = [];
 let activeRowId = null;               
 let rowGeometries = new Map();        
 let rowMunicipio = new Map();         
+let currentResponsable = "";          // Almacena el responsable actual
 
 // Map
 let map, view, graphicsLayer, webMercatorUtils, sketchVM;
@@ -105,10 +112,7 @@ async function fetchJson(url, params){
   const u = new URL(url);
   Object.entries(params || {}).forEach(([k,v]) => u.searchParams.set(k, v));
   const r = await fetch(u.toString(), { method: "GET" });
-  if(!r.ok){
-    const txt = await r.text();
-    throw new Error(`HTTP ${r.status}: ${txt}`);
-  }
+  if(!r.ok) throw new Error(`HTTP ${r.status}`);
   return await r.json();
 }
 
@@ -123,10 +127,7 @@ async function postForm(url, formObj){
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: form
   });
-  if(!r.ok){
-    const txt = await r.text();
-    throw new Error(`HTTP ${r.status}: ${txt}`);
-  }
+  if(!r.ok) throw new Error(`HTTP ${r.status}`);
   return await r.json();
 }
 
@@ -174,15 +175,10 @@ async function updateMunicipioFromCAR(rowId, lon, lat, mapPoint){
   const isGeo = rowEl.getAttribute("data-geo") === "1";
   if(!isGeo) return;
 
-  if (!jurisdiccionLayerView) {
-    setStatus("La capa de municipios aún se está cargando...", "error");
-    return;
-  }
+  if (!jurisdiccionLayerView) return;
 
   try{
     document.body.style.cursor = 'wait';
-    setStatus("Calculando jurisdicción localmente...", "info");
-
     const query = { geometry: mapPoint, spatialRelationship: "intersects", returnGeometry: false, outFields: ["*"] };
     const result = await jurisdiccionLayerView.queryFeatures(query);
     const feats = result.features || [];
@@ -213,20 +209,55 @@ async function updateMunicipioFromCAR(rowId, lon, lat, mapPoint){
     setStatus("Municipio y DANE calculados correctamente.", "success");
   }catch(e){
     console.error(e);
-    setStatus("Error consultando la capa de Municipios localmente.", "error");
   }finally{
     document.body.style.cursor = 'default';
   }
 }
 
-// ---------- Carga de Datos ----------
+// ---------- Carga de Datos y Responsable ----------
+async function fetchResponsable(actividadId, vigencia) {
+  try {
+    if(!actividadId) return "";
+    
+    // 1. Consultar PersonaGlobalID en SEG_Asignacion
+    const qAsig = await fetchJson(`${URL_ASIGNACION}/query`, {
+      f: "json",
+      where: `${F_ASIG.actId} = '${actividadId}' AND ${F_ASIG.vig} = ${vigencia} AND ${F_ASIG.act} = 'SI'`,
+      outFields: F_ASIG.fkPers,
+      returnGeometry: "false"
+    });
+    
+    const asigFeats = qAsig?.features || [];
+    if(asigFeats.length === 0) return "";
+    const personaId = asigFeats[0].attributes[F_ASIG.fkPers];
+    if(!personaId) return "";
+
+    // 2. Consultar Nombre en SEG_Persona
+    const qPers = await fetchJson(`${URL_PERSONA}/query`, {
+      f: "json",
+      where: `${F_PERS.gid} = '${personaId}' AND ${F_PERS.act} = 'SI'`,
+      outFields: F_PERS.nom,
+      returnGeometry: "false"
+    });
+    
+    const persFeats = qPers?.features || [];
+    if(persFeats.length === 0) return "";
+    return persFeats[0].attributes[F_PERS.nom] || "";
+    
+  } catch(e) {
+    console.error("Error obteniendo responsable:", e);
+    return "";
+  }
+}
+
 async function loadActividades(){
   setStatus("Cargando actividades…");
   elActividad.innerHTML = `<option value="">Cargando…</option>`;
+  elResponsable.textContent = "Responsable: —";
+  currentResponsable = "";
 
   const vig = Number(elVigencia.value) || new Date().getFullYear();
   
-  // Consulta estricta según JSON
   const q = await fetchJson(`${URL_ACTIVIDAD}/query`, {
     f: "json",
     where: `${F_ACT.act} = 'SI' AND ${F_ACT.vig} = ${vig}`,
@@ -235,7 +266,7 @@ async function loadActividades(){
     returnGeometry: "false"
   });
 
-  if(q?.error) throw new Error(q.error.message || "Error consultando CFG_Actividad.");
+  if(q?.error) throw new Error(q.error.message);
 
   const feats = q?.features || [];
   if(feats.length === 0){
@@ -248,7 +279,7 @@ async function loadActividades(){
     feats.map(f => {
       const a = f.attributes || {};
       const label = (a[F_ACT.id] ? `${a[F_ACT.id]} — ` : "") + (a[F_ACT.nom] || a[F_ACT.gid]);
-      return `<option value="${escapeHtml(a[F_ACT.gid])}">${escapeHtml(label)}</option>`;
+      return `<option value="${escapeHtml(a[F_ACT.gid])}" data-codigo="${escapeHtml(a[F_ACT.id])}">${escapeHtml(label)}</option>`;
     }).join("");
 
   setStatus("Actividades cargadas. Selecciona una para ver tareas.", "success");
@@ -267,7 +298,6 @@ async function loadSubactividadesYTareas(actividadGlobalId){
 
   setStatus("Cargando estructura de tareas…");
 
-  // Subactividades (Sin filtro de Vigencia/Activo porque no existen en esta tabla)
   const subQ = await fetchJson(`${URL_SUBACTIVIDAD}/query`, {
     f: "json",
     where: `${F_SUB.fkAct} = '${actividadGlobalId}'`,
@@ -276,7 +306,7 @@ async function loadSubactividadesYTareas(actividadGlobalId){
     returnGeometry: "false"
   });
 
-  if(subQ?.error) throw new Error(subQ.error.message || "Error consultando CFG_SubActividad.");
+  if(subQ?.error) throw new Error(subQ.error.message);
   cacheSubactividades = (subQ.features || []).map(f => f.attributes || {});
 
   const subIds = cacheSubactividades.map(s => s[F_SUB.gid]).filter(Boolean);
@@ -286,7 +316,6 @@ async function loadSubactividadesYTareas(actividadGlobalId){
     return;
   }
 
-  // Tareas (Sin filtro de Vigencia/Activo)
   const inList = subIds.map(x => `'${x}'`).join(",");
   const tareaQ = await fetchJson(`${URL_TAREA}/query`, {
     f: "json",
@@ -296,7 +325,7 @@ async function loadSubactividadesYTareas(actividadGlobalId){
     returnGeometry: "false"
   });
 
-  if(tareaQ?.error) throw new Error(tareaQ.error.message || "Error consultando CFG_Tarea.");
+  if(tareaQ?.error) throw new Error(tareaQ.error.message);
   cacheTareas = (tareaQ.features || []).map(f => f.attributes || {});
 
   elIndicadores.innerHTML = cacheSubactividades.map(sa => subActividadCardHtml(sa)).join("");
@@ -358,10 +387,16 @@ function tareaRowHtml(t){
         <label>Valor reportado</label>
         <input class="row-valor" type="number" step="any" placeholder="Ej: 12" />
       </div>
+      
       ${geo === true ? `
+      <div class="field" style="padding:0; grid-column: 1 / span 2;">
+        <label>Descripción del sitio</label>
+        <input class="row-desc-sitio" type="text" placeholder="Ej: Vereda San Juan, finca El Recuerdo..." />
+      </div>
       <div class="field" style="padding:0;"><label>Municipio</label><input class="row-mun" type="text" readonly /></div>
       <div class="field" style="padding:0;"><label>Cód. DANE</label><input class="row-dane" type="text" readonly /></div>
       ` : ``}
+      
       <div class="field" style="padding:0; grid-column: 1 / span 2;">
         <label>Observaciones</label><input class="row-obs" type="text" />
       </div>
@@ -403,6 +438,7 @@ function wireRowEvents(rowEl){
     rowGeometries.delete(rowId); rowMunicipio.delete(rowId); removeGraphicForRow(rowId);
     if(activeRowId === rowId){ activeRowId = null; pillActive.textContent = "Registro activo: —"; }
     rowEl.querySelector(".row-valor").value = ""; rowEl.querySelector(".row-obs").value = ""; rowEl.querySelector(".row-evi").value = "";
+    if(rowEl.querySelector(".row-desc-sitio")) rowEl.querySelector(".row-desc-sitio").value = "";
     if(rowEl.querySelector(".row-mun")) rowEl.querySelector(".row-mun").value = "";
     if(rowEl.querySelector(".row-dane")) rowEl.querySelector(".row-dane").value = "";
     if(rowEl.querySelector(".row-pt")) rowEl.querySelector(".row-pt").textContent = "—";
@@ -477,10 +513,12 @@ function collectDraft(){
     const valStr = rowEl.querySelector(".row-valor")?.value;
     const obs = rowEl.querySelector(".row-obs")?.value.trim() || "";
     const evi = rowEl.querySelector(".row-evi")?.value.trim() || "";
+    const descSitio = rowEl.querySelector(".row-desc-sitio")?.value.trim() || "";
+    
     const pt = rowGeometries.get(rowId);
     const munInfo = rowMunicipio.get(rowId) || {};
 
-    if(!valStr && !obs && !evi && !pt && !munInfo.municipioNombre) return; // Fila vacía
+    if(!valStr && !obs && !evi && !pt && !munInfo.municipioNombre && !descSitio) return; // Fila vacía
 
     if(!valStr) errors.push({rowEl, msg: `🔸 ${label}: falta Valor reportado.`});
     else if(isNaN(Number(valStr))) errors.push({rowEl, msg: `🔸 ${label}: Valor inválido.`});
@@ -492,9 +530,10 @@ function collectDraft(){
 
     avances.push({ attributes: {
       [F_AVA.fkTarea]: tareaGid, [F_AVA.vig]: vig, [F_AVA.per]: periodo,
-      [F_AVA.val]: valStr ? Number(valStr) : null, [F_AVA.obs]: obs, [F_AVA.evi]: evi, [F_AVA.fec]: epochNow
+      [F_AVA.val]: valStr ? Number(valStr) : null, [F_AVA.obs]: obs, [F_AVA.evi]: evi, 
+      [F_AVA.fec]: epochNow, [F_AVA.resp]: currentResponsable
     }});
-    rowsForUbic.push({ rowId, isGeo, ...munInfo, pt });
+    rowsForUbic.push({ rowId, isGeo, descSitio, ...munInfo, pt });
   });
 
   const txt1 = elReporteNarrativo?.value.trim() || "";
@@ -503,7 +542,8 @@ function collectDraft(){
   
   const narrativa = (txt1 || txt2 || txt3) ? { attributes: {
     [F_NAR.fkAct]: actividadGid, [F_NAR.vig]: vig, [F_NAR.per]: periodo,
-    [F_NAR.txt1]: txt1, [F_NAR.txt2]: txt2, [F_NAR.txt3]: txt3, [F_NAR.fec]: epochNow
+    [F_NAR.txt1]: txt1, [F_NAR.txt2]: txt2, [F_NAR.txt3]: txt3, [F_NAR.fec]: epochNow,
+    [F_NAR.resp]: currentResponsable
   }} : null;
 
   if(avances.length === 0 && !narrativa) throw new Error("Registra al menos un avance o texto narrativo.");
@@ -526,11 +566,11 @@ async function saveDraft(draft){
     const failed = (resAv.addResults || []).filter(r => !r.success);
     if(failed.length) throw new Error(`Fallaron ${failed.length} avances.`);
 
-    // 2. Guardar Ubicaciones (Asignando el GUID del avance recién creado)
+    // 2. Guardar Ubicaciones
     const addsUbic = [];
     for(let i=0; i < resAv.addResults.length; i++){
       const ubic = draft.rowsForUbic[i];
-      const globalIdAv = resAv.addResults[i]?.globalId; // FK devuelto por ArcGIS
+      const globalIdAv = resAv.addResults[i]?.globalId; 
       if(!ubic || !ubic.isGeo || !globalIdAv) continue;
 
       addsUbic.push({
@@ -538,6 +578,7 @@ async function saveDraft(draft){
           [F_UBI.fkAvance]: globalIdAv, 
           [F_UBI.dane]: ubic.codigoDANE, 
           [F_UBI.mun]: ubic.municipioNombre,
+          [F_UBI.desc]: ubic.descSitio,
           [F_UBI.fec]: epochNow
         },
         geometry: { x: ubic.pt.lon, y: ubic.pt.lat, spatialReference: { wkid: 4326 } }
@@ -565,8 +606,12 @@ function clearForm(){
   if(elDescLogros) elDescLogros.value = "";
   if(elPrincipalesLogros) elPrincipalesLogros.value = "";
   rowGeometries.clear(); clearMapGraphics(); activeRowId = null; pillActive.textContent = "Registro activo: —";
+  elResponsable.textContent = "Responsable: —";
+  currentResponsable = "";
+  
   document.querySelectorAll(".row").forEach(r => {
     r.querySelector(".row-valor").value = ""; r.querySelector(".row-obs").value = ""; r.querySelector(".row-evi").value = "";
+    if(r.querySelector(".row-desc-sitio")) r.querySelector(".row-desc-sitio").value = "";
     if(r.querySelector(".row-mun")) r.querySelector(".row-mun").value = "";
     if(r.querySelector(".row-dane")) r.querySelector(".row-dane").value = "";
     if(r.querySelector(".row-pt")) r.querySelector(".row-pt").textContent = "—";
@@ -581,7 +626,26 @@ btnGuardar.addEventListener("click", async () => {
 btnLimpiar.addEventListener("click", () => { clearForm(); setStatus("Formulario limpiado.", "info"); });
 btnRefresh.addEventListener("click", loadActividades);
 elVigencia.addEventListener("change", () => { loadActividades(); elIndicadores.innerHTML=""; });
-elActividad.addEventListener("change", () => loadSubactividadesYTareas(elActividad.value));
+
+// Evento: Al cambiar actividad, se extrae el código y se busca el Responsable
+elActividad.addEventListener("change", async () => {
+  const selectedOption = elActividad.options[elActividad.selectedIndex];
+  const actividadGid = selectedOption.value;
+  const actividadCod = selectedOption.getAttribute("data-codigo");
+  const vig = Number(elVigencia.value) || new Date().getFullYear();
+
+  if(actividadGid) {
+    setStatus("Buscando responsable asignado...", "info");
+    currentResponsable = await fetchResponsable(actividadCod, vig);
+    elResponsable.textContent = currentResponsable ? `Responsable: ${currentResponsable}` : "Responsable: No asignado";
+    await loadSubactividadesYTareas(actividadGid);
+  } else {
+    elResponsable.textContent = "Responsable: —";
+    currentResponsable = "";
+    elIndicadores.innerHTML = "";
+  }
+});
+
 btnCentrar.addEventListener("click", () => { view.goTo({ center: [-74.2, 4.7], zoom: 8 }); });
 btnLimpiarMapa.addEventListener("click", () => {
     clearMapGraphics();

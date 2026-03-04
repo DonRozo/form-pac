@@ -31,7 +31,7 @@
       <section class="panel panel--form" aria-label="Formulario">
         <div class="panel__header">
           <h2>1) Selección</h2>
-          <p class="muted">Selecciona la actividad y el trimestre. Luego reporta el avance por tarea. Si una tarea requiere municipalización, se habilitará el mapa.</p>
+          <p class="muted">Selecciona la actividad y el trimestre. Luego reporta el avance por tarea.</p>
         </div>
 
         <div class="grid2">
@@ -56,14 +56,17 @@
           <select id="sel-actividad">
             <option value="">Cargando actividades…</option>
           </select>
-          <div class="help">Fuente: <span class="mono">CFG_Actividad</span> (Tabla 6) del servicio DATAPAC_V2.</div>
+          <div class="help" style="display: flex; justify-content: space-between;">
+            <span>Fuente: <span class="mono">CFG_Actividad</span></span>
+            <strong id="lbl-responsable" style="color: var(--primary-2);">Responsable: —</strong>
+          </div>
         </div>
 
         <div class="divider"></div>
 
         <div class="panel__header">
           <h2>2) Subactividades y tareas</h2>
-          <p class="muted">Diligencia el avance por tarea. Si la tarea es municipalizable/georreferenciable, deberás seleccionar municipio y ubicar un punto.</p>
+          <p class="muted">Diligencia el avance por tarea. Si es municipalizable, selecciona municipio, describe el sitio y ubica el punto.</p>
         </div>
 
         <div id="indicadores" class="indicadores"></div>
@@ -118,8 +121,8 @@
           <div class="maphint__title">Cómo usar</div>
           <ol>
             <li>En una tarea municipalizable, pulsa <b>Ubicar punto</b>.</li>
-            <li>Selecciona municipio y pulsa <b>Ubicar punto</b>.</li>
             <li>Haz clic en el mapa para guardar coordenadas.</li>
+            <li>Describe el lugar de intervención en el campo "Descripción del sitio".</li>
           </ol>
         </div>
       </section>
@@ -131,7 +134,6 @@
   </div>
 
   <script src="https://js.arcgis.com/4.29/"></script>
-
   <script src="script.js"></script>
 
   <script>
