@@ -17,6 +17,11 @@
 // --- Servicio ---
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V2/FeatureServer";
 
+// --- Cartografía CAR (Jurisdicción) ---
+const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/CartografiaCAR/FeatureServer";
+const CAR_JUR_LAYER_ID = 1; // Jurisdiccion_CAR
+
+
 // Índices (según configuración DATAPAC_V2)
 const URL_ACTIVIDAD = `${SERVICE_URL}/6`;
 const URL_SUBACTIVIDAD = `${SERVICE_URL}/7`;
@@ -184,6 +189,66 @@ function upsertGraphicForRow(rowId, lon, lat){
 function zoomToPoint(lon, lat){
   if(!view) return;
   view.goTo({ center: [lon, lat], zoom: 14 });
+
+async function queryJurisdiccionCAR(lon, lat){
+  // Intersectar punto (WGS84) con Jurisdiccion_CAR (polígonos)
+  const url = `${CAR_SERVICE_URL}/${CAR_JUR_LAYER_ID}/query`;
+  const params = {
+    f: "json",
+    geometry: JSON.stringify({ x: lon, y: lat, spatialReference: { wkid: 4326 } }),
+    geometryType: "esriGeometryPoint",
+    spatialRel: "esriSpatialRelIntersects",
+    inSR: 4326,
+    outFields: "Municipio,CODDANE",
+    returnGeometry: false,
+    resultRecordCount: 1
+  };
+  const j = await fetchJson(url, params);
+  const feats = j.features || [];
+  if(!feats.length) return null;
+  const a = feats[0].attributes || {};
+  return {
+    municipioNombre: a.Municipio ?? a.MUNICIPIO ?? a.municipio ?? "",
+    codigoDANE: a.CODDANE ?? a.CodDane ?? a.coddane ?? ""
+  };
+}
+
+async function updateMunicipioFromCAR(rowId, lon, lat){
+  const rowEl = document.querySelector(`.row[data-row-id="${rowId}"]`);
+  if(!rowEl) return;
+
+  // Solo aplica a municipalizables
+  const isGeo = rowEl.getAttribute("data-geo") === "1";
+  if(!isGeo) return;
+
+  try{
+    const res = await queryJurisdiccionCAR(lon, lat);
+    const munEl = rowEl.querySelector(".row-mun");
+    const daneEl = rowEl.querySelector(".row-dane");
+    if(!res || !res.municipioNombre){
+      rowMunicipio.delete(rowId);
+      if(munEl) munEl.value = "";
+      if(daneEl) daneEl.value = "";
+      // Popup
+      if(view){
+        view.popup.open({
+          title: "Fuera de jurisdicción",
+          content: "El punto no está dentro de la jurisdicción de la CAR.",
+          location: { longitude: lon, latitude: lat }
+        });
+      }
+      setStatus("El punto no está dentro de la jurisdicción de la CAR. Ubica el punto nuevamente.", "error");
+      return;
+    }
+    rowMunicipio.set(rowId, res);
+    if(munEl) munEl.value = res.municipioNombre;
+    if(daneEl) daneEl.value = String(res.codigoDANE ?? "");
+    setStatus("Municipio y DANE calculados automáticamente (Jurisdicción CAR).", "ok");
+  }catch(e){
+    console.error(e);
+    setStatus("Error consultando Jurisdicción CAR. Revisa conexión o permisos.", "error");
+  }
+}
 }
 
 // ---------- Metadata + Field mapping ----------
@@ -279,13 +344,15 @@ function mapAvanceFields(info){
 
 function mapUbicacionFields(info){
   const fields = info.fields || [];
-  const fkAvance = pickField(fields, ["AvanceTareaGlobalID", "GlobalIDAvanceTarea", "AvanceGUID", "AvanceGuid", "AvanceTarea"]);
-  const municipio = pickField(fields, ["Municipio", "CodigoMunicipio", "MunicipioCod"]);
+  const fkAvance = pickField(fields, ["AvanceTareaGlobalID", "GlobalIDAvanceTarea", "AvanceGUID", "AvanceGuid", "AvanceTarea", "AvanceTareaID"]);
+  const municipioNombre = pickField(fields, ["MunicipioNombre", "Municipio", "NombreMunicipio", "Municipio_Nombre"]);
+  const codigoDane = pickField(fields, ["CodigoDANE", "CODDANE", "CodDANE", "CodigoDane", "Codigo_DANE"]);
   const desc = pickField(fields, ["Descripcion", "Descripción", "Observaciones", "Lugar", "Sitio"]);
   return {
     fields,
     fkAvanceField: fkAvance?.name || null,
-    municipioField: municipio?.name || null,
+    municipioNombreField: municipioNombre?.name || null,
+    codigoDaneField: codigoDane?.name || null,
     descripcionField: desc?.name || null
   };
 }
@@ -598,10 +665,13 @@ function tareaRowHtml(t){
       </div>
 
       <div class="field" style="padding:0;">
-        <label>Municipio (solo si municipalizable)</label>
-        <select class="row-municipio" ${geo === true ? "" : "disabled"}>
-          ${municipioOptionsHtml()}
-        </select>
+        <label>Municipio (calculado)</label>
+        <input class="row-mun" type="text" placeholder="Se calcula al ubicar el punto" readonly ${geo === true ? "" : "disabled"} />
+      </div>
+
+      <div class="field" style="padding:0;">
+        <label>Código DANE (calculado)</label>
+        <input class="row-dane" type="text" placeholder="Se calcula al ubicar el punto" readonly ${geo === true ? "" : "disabled"} />
       </div>
 
       <div class="field" style="padding:0; grid-column: 1 / span 2;">
@@ -616,8 +686,8 @@ function tareaRowHtml(t){
     </div>
 
     <div class="row__right">
-      <button class="btn btn--primary btn-activar" ${geo === true ? "" : "disabled"} title="Activar para ubicar punto en el mapa">Ubicar punto</button>
-      <button class="btn btn--ghost btn-ver" ${geo === true ? "" : "disabled"} title="Acercar el mapa al punto">Ver punto</button>
+      ${geo === true ? `<button class="btn btn--primary btn-activar" title="Activar para ubicar punto en el mapa">Ubicar punto</button>
+      <button class="btn btn--ghost btn-ver" title="Acercar el mapa al punto">Ver punto</button>` : ``}
       <button class="btn btn--danger btn-eliminar" title="Limpiar este registro">Limpiar</button>
       <div class="row__mini">
         <span>Punto: <b class="row-pt">—</b></span>
@@ -662,6 +732,7 @@ function wireRowEvents(rowEl){
 
   btnClr?.addEventListener("click", () => {
     rowGeometries.delete(rowId);
+    rowMunicipio.delete(rowId);
     removeGraphicForRow(rowId);
     if(activeRowId === rowId){
       activeRowId = null;
@@ -671,8 +742,10 @@ function wireRowEvents(rowEl){
     rowEl.querySelector(".row-valor").value = "";
     rowEl.querySelector(".row-obs").value = "";
     rowEl.querySelector(".row-evi").value = "";
-    const sel = rowEl.querySelector(".row-municipio");
-    if(sel) sel.value = "";
+    const mun = rowEl.querySelector(".row-mun");
+    if(mun) mun.value = "";
+    const dane = rowEl.querySelector(".row-dane");
+    if(dane) dane.value = "";
     const ptEl = rowEl.querySelector(".row-pt");
     if(ptEl) ptEl.textContent = "—";
   });
@@ -685,59 +758,98 @@ function initMap(){
       "esri/Map",
       "esri/views/MapView",
       "esri/layers/GraphicsLayer",
+      "esri/layers/FeatureLayer",
+      "esri/Graphic",
+      "esri/widgets/Sketch/SketchViewModel",
       "esri/geometry/support/webMercatorUtils"
-    ], (Map, MapView, GraphicsLayer, _webMercatorUtils) => {
+    ], (Map, MapView, GraphicsLayer, FeatureLayer, Graphic, SketchViewModel, _webMercatorUtils) => {
       webMercatorUtils = _webMercatorUtils;
 
-      // Basemap OSM (no requiere API key)
       map = new Map({ basemap: "osm" });
-      graphicsLayer = new GraphicsLayer();
+
+      // Jurisdicción CAR (polígono)
+      const jurisdiccionLayer = new FeatureLayer({
+        url: `${CAR_SERVICE_URL}/${CAR_JUR_LAYER_ID}`,
+        title: "Jurisdicción CAR",
+        opacity: 0.15,
+        outFields: ["Municipio","CODDANE"]
+      });
+      map.add(jurisdiccionLayer);
+
+      graphicsLayer = new GraphicsLayer({ title: "Puntos de municipalización" });
       map.add(graphicsLayer);
 
       view = new MapView({
         container: "map",
         map,
         center: [-74.2, 4.7],
-        zoom: 8
+        zoom: 8,
+        popup: { dockEnabled: true, dockOptions: { position: "top-right", breakpoint: false } }
       });
 
-      view.on("click", (evt) => {
+      sketchVM = new SketchViewModel({
+        view,
+        layer: graphicsLayer,
+        updateOnGraphicClick: false
+      });
+
+      // Cuando termina de mover el punto: recalcular municipio/dane
+      sketchVM.on("update", async (evt) => {
+        if(evt.state !== "complete") return;
+        const g = (evt.graphics && evt.graphics[0]) ? evt.graphics[0] : null;
+        if(!g) return;
+        const rowId = g.attributes?.rowId;
+        if(!rowId) return;
+
+        let p = g.geometry;
+        let geo = p;
+        if (p.spatialReference && p.spatialReference.isWebMercator){
+          geo = webMercatorUtils.webMercatorToGeographic(p);
+        }
+        const lon = geo.longitude;
+        const lat = geo.latitude;
+
+        rowGeometries.set(rowId, { lon, lat });
+        const rowEl = document.querySelector(`.row[data-row-id="${rowId}"]`);
+        if(rowEl){
+          const ptEl = rowEl.querySelector(".row-pt");
+          if(ptEl) ptEl.textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+        }
+        await updateMunicipioFromCAR(rowId, lon, lat);
+      });
+
+      view.on("click", async (evt) => {
         if(!activeRowId){
           setStatus("Primero activa un registro con el botón “Ubicar punto”.", "error");
           return;
         }
-        let g = evt.mapPoint;
-        let geo = g;
-        if (g.spatialReference && g.spatialReference.isWebMercator){
-          geo = webMercatorUtils.webMercatorToGeographic(g);
+        let p = evt.mapPoint;
+        let geo = p;
+        if (p.spatialReference && p.spatialReference.isWebMercator){
+          geo = webMercatorUtils.webMercatorToGeographic(p);
         }
         const lon = geo.longitude;
         const lat = geo.latitude;
 
         rowGeometries.set(activeRowId, { lon, lat });
-        upsertGraphicForRow(activeRowId, lon, lat);
+        const graphic = upsertGraphicForRow(activeRowId, lon, lat, Graphic);
 
         const rowEl = document.querySelector(`.row[data-row-id="${activeRowId}"]`);
         if(rowEl){
-          rowEl.querySelector(".row-pt").textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+          const ptEl = rowEl.querySelector(".row-pt");
+          if(ptEl) ptEl.textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
         }
 
-        setStatus("Punto asignado al registro activo.", "success");
+        await updateMunicipioFromCAR(activeRowId, lon, lat);
+
+        // permitir mover antes de guardar
+        if(graphic){
+          sketchVM.update(graphic);
+        }
       });
 
-      btnLimpiarMapa.addEventListener("click", () => {
-        rowGeometries.clear();
-        clearMapGraphics();
-        document.querySelectorAll(".row .row-pt").forEach(x => x.textContent = "—");
-        setStatus("Se borraron todos los puntos.", "info");
-      });
-
-      btnCentrar.addEventListener("click", () => {
-        view.goTo({ center: [-74.2, 4.7], zoom: 8 });
-      });
-
-      resolve();
-    }, (err) => reject(err));
+      resolve(true);
+    });
   });
 }
 
@@ -761,17 +873,20 @@ function collectDraft(){
     const valor = rowEl.querySelector(".row-valor").value;
     const obs = rowEl.querySelector(".row-obs").value;
     const evi = rowEl.querySelector(".row-evi").value;
-    const municipio = rowEl.querySelector(".row-municipio")?.value || "";
+    const munInfo = rowMunicipio.get(rowId) || {};
+    const municipioNombre = munInfo.municipioNombre || "";
+    const codigoDANE = munInfo.codigoDANE || "";
 
     const pt = rowGeometries.get(rowId);
 
-    const hasAny = (valor !== "" && valor !== null) || obs || evi || municipio || pt;
+    const hasAny = (valor !== "" && valor !== null) || obs || evi || municipioNombre || pt;
     if(!hasAny) return;
 
     if(valor === "" || valor === null) throw new Error("Hay una tarea con avance sin 'Valor reportado'.");
 
     if(isGeo){
-      if(!municipio) throw new Error("Hay una tarea municipalizable sin Municipio.");
+      if(!municipioNombre) throw new Error("Hay una tarea municipalizable sin Municipio (calculado).");
+      if(!codigoDANE) throw new Error("Hay una tarea municipalizable sin Código DANE (calculado).");
       if(!pt) throw new Error("Hay una tarea municipalizable sin Punto (ubícalo en el mapa).");
     }
 
@@ -789,7 +904,7 @@ function collectDraft(){
     avances.push({ attributes: attrs });
 
     if(isGeo){
-      rowsForUbic.push({ rowId, municipio, pt });
+      rowsForUbic.push({ rowId, municipioNombre, codigoDANE, pt });
     }else{
       rowsForUbic.push(null);
     }
@@ -855,7 +970,8 @@ async function saveDraft(draft){
 
     const attrs = {};
     if(ubicacionInfo.fkAvanceField) attrs[ubicacionInfo.fkAvanceField] = globalIdAv;
-    if(ubicacionInfo.municipioField) attrs[ubicacionInfo.municipioField] = ubic.municipio;
+    if(ubicacionInfo.municipioNombreField) attrs[ubicacionInfo.municipioNombreField] = ubic.municipioNombre;
+    if(ubicacionInfo.codigoDaneField) attrs[ubicacionInfo.codigoDaneField] = ubic.codigoDANE;
     if(ubicacionInfo.descripcionField) attrs[ubicacionInfo.descripcionField] = null;
 
     addsUbic.push({
@@ -898,8 +1014,10 @@ function clearForm(){
     rowEl.querySelector(".row-valor").value = "";
     rowEl.querySelector(".row-obs").value = "";
     rowEl.querySelector(".row-evi").value = "";
-    const sel = rowEl.querySelector(".row-municipio");
-    if(sel) sel.value = "";
+    const mun = rowEl.querySelector(".row-mun");
+    if(mun) mun.value = "";
+    const dane = rowEl.querySelector(".row-dane");
+    if(dane) dane.value = "";
     const ptEl = rowEl.querySelector(".row-pt");
     if(ptEl) ptEl.textContent = "—";
   });
