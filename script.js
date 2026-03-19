@@ -1,7 +1,8 @@
 /* ===========================================================
    DATA-PAC | Reporte y Corrección (v3)
    Esquema: DATAPAC_V3
-   Mejoras: OTP, Filtro Asignación, CRUD Bidireccional, WF_SolicitudRevision, Trazabilidad Fuerte
+   Mejoras: OTP con Roles, Filtro Asignación, CRUD Bidireccional, 
+            WF_SolicitudRevision, Bloqueo CAR, Auditoría, Histórico
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V3/FeatureServer";
@@ -21,6 +22,9 @@ const URL_NARRATIVA = `${SERVICE_URL}/11`;
 const URL_ASIGNACION = `${SERVICE_URL}/15`; 
 const URL_PERSONA = `${SERVICE_URL}/16`; 
 const URL_OTP = `${SERVICE_URL}/17`;
+const URL_ROL = `${SERVICE_URL}/21`; // SEG_PersonaRol
+const URL_AUD_HISTORIAL = `${SERVICE_URL}/23`; // AUD_HistorialCambio
+const URL_AUD_EVENTO = `${SERVICE_URL}/24`; // AUD_EventoSistema
 const URL_WF_SOLICITUD = `${SERVICE_URL}/25`;
 
 const F_AVA = { fkTarea: "TareaGlobalID", vig: "Vigencia", per: "Periodo", val: "ValorReportado", obs: "Observaciones", evi: "EvidenciaURL", fec: "FechaRegistro", resp: "Responsable", estado: "EstadoRegistro", ver: "Version", fEdic: "FechaUltimaEdicionFuncional", pEdic: "PersonaUltimaEdicionID", motivo: "MotivoAjuste" };
@@ -30,8 +34,9 @@ const F_WF = { solId: "SolicitudID", tipo: "TipoObjeto", objId: "ObjetoID", objG
 
 // DOM
 const elActividad = document.getElementById("sel-actividad"), elVigencia = document.getElementById("sel-vigencia"), elPeriodo = document.getElementById("sel-periodo"), elIndicadores = document.getElementById("indicadores");
-const btnGuardar = document.getElementById("btn-guardar"), btnEnviar = document.getElementById("btn-enviar");
-const elStatus = document.getElementById("status");
+const btnGuardar = document.getElementById("btn-guardar"), btnEnviar = document.getElementById("btn-enviar"), btnLimpiar = document.getElementById("btn-limpiar"), btnRefresh = document.getElementById("btn-refresh");
+const elStatus = document.getElementById("status"), pillActive = document.getElementById("pill-active");
+const elModo = document.getElementById("pill-modo");
 
 // Estado
 let currentUser = null; 
@@ -39,10 +44,11 @@ let asignacionesActivas = [];
 let cacheSubactividades = [], cacheTareas = [];
 let existingAvances = new Map(); 
 let existingNarrativa = null; 
-let existingWFSolicitudes = new Map(); // Regla 5: Control de solicitudes existentes
+let existingWFSolicitudes = new Map(); 
 let deletedLocations = []; 
 let rowLocations = new Map(); 
 let activeRowId = null;
+let viewOnlyMode = false; // Bandera para Histórico
 let map, view, graphicsLayer, webMercatorUtils, sketchVM, jurisdiccionLayerView;
 
 // --- Helpers ---
@@ -53,29 +59,57 @@ async function fetchJson(url, params){ const u=new URL(url); Object.entries(para
 async function postForm(url, formObj){ const form=new URLSearchParams(); Object.entries(formObj).forEach(([k,v])=>{ if(v!=null) form.append(k,typeof v==="string"?v:JSON.stringify(v)); }); const r=await fetch(url, {method:"POST", body:form}); return await r.json(); }
 function generateGUID() { return '{' + crypto.randomUUID().toUpperCase() + '}'; }
 
-// --- Autenticación OTP ---
+// --- Funciones de Auditoría ---
+async function writeAuditEvent(tipo, entidad, objGid, resultado, detalle) {
+  if (!currentUser) return;
+  try {
+    const attrs = { GlobalID: generateGUID(), TipoEvento: tipo, Entidad: entidad, ObjetoGlobalID: objGid || "", Resultado: resultado, DetalleEvento: detalle ? detalle.substring(0, 255) : "", PersonaID: currentUser.pid, FechaEvento: Date.now() };
+    await postForm(`${URL_AUD_EVENTO}/applyEdits`, { adds: [{attributes: attrs}] });
+  } catch(e) { console.warn("Auditoría Evento falló:", e); }
+}
+
+async function writeAuditHistory(tipoObj, objGid, campo, valAnt, valNuevo, motivo) {
+  if (!currentUser) return;
+  try {
+    const attrs = { GlobalID: generateGUID(), TipoObjeto: tipoObj, ObjetoID: "0", ObjetoGlobalID: objGid || "", CampoModificado: campo || "", ValorAnterior: valAnt ? String(valAnt).substring(0, 1000) : "", ValorNuevo: valNuevo ? String(valNuevo).substring(0, 1000) : "", PersonaID: currentUser.pid, FechaCambio: Date.now(), MotivoCambio: motivo || "", OrigenCambio: "APP_REPORTE" };
+    await postForm(`${URL_AUD_HISTORIAL}/applyEdits`, { adds: [{attributes: attrs}] });
+  } catch(e) { console.warn("Auditoría Historial falló:", e); }
+}
+
+// --- Autenticación OTP y Roles ---
 document.getElementById("btn-solicitar-codigo").addEventListener("click", async () => {
   const cedula = document.getElementById("login-cedula").value.trim(), correo = document.getElementById("login-correo").value.trim().toLowerCase();
   document.getElementById("login-msg-1").textContent = "";
   try {
     const res = await fetch(URL_WEBHOOK_POWERAUTOMATE, { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({cedula, correo}) });
     if(res.status === 200) { document.getElementById("login-step-1").classList.remove("active"); document.getElementById("login-step-2").classList.add("active"); }
-    else throw new Error("Credenciales inválidas.");
+    else throw new Error("Credenciales inválidas o error de conexión.");
   } catch(e) { document.getElementById("login-msg-1").textContent = e.message; }
 });
 
 document.getElementById("btn-validar-codigo").addEventListener("click", async () => {
   const correo = document.getElementById("login-correo").value.trim().toLowerCase(), codigo = document.getElementById("login-codigo").value.trim();
-  document.getElementById("login-msg-2").textContent = "";
+  document.getElementById("login-msg-2").textContent = "Validando acceso...";
   try {
     const qOtp = await fetchJson(`${URL_OTP}/query`, { f:"json", where:`Correo='${correo}' AND CodigoHash='${codigo}' AND Usado='NO'`, outFields:"*" });
     if(!qOtp.features.length) throw new Error("Código incorrecto.");
     const otp = qOtp.features[0].attributes;
     
     const qPers = await fetchJson(`${URL_PERSONA}/query`, { f:"json", where:`GlobalID='${otp.PersonaGlobalID}'`, outFields:"Nombre,PersonaID" });
-    currentUser = { gid: otp.PersonaGlobalID, pid: qPers.features[0].attributes.PersonaID, nombre: qPers.features[0].attributes.Nombre, correo };
+    const pid = qPers.features[0].attributes.PersonaID;
+
+    // Validación de Roles (Debe ser EDITOR o SUPERADMIN)
+    const resR = await fetchJson(`${URL_ROL}/query`, { f: "json", where: `(PersonaID='${otp.PersonaGlobalID}' OR PersonaID='${pid}') AND Activo='SI'`, outFields: "RolID", returnGeometry: false });
+    const roles = (resR.features || []).map(f => String(f.attributes.RolID).trim().toUpperCase());
+    
+    if (!roles.includes("EDITOR") && !roles.includes("SUPERADMIN")) {
+        throw new Error("Acceso denegado: Su rol no le permite utilizar esta aplicación de captura operativa.");
+    }
+
+    currentUser = { gid: otp.PersonaGlobalID, pid: pid, nombre: qPers.features[0].attributes.Nombre, correo, roles };
     
     await postForm(`${URL_OTP}/applyEdits`, { f:"json", updates: [{attributes: {OBJECTID: otp.OBJECTID, Usado: "SI"}}] });
+    await writeAuditEvent("OTP_VALIDATE", "APP_REPORTE", currentUser.gid, "OK", "Ingreso exitoso a módulo operativo");
     
     document.getElementById("login-overlay").style.display = "none";
     document.getElementById("pill-user").style.display = "block";
@@ -95,7 +129,11 @@ async function loadAsignaciones() {
 async function loadActividades() {
   if(!currentUser) return;
   const actIds = [...new Set(asignacionesActivas.map(a => a.ActividadID).filter(Boolean))];
-  if(!actIds.length) { elActividad.innerHTML = `<option value="">Sin actividades asignadas</option>`; return; }
+  if(!actIds.length) { 
+      elActividad.innerHTML = `<option value="">Sin actividades asignadas en ${elVigencia.value}</option>`; 
+      elIndicadores.innerHTML = "";
+      return; 
+  }
   
   const inList = actIds.map(id => `'${id}'`).join(",");
   const qAct = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`ActividadID IN (${inList}) AND Activo='SI' AND Vigencia=${elVigencia.value}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
@@ -117,6 +155,7 @@ elPeriodo.addEventListener("change", async () => {
 async function loadSubactividadesYTareas(actividadGlobalId, actividadCod) {
   elIndicadores.innerHTML = ""; cacheSubactividades = []; cacheTareas = [];
   rowLocations.clear(); existingAvances.clear(); existingWFSolicitudes.clear(); deletedLocations = []; existingNarrativa = null;
+  viewOnlyMode = false;
   setStatus("Cargando estructura y reportes existentes...");
 
   const subQ = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}'`, outFields:"*" });
@@ -135,6 +174,7 @@ async function loadSubactividadesYTareas(actividadGlobalId, actividadCod) {
   elIndicadores.innerHTML = cacheSubactividades.map(sa => subActividadCardHtml(sa)).join("");
   await loadExistingData(actividadGlobalId); 
   wireCardEvents();
+  evaluateHistoricalMode();
   setStatus("Formulario cargado.", "success");
 }
 
@@ -156,7 +196,7 @@ function tareaRowHtml(t){
       </div>
       <div class="field" style="padding:0;"><label>Valor reportado</label><input class="row-valor" type="number" step="any" /></div>
       <div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Observaciones</label><input class="row-obs" type="text" /></div>
-      <div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Evidencia (URL)</label><input class="row-evi" type="url" /></div>
+      <div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Evidencia (URL)</label><input class="row-obs row-evi" type="url" /></div>
       ${geo ? `<div class="loc-list" id="loc-list-${rowId}"></div>` : ``}
     </div>
     <div class="row__right">
@@ -258,6 +298,59 @@ function applyReadonlyStateNarrativa(estado) {
   ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales", "txt-motivo-narrativa"].forEach(id => { document.getElementById(id).disabled = isReadonly; });
 }
 
+function evaluateHistoricalMode() {
+    let allLocked = true;
+    let hasData = false;
+
+    // Verificar tareas
+    document.querySelectorAll(".row").forEach(rowEl => {
+        hasData = true;
+        if (!rowEl.classList.contains("is-readonly")) {
+            allLocked = false;
+        }
+    });
+
+    // Verificar narrativa
+    if (existingNarrativa) {
+        hasData = true;
+        if (!["Enviado", "EnRevision", "Aprobado", "Publicado"].includes(existingNarrativa.EstadoRegistro)) {
+            allLocked = false;
+        }
+    }
+
+    if (hasData && allLocked) {
+        viewOnlyMode = true;
+        elModo.style.display = "flex";
+        elModo.textContent = "Modo: Histórico (Solo Lectura)";
+        elModo.style.background = "#fef2f2";
+        elModo.style.color = "#991b1b";
+        btnGuardar.style.display = "none";
+        btnEnviar.style.display = "none";
+    } else {
+        viewOnlyMode = false;
+        elModo.style.display = "flex";
+        elModo.textContent = "Modo: Edición";
+        elModo.style.background = "#eff6ff";
+        elModo.style.color = "#1d4ed8";
+        btnGuardar.style.display = "inline-flex";
+        btnEnviar.style.display = "inline-flex";
+    }
+}
+
+function wireCardEvents() {
+  document.querySelectorAll(".btn-activar").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      const rowEl = e.target.closest(".row");
+      if (rowEl.classList.contains("is-readonly")) return;
+      document.querySelectorAll(".row").forEach(r => r.style.borderColor = "rgba(15,23,42,0.20)");
+      rowEl.style.borderColor = "var(--primary)";
+      activeRowId = rowEl.getAttribute("data-row-id");
+      const numTarea = rowEl.querySelector(".mono").textContent;
+      document.getElementById("pill-active").textContent = `Activo: ${numTarea.substring(0, 30)}...`;
+    });
+  });
+}
+
 function deleteLocation(rowId, ptId) {
   removeGraphicForPoint(ptId);
   const locs = rowLocations.get(rowId) || [];
@@ -270,8 +363,9 @@ function deleteLocation(rowId, ptId) {
 function appendLocationUI(rowId, ptId, lon, lat, desc="", mun="", dane="") {
   const listEl = document.getElementById(`loc-list-${rowId}`); if(!listEl) return;
   const div = document.createElement("div"); div.className = "loc-item"; div.id = `loc-${ptId}`;
+  const isError = mun === "Fuera de CAR" ? 'style="border: 1px solid red; background: #fff5f5;"' : '';
   div.innerHTML = `
-    <div class="loc-item__header"><span>📍 Sitio: <span class="loc-coords">${lat.toFixed(5)}, ${lon.toFixed(5)}</span></span><button class="btn-loc-del">Eliminar</button></div>
+    <div class="loc-item__header" ${isError}><span>📍 Sitio: <span class="loc-coords">${lat.toFixed(5)}, ${lon.toFixed(5)}</span></span><button class="btn-loc-del">Eliminar</button></div>
     <div class="field" style="padding:0;"><input class="loc-desc" type="text" value="${escapeHtml(desc)}" placeholder="Descripción del sitio..." /></div>
     <div class="loc-item__grid">
       <div class="field" style="padding:0;"><input class="loc-mun" type="text" value="${escapeHtml(mun)}" readonly /></div>
@@ -305,7 +399,7 @@ function initMap(){
       });
 
       view.on("click", async (evt) => {
-        if(!activeRowId){ setStatus("Activa un registro en el panel.", "error"); return; }
+        if(!activeRowId){ setStatus("Activa un registro en el panel para georreferenciar.", "error"); return; }
         const geo = getGeographicLocation(evt.mapPoint); const ptId = crypto.randomUUID(); const locs = rowLocations.get(activeRowId) || [];
         locs.push({ ptId, lon: geo.longitude, lat: geo.latitude, mun: "", dane: "", desc: "" }); rowLocations.set(activeRowId, locs);
         addGraphicForPoint(activeRowId, ptId, geo.longitude, geo.latitude, Graphic);
@@ -328,11 +422,19 @@ async function updateMunicipioFromCAR(rowId, ptId, mapPoint){
     const result = await jurisdiccionLayerView.queryFeatures({ geometry: mapPoint, spatialRelationship: "intersects", returnGeometry: false, outFields: ["*"] });
     const locEl = document.getElementById(`loc-${ptId}`); if(!locEl) return;
     const munEl = locEl.querySelector(".loc-mun"); const daneEl = locEl.querySelector(".loc-dane");
+    
     if(!result.features.length){
       if(munEl) munEl.value = "Fuera de CAR"; if(daneEl) daneEl.value = "N/A";
-      view.popup.open({ title: "Fuera de jurisdicción", content: "Este punto no está dentro de la CAR.", location: mapPoint });
+      locEl.querySelector(".loc-item__header").style.border = "1px solid red";
+      locEl.querySelector(".loc-item__header").style.background = "#fff5f5";
+      view.popup.open({ title: "Atención: Fuera de jurisdicción", content: "Este punto no está dentro de la CAR. El sistema bloqueará el guardado si no lo corrige.", location: mapPoint });
+      const locs = rowLocations.get(rowId) || []; const locObj = locs.find(l => l.ptId === ptId);
+      if(locObj) { locObj.mun = "Fuera de CAR"; locObj.dane = "N/A"; }
       return;
     }
+    locEl.querySelector(".loc-item__header").style.border = "none";
+    locEl.querySelector(".loc-item__header").style.background = "transparent";
+
     const a = result.features[0].attributes; const keys = Object.keys(a);
     const mun = a[keys.find(k => k.toLowerCase().includes("municipio") || k.toLowerCase().includes("mpio"))] || "";
     const dane = String(a[keys.find(k => k.toLowerCase().includes("dane"))] || "");
@@ -348,27 +450,39 @@ btnGuardar.addEventListener("click", () => processSave(false));
 btnEnviar.addEventListener("click", () => processSave(true));
 
 async function processSave(isSubmit) {
+  if (viewOnlyMode) return setStatus("Modo lectura: no se permiten cambios.", "error");
+
   try {
     btnGuardar.disabled = true; btnEnviar.disabled = true;
-    
-    // Remover borde rojo de validaciones pasadas
     document.querySelectorAll(".row--error").forEach(r => r.classList.remove("row--error"));
     
     const draft = collectDraft(isSubmit);
     if(!draft.updates.length && !draft.adds.length && !draft.narrAdds.length && !draft.narrUpdates.length && !deletedLocations.length) {
        setStatus("No hay cambios para guardar.", "info"); return;
     }
+    
     await executeSave(draft);
+    
+    // Trazabilidad y auditoría
+    const eventType = isSubmit ? "ENVIAR_REVISION" : "GUARDAR_BORRADOR";
+    const detailMsg = `Actividad: ${elActividad.options[elActividad.selectedIndex].text}. Tareas afect: ${draft.adds.length + draft.updates.length}.`;
+    await writeAuditEvent(eventType, "APP_REPORTE", draft.actGid, "OK", detailMsg);
+
     setStatus(isSubmit ? "Reporte enviado a revisión." : "Borrador guardado exitosamente.", "success");
     await loadExistingData(elActividad.value); 
-  } catch(e) { console.error(e); setStatus(e.message, "error"); }
-  finally { btnGuardar.disabled = false; btnEnviar.disabled = false; }
+    evaluateHistoricalMode();
+  } catch(e) { 
+      console.error(e); 
+      setStatus(e.message, "error"); 
+  } finally { 
+      btnGuardar.disabled = false; btnEnviar.disabled = false; 
+  }
 }
 
 function collectDraft(isSubmit) {
   const actGid = elActividad.value, vig = Number(elVigencia.value), per = elPeriodo.value;
   const epochNow = Date.now();
-  const res = { adds: [], updates: [], ubicAdds: [], ubicUpdates: [], wfAdds: [], wfUpdates: [], narrAdds: [], narrUpdates: [] };
+  const res = { actGid, adds: [], updates: [], ubicAdds: [], ubicUpdates: [], wfAdds: [], wfUpdates: [], narrAdds: [], narrUpdates: [] };
   
   // AVANCES TAREAS
   document.querySelectorAll(".row").forEach(rowEl => {
@@ -378,23 +492,32 @@ function collectDraft(isSubmit) {
     const motivo = rowEl.querySelector(".row-motivo")?.value;
     
     const locs = rowLocations.get(rowId) || [];
-    locs.forEach(loc => { const domLoc = document.getElementById(`loc-${loc.ptId}`); if(domLoc) loc.desc = domLoc.querySelector(".loc-desc").value; });
+    locs.forEach(loc => { 
+        const domLoc = document.getElementById(`loc-${loc.ptId}`); 
+        if(domLoc) loc.desc = domLoc.querySelector(".loc-desc").value; 
+        
+        // REGLA 10: Validación Territorial CAR Estricta
+        if (loc.mun === "Fuera de CAR" || !loc.mun) {
+            rowEl.classList.add("row--error");
+            throw new Error(`Existen ubicaciones fuera de la jurisdicción CAR en la tarea observada. Elimine o corrija el punto para poder continuar.`);
+        }
+    });
 
     if(!val && !obs && !evi && locs.length === 0) return; 
 
     const exist = existingAvances.get(tareaGid);
     
-    // REGLA 4: Validación dura del MotivoAjuste
+    // REGLA 4: Validación dura del MotivoAjuste para Devoluciones
     if (exist && exist.EstadoRegistro === "Devuelto" && (!motivo || motivo.trim() === "")) {
       rowEl.classList.add("row--error");
-      throw new Error(`Debes diligenciar el 'Motivo de ajuste' en la tarea observada.`);
+      throw new Error(`Debes diligenciar obligatoriamente el 'Motivo de ajuste' en la tarea devuelta.`);
     }
 
     const estadoNuevo = isSubmit ? "Enviado" : (exist ? exist.EstadoRegistro : "Borrador");
     
     const baseAttrs = {
       [F_AVA.estado]: estadoNuevo,
-      [F_AVA.pEdic]: currentUser.gid,
+      [F_AVA.pEdic]: currentUser.pid,
       [F_AVA.fEdic]: epochNow,
       [F_AVA.motivo]: motivo || ""
     };
@@ -409,6 +532,10 @@ function collectDraft(isSubmit) {
       baseAttrs[F_AVA.ver] = versionActual;
       baseAttrs[F_AVA.val] = val ? Number(val) : null; baseAttrs[F_AVA.obs] = obs; baseAttrs[F_AVA.evi] = evi;
       res.updates.push({ attributes: baseAttrs });
+      
+      if(String(exist.ValorReportado) !== String(val) || String(exist.Observaciones) !== String(obs)) {
+          writeAuditHistory("REP_AvanceTarea", avanceGidFinal, "Edicion_Operativa", `Val:${exist.ValorReportado}`, `Val:${val}|Obs:${obs}`, motivo);
+      }
     } else {
       avanceGidFinal = generateGUID();
       baseAttrs[F_AVA.fkTarea] = tareaGid; baseAttrs.Vigencia = vig; baseAttrs.Periodo = per;
@@ -416,6 +543,8 @@ function collectDraft(isSubmit) {
       baseAttrs.FechaRegistro = epochNow; baseAttrs.Responsable = currentUser.nombre;
       baseAttrs.GlobalID = avanceGidFinal; 
       res.adds.push({ attributes: baseAttrs });
+      
+      writeAuditHistory("REP_AvanceTarea", avanceGidFinal, "__CREATE__", "", `Val:${val}|Obs:${obs}`, "");
     }
 
     // Ubicaciones
@@ -426,12 +555,12 @@ function collectDraft(isSubmit) {
       else { uAttrs[F_UBI.fkAvance] = avanceGidFinal; res.ubicAdds.push({ attributes: uAttrs, geometry: geom }); }
     });
 
-    // REGLA 5: Control de duplicados en WF_SolicitudRevision
+    // REGLA Workflow SolicitudRevision
     if(isSubmit) {
       const existingWf = existingWFSolicitudes.get(avanceGidFinal);
       const wfPayload = {
-        [F_WF.tipo]: "AvanceTarea", [F_WF.objGid]: avanceGidFinal, [F_WF.vig]: vig, [F_WF.per]: per, [F_WF.persId]: currentUser.gid, [F_WF.fec]: epochNow, [F_WF.est]: "Enviado",
-        ComentarioSolicitante: motivo ? `Corrección: ${motivo}` : "Reporte operativo V3", Version: versionActual
+        [F_WF.tipo]: "AvanceTarea", [F_WF.objGid]: avanceGidFinal, [F_WF.vig]: vig, [F_WF.per]: per, [F_WF.persId]: currentUser.pid, [F_WF.fec]: epochNow, [F_WF.est]: "Enviado",
+        ComentarioSolicitante: motivo ? `Corrección operativa: ${motivo}` : "Reporte operativo V3", Version: versionActual
       };
 
       if(existingWf) {
@@ -449,13 +578,12 @@ function collectDraft(isSubmit) {
     const txt1 = document.getElementById("txt-reporte-narrativo").value, txt2 = document.getElementById("txt-logros-descripcion").value, txt3 = document.getElementById("txt-logros-principales").value, motivoN = document.getElementById("txt-motivo-narrativa")?.value;
     if(txt1 || txt2 || txt3) {
       
-      // REGLA 4: Validación dura Narrativa
       if (existingNarrativa && existingNarrativa.EstadoRegistro === "Devuelto" && (!motivoN || motivoN.trim() === "")) {
-        throw new Error(`Debes diligenciar el 'Motivo de ajuste requerido' en la Narrativa.`);
+        throw new Error(`Debes diligenciar el 'Motivo de ajuste requerido' en la sección de Narrativa.`);
       }
 
       const estadoNuevoN = isSubmit ? "Enviado" : (existingNarrativa ? existingNarrativa.EstadoRegistro : "Borrador");
-      const baseN = { [F_NAR.estado]: estadoNuevoN, [F_NAR.pEdic]: currentUser.gid, [F_NAR.fEdic]: epochNow, [F_NAR.motivo]: motivoN || "", [F_NAR.txt1]: txt1, [F_NAR.txt2]: txt2, [F_NAR.txt3]: txt3 };
+      const baseN = { [F_NAR.estado]: estadoNuevoN, [F_NAR.pEdic]: currentUser.pid, [F_NAR.fEdic]: epochNow, [F_NAR.motivo]: motivoN || "", [F_NAR.txt1]: txt1, [F_NAR.txt2]: txt2, [F_NAR.txt3]: txt3 };
       
       let narrGidFinal = null;
       let versionActualN = 1;
@@ -471,7 +599,7 @@ function collectDraft(isSubmit) {
       
       if(isSubmit) {
         const existingWfN = existingWFSolicitudes.get(narrGidFinal);
-        const wfPayloadN = { [F_WF.tipo]: "ReporteNarrativo", [F_WF.objGid]: narrGidFinal, [F_WF.vig]: vig, [F_WF.per]: per, [F_WF.persId]: currentUser.gid, [F_WF.fec]: epochNow, [F_WF.est]: "Enviado", ComentarioSolicitante: motivoN ? `Corrección: ${motivoN}` : "Reporte operativo V3", Version: versionActualN };
+        const wfPayloadN = { [F_WF.tipo]: "ReporteNarrativo", [F_WF.objGid]: narrGidFinal, [F_WF.vig]: vig, [F_WF.per]: per, [F_WF.persId]: currentUser.pid, [F_WF.fec]: epochNow, [F_WF.est]: "Enviado", ComentarioSolicitante: motivoN ? `Corrección operativa: ${motivoN}` : "Reporte operativo V3", Version: versionActualN };
         
         if(existingWfN) { wfPayloadN.OBJECTID = existingWfN.OBJECTID; res.wfUpdates.push({ attributes: wfPayloadN }); } 
         else { wfPayloadN.GlobalID = generateGUID(); wfPayloadN.SolicitudID = generateGUID(); res.wfAdds.push({ attributes: wfPayloadN }); }
@@ -495,9 +623,10 @@ function clearForm(){
   document.querySelectorAll(".row").forEach(r => {
     r.querySelector(".row-valor").value = ""; r.querySelector(".row-obs").value = ""; r.querySelector(".row-evi").value = "";
     const locList = r.querySelector(".loc-list"); if(locList) locList.innerHTML = "";
+    r.classList.remove("row--error");
   });
 }
 btnLimpiar.addEventListener("click", () => { clearForm(); setStatus("Vista limpiada.", "info"); });
 btnRefresh.addEventListener("click", loadActividades);
-elVigencia.addEventListener("change", () => { loadActividades(); elIndicadores.innerHTML=""; });
+elVigencia.addEventListener("change", () => { loadActividades(); elIndicadores.innerHTML=""; elModo.style.display="none"; viewOnlyMode=false; });
 document.getElementById("btn-centrar").addEventListener("click", () => { view.goTo({ center: [-74.2, 4.7], zoom: 8 }); });
