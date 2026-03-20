@@ -1,8 +1,9 @@
 /* ===========================================================
    DATA-PAC | Reporte y Corrección (v3)
    Esquema: DATAPAC_V3
-   Mejoras: OTP con Roles, Filtro Asignación, CRUD Bidireccional, 
-            WF_SolicitudRevision, Bloqueo CAR, Auditoría, Histórico
+   Mejoras: OTP con Roles, Filtro Asignación x Vigencia, 
+            Estandarización de Estados, Modo Histórico Seguro, 
+            Trazabilidad, Bloqueo CAR, Limpieza UI de Geocodes.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V3/FeatureServer";
@@ -59,13 +60,25 @@ async function fetchJson(url, params){ const u=new URL(url); Object.entries(para
 async function postForm(url, formObj){ const form=new URLSearchParams(); Object.entries(formObj).forEach(([k,v])=>{ if(v!=null) form.append(k,typeof v==="string"?v:JSON.stringify(v)); }); const r=await fetch(url, {method:"POST", body:form}); return await r.json(); }
 function generateGUID() { return '{' + crypto.randomUUID().toUpperCase() + '}'; }
 
+// --- Estandarización de Estados ---
+function normalizeState(st) {
+    if (!st) return "Borrador";
+    const s = String(st).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (s.includes("devuelto")) return "Devuelto";
+    if (s.includes("enviado")) return "Enviado";
+    if (s.includes("enrevision") || s.includes("revision")) return "EnRevision";
+    if (s.includes("aprobado")) return "Aprobado";
+    if (s.includes("publicado")) return "Publicado";
+    return "Borrador";
+}
+
 // --- Funciones de Auditoría ---
 async function writeAuditEvent(tipo, entidad, objGid, resultado, detalle) {
   if (!currentUser) return;
   try {
     const attrs = { GlobalID: generateGUID(), TipoEvento: tipo, Entidad: entidad, ObjetoGlobalID: objGid || "", Resultado: resultado, DetalleEvento: detalle ? detalle.substring(0, 255) : "", PersonaID: currentUser.pid, FechaEvento: Date.now() };
     await postForm(`${URL_AUD_EVENTO}/applyEdits`, { adds: [{attributes: attrs}] });
-  } catch(e) { console.warn("Auditoría Evento falló:", e); }
+  } catch(e) { console.warn("Auditoría Evento falló (silenciado):", e); }
 }
 
 async function writeAuditHistory(tipoObj, objGid, campo, valAnt, valNuevo, motivo) {
@@ -73,7 +86,7 @@ async function writeAuditHistory(tipoObj, objGid, campo, valAnt, valNuevo, motiv
   try {
     const attrs = { GlobalID: generateGUID(), TipoObjeto: tipoObj, ObjetoID: "0", ObjetoGlobalID: objGid || "", CampoModificado: campo || "", ValorAnterior: valAnt ? String(valAnt).substring(0, 1000) : "", ValorNuevo: valNuevo ? String(valNuevo).substring(0, 1000) : "", PersonaID: currentUser.pid, FechaCambio: Date.now(), MotivoCambio: motivo || "", OrigenCambio: "APP_REPORTE" };
     await postForm(`${URL_AUD_HISTORIAL}/applyEdits`, { adds: [{attributes: attrs}] });
-  } catch(e) { console.warn("Auditoría Historial falló:", e); }
+  } catch(e) { console.warn("Auditoría Historial falló (silenciado):", e); }
 }
 
 // --- Autenticación OTP y Roles ---
@@ -95,7 +108,9 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
     if(!qOtp.features.length) throw new Error("Código incorrecto.");
     const otp = qOtp.features[0].attributes;
     
-    const qPers = await fetchJson(`${URL_PERSONA}/query`, { f:"json", where:`GlobalID='${otp.PersonaGlobalID}'`, outFields:"Nombre,PersonaID" });
+    // Validación estricta de persona activa
+    const qPers = await fetchJson(`${URL_PERSONA}/query`, { f:"json", where:`GlobalID='${otp.PersonaGlobalID}' AND Activo='SI'`, outFields:"Nombre,PersonaID" });
+    if(!qPers.features.length) throw new Error("Usuario inactivo o no encontrado en el sistema.");
     const pid = qPers.features[0].attributes.PersonaID;
 
     // Validación de Roles (Debe ser EDITOR o SUPERADMIN)
@@ -121,7 +136,9 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
 
 // --- Filtros SEG_Asignacion V3 ---
 async function loadAsignaciones() {
+  if(!currentUser) return;
   const vig = elVigencia.value;
+  // Cruce de alcance: la persona solo accede a las tareas asignadas en esta vigencia
   const qAsig = await fetchJson(`${URL_ASIGNACION}/query`, { f:"json", where:`PersonaGlobalID='${currentUser.gid}' AND Vigencia=${vig} AND Activo='SI'`, outFields:"ActividadID,TareaGlobalID" });
   asignacionesActivas = (qAsig.features || []).map(f => f.attributes);
 }
@@ -142,7 +159,7 @@ async function loadActividades() {
 }
 
 elActividad.addEventListener("change", async () => {
-  const actGid = elActividad.value, cod = elActividad.options[elActividad.selectedIndex].getAttribute("data-codigo");
+  const actGid = elActividad.value, cod = elActividad.options[elActividad.selectedIndex]?.getAttribute("data-codigo");
   if(!actGid) { elIndicadores.innerHTML = ""; return; }
   document.getElementById("lbl-responsable").textContent = `Responsable: ${currentUser.nombre}`;
   await loadSubactividadesYTareas(actGid, cod);
@@ -216,11 +233,27 @@ function subActividadCardHtml(sa){
 async function loadExistingData(actGid) {
   const vig = elVigencia.value, per = elPeriodo.value;
   const avGuids = [];
+
+  // --- Limpieza preventiva para evitar duplicación visual de ubicaciones al recargar ---
+  existingAvances.clear();
+  existingWFSolicitudes.clear();
+  existingNarrativa = null;
+  deletedLocations = [];
+  clearMapGraphics();
+  document.querySelectorAll(".row").forEach(rowEl => {
+      const rId = rowEl.getAttribute("data-row-id");
+      rowLocations.set(rId, []);
+      const locList = rowEl.querySelector(".loc-list");
+      if (locList) locList.innerHTML = "";
+  });
+  // -----------------------------------------------------------------------------------
   
   // 1. Narrativa
   const qNar = await fetchJson(`${URL_NARRATIVA}/query`, { f:"json", where:`ActividadGlobalID='${actGid}' AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
   if(qNar.features.length) {
     existingNarrativa = qNar.features[0].attributes;
+    // Estandarizar estado desde la carga
+    existingNarrativa.EstadoRegistro = normalizeState(existingNarrativa.EstadoRegistro);
     document.getElementById("txt-reporte-narrativo").value = existingNarrativa.TextoNarrativo || "";
     document.getElementById("txt-logros-descripcion").value = existingNarrativa.DescripcionLogrosAlcanzados || "";
     document.getElementById("txt-logros-principales").value = existingNarrativa.PrincipalesLogros || "";
@@ -237,6 +270,7 @@ async function loadExistingData(actGid) {
     const qAv = await fetchJson(`${URL_AVANCE_TAREA}/query`, { f:"json", where:`TareaGlobalID IN (${tGuids}) AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
     qAv.features.forEach(f => {
       const a = f.attributes;
+      a.EstadoRegistro = normalizeState(a.EstadoRegistro);
       existingAvances.set(a.TareaGlobalID, a);
       avGuids.push(`'${a.GlobalID}'`);
       const rowEl = document.querySelector(`.row[data-tarea-gid="${a.TareaGlobalID}"]`);
@@ -280,7 +314,7 @@ async function loadExistingData(actGid) {
 
 function applyReadonlyStateTask(rowEl, estado) {
   const isReadonly = ["Enviado", "EnRevision", "Aprobado", "Publicado"].includes(estado);
-  rowEl.querySelector(`[id^="badge-container-"]`).innerHTML = `<span class="status-badge status-badge--${(estado||'borrador').toLowerCase()}">${estado||'Borrador'}</span>`;
+  rowEl.querySelector(`[id^="badge-container-"]`).innerHTML = `<span class="status-badge status-badge--${estado.toLowerCase()}">${estado}</span>`;
   if(estado === "Devuelto") rowEl.querySelector(".field-motivo").style.display = "block";
 
   if(isReadonly) {
@@ -293,7 +327,7 @@ function applyReadonlyStateTask(rowEl, estado) {
 
 function applyReadonlyStateNarrativa(estado) {
   const isReadonly = ["Enviado", "EnRevision", "Aprobado", "Publicado"].includes(estado);
-  document.getElementById("narrativa-badge-container").innerHTML = `<span class="status-badge status-badge--${(estado||'borrador').toLowerCase()}">${estado||'Borrador'}</span>`;
+  document.getElementById("narrativa-badge-container").innerHTML = `<span class="status-badge status-badge--${estado.toLowerCase()}">${estado}</span>`;
   if(estado === "Devuelto") document.getElementById("container-motivo-narrativa").style.display = "block";
   ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales", "txt-motivo-narrativa"].forEach(id => { document.getElementById(id).disabled = isReadonly; });
 }
@@ -318,6 +352,7 @@ function evaluateHistoricalMode() {
         }
     }
 
+    // Modo Lectura Total (Histórico)
     if (hasData && allLocked) {
         viewOnlyMode = true;
         elModo.style.display = "flex";
@@ -326,6 +361,9 @@ function evaluateHistoricalMode() {
         elModo.style.color = "#991b1b";
         btnGuardar.style.display = "none";
         btnEnviar.style.display = "none";
+        
+        // Deshabilitar todos los inputs locales de ubicación si existieran residuales
+        document.querySelectorAll(".loc-item input").forEach(i => i.disabled = true);
     } else {
         viewOnlyMode = false;
         elModo.style.display = "flex";
@@ -341,7 +379,7 @@ function wireCardEvents() {
   document.querySelectorAll(".btn-activar").forEach(btn => {
     btn.addEventListener("click", (e) => {
       const rowEl = e.target.closest(".row");
-      if (rowEl.classList.contains("is-readonly")) return;
+      if (rowEl.classList.contains("is-readonly") || viewOnlyMode) return;
       document.querySelectorAll(".row").forEach(r => r.style.borderColor = "rgba(15,23,42,0.20)");
       rowEl.style.borderColor = "var(--primary)";
       activeRowId = rowEl.getAttribute("data-row-id");
@@ -352,6 +390,7 @@ function wireCardEvents() {
 }
 
 function deleteLocation(rowId, ptId) {
+  if (viewOnlyMode) return;
   removeGraphicForPoint(ptId);
   const locs = rowLocations.get(rowId) || [];
   const locObj = locs.find(l => l.ptId === ptId);
@@ -365,11 +404,11 @@ function appendLocationUI(rowId, ptId, lon, lat, desc="", mun="", dane="") {
   const div = document.createElement("div"); div.className = "loc-item"; div.id = `loc-${ptId}`;
   const isError = mun === "Fuera de CAR" ? 'style="border: 1px solid red; background: #fff5f5;"' : '';
   div.innerHTML = `
-    <div class="loc-item__header" ${isError}><span>📍 Sitio: <span class="loc-coords">${lat.toFixed(5)}, ${lon.toFixed(5)}</span></span><button class="btn-loc-del">Eliminar</button></div>
-    <div class="field" style="padding:0;"><input class="loc-desc" type="text" value="${escapeHtml(desc)}" placeholder="Descripción del sitio..." /></div>
+    <div class="loc-item__header" ${isError}><span>📍 Sitio: <span class="loc-coords">${lat.toFixed(5)}, ${lon.toFixed(5)}</span></span><button class="btn-loc-del" ${viewOnlyMode?'style="display:none;"':''}>Eliminar</button></div>
+    <div class="field" style="padding:0;"><input class="loc-desc" type="text" value="${escapeHtml(desc)}" placeholder="Descripción del sitio..." ${viewOnlyMode?'disabled':''} /></div>
     <div class="loc-item__grid">
-      <div class="field" style="padding:0;"><input class="loc-mun" type="text" value="${escapeHtml(mun)}" readonly /></div>
-      <div class="field" style="padding:0;"><input class="loc-dane" type="text" value="${escapeHtml(dane)}" readonly /></div>
+      <div class="field" style="padding:0;"><input class="loc-mun" type="text" value="${escapeHtml(mun)}" readonly ${viewOnlyMode?'disabled':''} /></div>
+      <div class="field" style="padding:0;"><input class="loc-dane" type="text" value="${escapeHtml(dane)}" readonly ${viewOnlyMode?'disabled':''} /></div>
     </div>`;
   div.querySelector(".btn-loc-del").addEventListener("click", () => deleteLocation(rowId, ptId));
   listEl.appendChild(div);
@@ -390,7 +429,7 @@ function initMap(){
       sketchVM = new SketchViewModel({ view, layer: graphicsLayer, updateOnGraphicClick: false });
 
       sketchVM.on("update", async (evt) => {
-        if(evt.state !== "complete") return;
+        if(viewOnlyMode || evt.state !== "complete") return;
         const g = evt.graphics?.[0]; if(!g || !g.attributes?.rowId || !g.attributes?.ptId) return;
         const geo = getGeographicLocation(g.geometry); const rId = g.attributes.rowId; const pId = g.attributes.ptId;
         const locs = rowLocations.get(rId) || []; const locObj = locs.find(l => l.ptId === pId);
@@ -399,6 +438,7 @@ function initMap(){
       });
 
       view.on("click", async (evt) => {
+        if(viewOnlyMode) return;
         if(!activeRowId){ setStatus("Activa un registro en el panel para georreferenciar.", "error"); return; }
         const geo = getGeographicLocation(evt.mapPoint); const ptId = crypto.randomUUID(); const locs = rowLocations.get(activeRowId) || [];
         locs.push({ ptId, lon: geo.longitude, lat: geo.latitude, mun: "", dane: "", desc: "" }); rowLocations.set(activeRowId, locs);
@@ -416,7 +456,7 @@ function removeAllGraphicsForRow(rowId){ if(graphicsLayer) graphicsLayer.graphic
 function addGraphicForPoint(rowId, ptId, lon, lat, Graphic){ removeGraphicForPoint(ptId); const graphic = new Graphic({ geometry: { type: "point", longitude: lon, latitude: lat, spatialReference: { wkid: 4326 } }, symbol: { type: "simple-marker", style: "circle", color: [23,151,209,0.9], size: 10, outline: { color: [11,82,105,1], width: 2 } }, attributes: { rowId, ptId } }); graphicsLayer.add(graphic); return graphic; }
 function getGeographicLocation(p) { return (p.spatialReference && p.spatialReference.isWebMercator && webMercatorUtils) ? webMercatorUtils.webMercatorToGeographic(p) : p; }
 async function updateMunicipioFromCAR(rowId, ptId, mapPoint){
-  if (!jurisdiccionLayerView) return;
+  if (!jurisdiccionLayerView || viewOnlyMode) return;
   try{
     document.body.style.cursor = 'wait';
     const result = await jurisdiccionLayerView.queryFeatures({ geometry: mapPoint, spatialRelationship: "intersects", returnGeometry: false, outFields: ["*"] });
@@ -627,6 +667,40 @@ function clearForm(){
   });
 }
 btnLimpiar.addEventListener("click", () => { clearForm(); setStatus("Vista limpiada.", "info"); });
-btnRefresh.addEventListener("click", loadActividades);
-elVigencia.addEventListener("change", () => { loadActividades(); elIndicadores.innerHTML=""; elModo.style.display="none"; viewOnlyMode=false; });
+
+// --- Botón Recargar (Ajuste Final) ---
+btnRefresh.addEventListener("click", async () => { 
+    if(elVigencia.value && currentUser) {
+        setStatus("Recargando asignaciones y actividades...", "info");
+        clearForm();
+        elIndicadores.innerHTML = "";
+        document.getElementById("narrativa-badge-container").innerHTML = "";
+        document.getElementById("container-motivo-narrativa").style.display = "none";
+        elModo.style.display = "none";
+        viewOnlyMode = false;
+        elActividad.innerHTML = '<option value="">Cargando...</option>';
+
+        await loadAsignaciones();
+        await loadActividades();
+        setStatus("Datos recargados correctamente.", "success");
+    }
+});
+
 document.getElementById("btn-centrar").addEventListener("click", () => { view.goTo({ center: [-74.2, 4.7], zoom: 8 }); });
+
+// Cambio de Vigencia (Recarga Asignaciones y Limpia Entorno)
+elVigencia.addEventListener("change", async () => { 
+    if(!currentUser) return;
+    setStatus("Recargando asignaciones para la vigencia seleccionada...", "info");
+    clearForm(); 
+    elIndicadores.innerHTML = ""; 
+    document.getElementById("narrativa-badge-container").innerHTML = "";
+    document.getElementById("container-motivo-narrativa").style.display = "none";
+    elModo.style.display = "none"; 
+    viewOnlyMode = false;
+    elActividad.innerHTML = '<option value="">Cargando...</option>';
+    
+    await loadAsignaciones(); 
+    await loadActividades(); 
+    setStatus("Asignaciones actualizadas.", "success");
+});

@@ -125,6 +125,7 @@ input:disabled, select:disabled, textarea:disabled {
 .status-badge--enviado { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
 .status-badge--enrevision { background: #fef9c3; color: #b45309; border: 1px solid #fde047; }
 .status-badge--aprobado { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+.status-badge--publicado { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
 .status-badge--devuelto { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
 
 .field-motivo input { border-color: rgba(214,69,69,0.5); background-color: rgba(214,69,69,0.03); }
