@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DATA-PAC | Reporte y Corrección (DATAPAC_V3)</title>
+  <title>DATA-PAC | Reporte y Corrección V4</title>
   <link rel="stylesheet" href="https://js.arcgis.com/4.29/esri/themes/light/main.css" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div id="login-overlay" class="login-overlay">
     <div class="login-card">
-      <h2>Ingreso a DATA-PAC</h2>
-      <p class="muted">Verificación de identidad funcional</p>
+      <h2>Ingreso a DATA-PAC V4</h2>
+      <p class="muted">Verificación de identidad funcional (Operación)</p>
       <div id="login-step-1" class="login-step active">
         <label>Cédula</label>
         <input type="text" id="login-cedula" placeholder="Ej: 10203040" />
@@ -36,12 +36,12 @@
         <div class="brand__dot"></div>
         <div class="brand__text">
           <div class="brand__title">DATA-PAC</div>
-          <div class="brand__subtitle">Reporte y Corrección de Avance V3</div>
+          <div class="brand__subtitle">Reporte y Corrección de Avance V4</div>
         </div>
       </div>
       <div class="topbar__right">
         <div class="pill pill--mode" id="pill-modo" style="display:none; background: #e2e8f0; border-color: #cbd5e1; font-weight: bold;">Modo: —</div>
-        <div class="pill" id="pill-service">Servicio: DATAPAC_V3</div>
+        <div class="pill" id="pill-service">Servicio: DATAPAC_V4</div>
         <div class="pill" id="pill-user" style="display:none;">Usuario: —</div>
         <button class="btn btn--ghost" id="btn-refresh" title="Recargar catálogos">Recargar</button>
       </div>
@@ -51,7 +51,7 @@
       <section class="panel panel--form" aria-label="Formulario">
         <div class="panel__header">
           <h2>1) Selección</h2>
-          <p class="muted">Tus opciones están filtradas por tus asignaciones operativas.</p>
+          <p class="muted">Tus opciones están filtradas por tus asignaciones operativas y alcance.</p>
         </div>
 
         <div class="grid2">
@@ -85,8 +85,10 @@
 
         <div class="panel__header">
           <h2>2) Avance por Tareas</h2>
-          <p class="muted">Registra o corrige el avance. Los campos se bloquearán si el estado es Enviado o superior.</p>
+          <p class="muted">Registra o corrige el avance. Los campos y puntos del mapa se bloquearán si el estado es Enviado o superior.</p>
         </div>
+
+        <div id="actividad-context" class="ctx-panel" style="display:none; margin: 0 16px 14px 16px;"></div>
 
         <div id="indicadores" class="indicadores"></div>
 
@@ -128,7 +130,7 @@
         <div class="panel__header panel__header--map">
           <div>
             <h2>Georreferenciación de Múltiples Sitios</h2>
-            <p class="muted">Activa un registro y haz clic en el mapa. Puedes editar o eliminar ubicaciones guardadas.</p>
+            <p class="muted">Activa un registro y haz clic en el mapa. El bloqueo de estado aplica individualmente por tarea.</p>
           </div>
           <div class="maptools">
             <div class="pill" id="pill-active">Registro activo: —</div>

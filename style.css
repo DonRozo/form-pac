@@ -62,6 +62,10 @@ input, select, textarea{
 textarea{resize:vertical;}
 input:focus, select:focus, textarea:focus{ border-color: rgba(23,151,209,0.55); box-shadow: 0 0 0 4px rgba(23,151,209,0.12); }
 
+/* Contexto Planeación y Avance V4 */
+.ctx-panel { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; font-size: 12px; }
+.ctx-badge { display: inline-block; padding: 4px 8px; border-radius: 6px; background: #e2e8f0; color: #334155; font-weight: bold; }
+
 .indicadores{ padding: 0 16px 10px 16px; display:flex; flex-direction:column; gap:12px; }
 .card{ border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: #fff; }
 .card__top{display:flex; justify-content:space-between; gap:12px; align-items:flex-start;}
@@ -114,11 +118,15 @@ input:focus, select:focus, textarea:focus{ border-color: rgba(23,151,209,0.55); 
 .login-card .btn { width: 100%; margin-top: 16px; font-size: 14px; padding: 12px; }
 .login-card input { margin-bottom: 12px; font-size: 15px; padding: 12px; }
 
-/* ESTILOS DE ESTADO Y BLOQUEO V3 */
+/* ESTILOS DE ESTADO Y BLOQUEO V4 */
 input:disabled, select:disabled, textarea:disabled {
   background-color: #e2e8f0; color: #64748b; border-color: #cbd5e1; cursor: not-allowed; box-shadow: none;
 }
 .row.is-readonly { background-color: #f8fafc; border-color: #cbd5e1; opacity: 0.9; }
+
+/* Exclusivo para no aplicables */
+.is-not-applicable { opacity: 0.6; pointer-events: none; border-color: rgba(214,69,69,0.3) !important; background: #fffcfc; }
+.is-not-applicable input, .is-not-applicable textarea { background-color: #f1f5f9; cursor: not-allowed; border-color: #e2e8f0; }
 
 .status-badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 800; text-transform: uppercase; margin-bottom: 8px; }
 .status-badge--borrador { background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; }

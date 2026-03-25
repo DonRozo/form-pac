@@ -1,32 +1,40 @@
 /* ===========================================================
-   DATA-PAC | Reporte y Corrección (v3)
-   Esquema: DATAPAC_V3
-   Mejoras: OTP con Roles, Filtro Asignación x Vigencia, 
-            Estandarización de Estados, Modo Histórico Seguro, 
-            Trazabilidad, Bloqueo CAR, Limpieza UI de Geocodes.
+   DATA-PAC | Reporte y Corrección Operativa V4
+   Esquema: DATAPAC_V4
+   Mejoras (Final): Seguridad SEG_Alcance de GUID a GUID estricta, 
+                    Inyección de UI para BI_AvanceSubActividad (SemaforoGestion), 
+                    Respeto total de Aplica="No" y Estados.
    =========================================================== */
 
-const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V3/FeatureServer";
+const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
 const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/MpiosCAR/FeatureServer";
 const CAR_JUR_LAYER_ID = 0; 
 
 // URL PowerAutomate OTP
 const URL_WEBHOOK_POWERAUTOMATE = "https://default64f30d63182749d899511db17d0949.e4.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/1123b3fd4a854b40b2b22dd45b03ca7c/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=Qz68D2G5RAq9cmMvOew1roy8bD3YQPtju4KPW2vEtvc"; 
 
-// Índices V3
-const URL_ACTIVIDAD = `${SERVICE_URL}/6`;
-const URL_SUBACTIVIDAD = `${SERVICE_URL}/7`;
-const URL_TAREA = `${SERVICE_URL}/8`;
-const URL_AVANCE_TAREA = `${SERVICE_URL}/9`;
-const URL_TAREA_UBICACION = `${SERVICE_URL}/10`; 
-const URL_NARRATIVA = `${SERVICE_URL}/11`;
-const URL_ASIGNACION = `${SERVICE_URL}/15`; 
-const URL_PERSONA = `${SERVICE_URL}/16`; 
-const URL_OTP = `${SERVICE_URL}/17`;
-const URL_ROL = `${SERVICE_URL}/21`; // SEG_PersonaRol
-const URL_AUD_HISTORIAL = `${SERVICE_URL}/23`; // AUD_HistorialCambio
-const URL_AUD_EVENTO = `${SERVICE_URL}/24`; // AUD_EventoSistema
-const URL_WF_SOLICITUD = `${SERVICE_URL}/25`;
+// Índices DATAPAC_V4
+const getUrl = (id) => `${SERVICE_URL}/${id}`;
+const URL_ACTIVIDAD = getUrl(6);
+const URL_SUBACTIVIDAD = getUrl(7);
+const URL_TAREA = getUrl(8);
+const URL_AVANCE_TAREA = getUrl(9);
+const URL_TAREA_UBICACION = getUrl(10); 
+const URL_NARRATIVA = getUrl(11);
+const URL_PLAN_SUB = getUrl(13);
+const URL_PLAN_TAR = getUrl(14);
+const URL_ASIGNACION = getUrl(15); 
+const URL_PERSONA = getUrl(16); 
+const URL_OTP = getUrl(17);
+const URL_ROL = getUrl(21); 
+const URL_ALCANCE = getUrl(22);
+const URL_AUD_HISTORIAL = getUrl(23); 
+const URL_AUD_EVENTO = getUrl(24); 
+const URL_WF_SOLICITUD = getUrl(25);
+const URL_BI_ACT = getUrl(28);
+const URL_BI_SUB = getUrl(34);
+const URL_BI_TAR = getUrl(35);
+const URL_PLAN_ACT = getUrl(36);
 
 const F_AVA = { fkTarea: "TareaGlobalID", vig: "Vigencia", per: "Periodo", val: "ValorReportado", obs: "Observaciones", evi: "EvidenciaURL", fec: "FechaRegistro", resp: "Responsable", estado: "EstadoRegistro", ver: "Version", fEdic: "FechaUltimaEdicionFuncional", pEdic: "PersonaUltimaEdicionID", motivo: "MotivoAjuste" };
 const F_NAR = { fkAct: "ActividadGlobalID", vig: "Vigencia", per: "Periodo", txt1: "TextoNarrativo", txt2: "DescripcionLogrosAlcanzados", txt3: "PrincipalesLogros", fec: "FechaRegistro", resp: "Responsable", estado: "EstadoRegistro", ver: "Version", fEdic: "FechaUltimaEdicionFuncional", pEdic: "PersonaUltimaEdicionID", motivo: "MotivoAjuste" };
@@ -37,19 +45,22 @@ const F_WF = { solId: "SolicitudID", tipo: "TipoObjeto", objId: "ObjetoID", objG
 const elActividad = document.getElementById("sel-actividad"), elVigencia = document.getElementById("sel-vigencia"), elPeriodo = document.getElementById("sel-periodo"), elIndicadores = document.getElementById("indicadores");
 const btnGuardar = document.getElementById("btn-guardar"), btnEnviar = document.getElementById("btn-enviar"), btnLimpiar = document.getElementById("btn-limpiar"), btnRefresh = document.getElementById("btn-refresh");
 const elStatus = document.getElementById("status"), pillActive = document.getElementById("pill-active");
-const elModo = document.getElementById("pill-modo");
+const elModo = document.getElementById("pill-modo"), actContextPanel = document.getElementById("actividad-context");
 
 // Estado
 let currentUser = null; 
-let asignacionesActivas = []; 
+let asignacionesActivas = []; // Almacenará la jerarquía completa verificada en GUIDs
 let cacheSubactividades = [], cacheTareas = [];
+let planActCtx = null, biActCtx = null;
+let planSubCtx = new Map(), biSubCtx = new Map();
+let planTarCtx = new Map(), biTarCtx = new Map();
 let existingAvances = new Map(); 
 let existingNarrativa = null; 
 let existingWFSolicitudes = new Map(); 
 let deletedLocations = []; 
 let rowLocations = new Map(); 
 let activeRowId = null;
-let viewOnlyMode = false; // Bandera para Histórico
+let viewOnlyMode = false; // Bandera global para Histórico
 let map, view, graphicsLayer, webMercatorUtils, sketchVM, jurisdiccionLayerView;
 
 // --- Helpers ---
@@ -60,7 +71,7 @@ async function fetchJson(url, params){ const u=new URL(url); Object.entries(para
 async function postForm(url, formObj){ const form=new URLSearchParams(); Object.entries(formObj).forEach(([k,v])=>{ if(v!=null) form.append(k,typeof v==="string"?v:JSON.stringify(v)); }); const r=await fetch(url, {method:"POST", body:form}); return await r.json(); }
 function generateGUID() { return '{' + crypto.randomUUID().toUpperCase() + '}'; }
 
-// --- Estandarización de Estados ---
+// --- Lógica de Estado Individual V4 ---
 function normalizeState(st) {
     if (!st) return "Borrador";
     const s = String(st).toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -70,6 +81,15 @@ function normalizeState(st) {
     if (s.includes("aprobado")) return "Aprobado";
     if (s.includes("publicado")) return "Publicado";
     return "Borrador";
+}
+
+// Verifica si una fila de tarea ESPECÍFICA está bloqueada (por estado o porque no aplica)
+function isTaskReadonly(rowId) {
+    if (viewOnlyMode) return true;
+    if (!rowId) return true;
+    const rowEl = document.querySelector(`.row[data-row-id="${rowId}"]`);
+    if (!rowEl) return true;
+    return rowEl.classList.contains("is-readonly") || rowEl.classList.contains("is-not-applicable");
 }
 
 // --- Funciones de Auditoría ---
@@ -89,13 +109,13 @@ async function writeAuditHistory(tipoObj, objGid, campo, valAnt, valNuevo, motiv
   } catch(e) { console.warn("Auditoría Historial falló (silenciado):", e); }
 }
 
-// --- Autenticación OTP y Roles ---
+// --- Autenticación OTP y Roles V4 ---
 document.getElementById("btn-solicitar-codigo").addEventListener("click", async () => {
   const cedula = document.getElementById("login-cedula").value.trim(), correo = document.getElementById("login-correo").value.trim().toLowerCase();
   document.getElementById("login-msg-1").textContent = "";
   try {
     const res = await fetch(URL_WEBHOOK_POWERAUTOMATE, { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({cedula, correo}) });
-    if(res.status === 200) { document.getElementById("login-step-1").classList.remove("active"); document.getElementById("login-step-2").classList.add("active"); }
+    if(res.status === 200 || res.status === 202) { document.getElementById("login-step-1").classList.remove("active"); document.getElementById("login-step-2").classList.add("active"); }
     else throw new Error("Credenciales inválidas o error de conexión.");
   } catch(e) { document.getElementById("login-msg-1").textContent = e.message; }
 });
@@ -108,7 +128,6 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
     if(!qOtp.features.length) throw new Error("Código incorrecto.");
     const otp = qOtp.features[0].attributes;
     
-    // Validación estricta de persona activa
     const qPers = await fetchJson(`${URL_PERSONA}/query`, { f:"json", where:`GlobalID='${otp.PersonaGlobalID}' AND Activo='SI'`, outFields:"Nombre,PersonaID" });
     if(!qPers.features.length) throw new Error("Usuario inactivo o no encontrado en el sistema.");
     const pid = qPers.features[0].attributes.PersonaID;
@@ -121,11 +140,16 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
         throw new Error("Acceso denegado: Su rol no le permite utilizar esta aplicación de captura operativa.");
     }
 
-    currentUser = { gid: otp.PersonaGlobalID, pid: pid, nombre: qPers.features[0].attributes.Nombre, correo, roles };
+    currentUser = { gid: otp.PersonaGlobalID, pid: pid, nombre: qPers.features[0].attributes.Nombre, correo, roles, alcances: [] };
     
     await postForm(`${URL_OTP}/applyEdits`, { f:"json", updates: [{attributes: {OBJECTID: otp.OBJECTID, Usado: "SI"}}] });
-    await writeAuditEvent("OTP_VALIDATE", "APP_REPORTE", currentUser.gid, "OK", "Ingreso exitoso a módulo operativo");
+    await writeAuditEvent("OTP_VALIDATE", "APP_REPORTE", currentUser.gid, "OK", "Ingreso exitoso a módulo operativo V4");
     
+    // Cargar SEG_Alcance para este usuario
+    const qAlcance = await fetchJson(`${URL_ALCANCE}/query`, { f:"json", where:`(PersonaID='${currentUser.gid}' OR PersonaID='${currentUser.pid}') AND Activo='SI'`, outFields:"ObjetoGlobalID" });
+    currentUser.alcances = qAlcance.features.map(f => f.attributes.ObjetoGlobalID).filter(Boolean);
+    currentUser.hasGlobalScope = qAlcance.features.some(f => !f.attributes.ObjetoGlobalID);
+
     document.getElementById("login-overlay").style.display = "none";
     document.getElementById("pill-user").style.display = "block";
     document.getElementById("pill-user").textContent = `Usuario: ${currentUser.nombre}`;
@@ -134,90 +158,200 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
   } catch(e) { document.getElementById("login-msg-2").textContent = e.message; }
 });
 
-// --- Filtros SEG_Asignacion V3 ---
+// --- Filtros SEG_Asignacion + SEG_Alcance V4 (Cruce Estricto por GlobalID) ---
 async function loadAsignaciones() {
   if(!currentUser) return;
   const vig = elVigencia.value;
-  // Cruce de alcance: la persona solo accede a las tareas asignadas en esta vigencia
-  const qAsig = await fetchJson(`${URL_ASIGNACION}/query`, { f:"json", where:`PersonaGlobalID='${currentUser.gid}' AND Vigencia=${vig} AND Activo='SI'`, outFields:"ActividadID,TareaGlobalID" });
-  asignacionesActivas = (qAsig.features || []).map(f => f.attributes);
+  
+  // 1. Asignaciones directas operativas de la tabla SEG_Asignacion
+  const qAsig = await fetchJson(`${URL_ASIGNACION}/query`, { f:"json", where:`PersonaGlobalID='${currentUser.gid}' AND Vigencia=${vig} AND Activo='SI'`, outFields:"TareaGlobalID" });
+  let validTaskGuids = (qAsig.features || []).map(f => f.attributes.TareaGlobalID).filter(Boolean);
+  
+  if (validTaskGuids.length > 0) {
+      // 2. Extraemos jerarquía estructural real de las tareas hacia arriba
+      let qJerarquiaFeatures = [];
+      for (let i = 0; i < validTaskGuids.length; i += 200) {
+          const chunk = validTaskGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
+          const qJ = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
+          if(qJ.features) qJerarquiaFeatures.push(...qJ.features);
+      }
+
+      const tarMap = new Map(); // TareaGlobalID -> SubActividadGlobalID
+      const validSubIds = new Set();
+      qJerarquiaFeatures.forEach(f => {
+          tarMap.set(f.attributes.GlobalID, f.attributes.SubActividadGlobalID);
+          if (f.attributes.SubActividadGlobalID) validSubIds.add(f.attributes.SubActividadGlobalID);
+      });
+
+      const subMap = new Map(); // SubActividadGlobalID -> ActividadGlobalID
+      if (validSubIds.size > 0) {
+          const subArr = Array.from(validSubIds);
+          for (let i = 0; i < subArr.length; i += 200) {
+              const chunk = subArr.slice(i, i + 200).map(g => `'${g}'`).join(",");
+              const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
+              if(qS.features) qS.features.forEach(f => subMap.set(f.attributes.GlobalID, f.attributes.ActividadGlobalID));
+          }
+      }
+
+      // 3. SEG_Alcance (Seguridad Consolidada cruzando exclusivamente de GUID a GUID)
+      if (!currentUser.hasGlobalScope && currentUser.alcances.length > 0) {
+          validTaskGuids = validTaskGuids.filter(tGuid => {
+              const sGuid = tarMap.get(tGuid);
+              const aGuid = sGuid ? subMap.get(sGuid) : null;
+              return currentUser.alcances.includes(tGuid) ||
+                     (sGuid && currentUser.alcances.includes(sGuid)) ||
+                     (aGuid && currentUser.alcances.includes(aGuid));
+          });
+      } else if (!currentUser.hasGlobalScope && currentUser.alcances.length === 0) {
+          validTaskGuids = []; 
+      }
+
+      // 4. Se consolida el array final de asignaciones válidas con su árbol
+      asignacionesActivas = validTaskGuids.map(tGuid => {
+          const sGuid = tarMap.get(tGuid);
+          const aGuid = sGuid ? subMap.get(sGuid) : null;
+          return { TareaGlobalID: tGuid, SubActividadGlobalID: sGuid, ActividadGlobalID: aGuid };
+      });
+  } else { 
+      asignacionesActivas = []; 
+  }
 }
 
 async function loadActividades() {
   if(!currentUser) return;
-  const actIds = [...new Set(asignacionesActivas.map(a => a.ActividadID).filter(Boolean))];
-  if(!actIds.length) { 
-      elActividad.innerHTML = `<option value="">Sin actividades asignadas en ${elVigencia.value}</option>`; 
+  const actGuids = [...new Set(asignacionesActivas.map(a => a.ActividadGlobalID).filter(Boolean))];
+  
+  if(!actGuids.length) { 
+      elActividad.innerHTML = `<option value="">Sin actividades operativas en ${elVigencia.value}</option>`; 
       elIndicadores.innerHTML = "";
       return; 
   }
   
-  const inList = actIds.map(id => `'${id}'`).join(",");
-  const qAct = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`ActividadID IN (${inList}) AND Activo='SI' AND Vigencia=${elVigencia.value}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
+  let qActFeatures = [];
+  for (let i = 0; i < actGuids.length; i += 200) {
+      const chunk = actGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
+      const qA = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk}) AND Activo='SI' AND Vigencia=${elVigencia.value}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
+      if(qA.features) qActFeatures.push(...qA.features);
+  }
   
-  elActividad.innerHTML = `<option value="">— Selecciona —</option>` + qAct.features.map(f => `<option value="${f.attributes.GlobalID}" data-codigo="${f.attributes.ActividadID}">${f.attributes.ActividadID} - ${f.attributes.NombreActividad}</option>`).join("");
+  elActividad.innerHTML = `<option value="">— Selecciona —</option>` + qActFeatures.map(f => `<option value="${f.attributes.GlobalID}" data-codigo="${f.attributes.ActividadID}">${f.attributes.ActividadID} - ${f.attributes.NombreActividad}</option>`).join("");
 }
 
 elActividad.addEventListener("change", async () => {
-  const actGid = elActividad.value, cod = elActividad.options[elActividad.selectedIndex]?.getAttribute("data-codigo");
-  if(!actGid) { elIndicadores.innerHTML = ""; return; }
+  const actGid = elActividad.value;
+  if(!actGid) { elIndicadores.innerHTML = ""; actContextPanel.style.display = "none"; return; }
   document.getElementById("lbl-responsable").textContent = `Responsable: ${currentUser.nombre}`;
-  await loadSubactividadesYTareas(actGid, cod);
+  await loadSubactividadesYTareas(actGid);
 });
 
 elPeriodo.addEventListener("change", async () => {
-  if(elActividad.value) await loadSubactividadesYTareas(elActividad.value, elActividad.options[elActividad.selectedIndex].getAttribute("data-codigo"));
+  if(elActividad.value) await loadSubactividadesYTareas(elActividad.value);
 });
 
-async function loadSubactividadesYTareas(actividadGlobalId, actividadCod) {
+async function loadSubactividadesYTareas(actividadGlobalId) {
   elIndicadores.innerHTML = ""; cacheSubactividades = []; cacheTareas = [];
   rowLocations.clear(); existingAvances.clear(); existingWFSolicitudes.clear(); deletedLocations = []; existingNarrativa = null;
+  planActCtx = null; biActCtx = null; planSubCtx.clear(); biSubCtx.clear(); planTarCtx.clear(); biTarCtx.clear();
   viewOnlyMode = false;
-  setStatus("Cargando estructura y reportes existentes...");
+  setStatus("Cargando estructura, contexto de planeación y reportes...");
 
+  const vig = elVigencia.value;
+
+  // 1. Carga de Jerarquía Base
   const subQ = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}'`, outFields:"*" });
   cacheSubactividades = (subQ.features||[]).map(f=>f.attributes);
   
-  const tareasAsignadas = asignacionesActivas.filter(a => a.ActividadID === actividadCod).map(a => a.TareaGlobalID).filter(Boolean);
+  const tareasAsignadas = asignacionesActivas.filter(a => a.ActividadGlobalID === actividadGlobalId).map(a => a.TareaGlobalID);
+  const inListSub = cacheSubactividades.map(s => `'${s.GlobalID}'`).join(",");
   
-  const inList = cacheSubactividades.map(s => `'${s.GlobalID}'`).join(",");
-  if(inList) {
-    const tareaQ = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${inList})`, outFields:"*" });
+  if(inListSub) {
+    const tareaQ = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub})`, outFields:"*" });
     let allTasks = (tareaQ.features||[]).map(f=>f.attributes);
     if(tareasAsignadas.length > 0) allTasks = allTasks.filter(t => tareasAsignadas.includes(t.GlobalID));
     cacheTareas = allTasks;
   }
-  
+
+  // 2. Carga de Contexto PLAN_ y BI_ (V4)
+  try {
+      const qPlanAct = await fetchJson(`${URL_PLAN_ACT}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}' AND Vigencia=${vig}`, outFields:"*" });
+      if(qPlanAct.features.length) planActCtx = qPlanAct.features[0].attributes;
+      
+      const qBiAct = await fetchJson(`${URL_BI_ACT}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}' AND Vigencia=${vig}`, outFields:"*" });
+      if(qBiAct.features.length) biActCtx = qBiAct.features[0].attributes;
+
+      if(inListSub) {
+          const qPlanSub = await fetchJson(`${URL_PLAN_SUB}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub}) AND Vigencia=${vig}`, outFields:"*" });
+          qPlanSub.features.forEach(f => planSubCtx.set(f.attributes.SubActividadGlobalID, f.attributes));
+          const qBiSub = await fetchJson(`${URL_BI_SUB}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub}) AND Vigencia=${vig}`, outFields:"*" });
+          qBiSub.features.forEach(f => biSubCtx.set(f.attributes.SubActividadGlobalID, f.attributes));
+      }
+
+      const inListTar = cacheTareas.map(t => `'${t.GlobalID}'`).join(",");
+      if(inListTar) {
+          const qPlanTar = await fetchJson(`${URL_PLAN_TAR}/query`, { f:"json", where:`TareaGlobalID IN (${inListTar}) AND Vigencia=${vig}`, outFields:"*" });
+          qPlanTar.features.forEach(f => planTarCtx.set(f.attributes.TareaGlobalID, f.attributes));
+          const qBiTar = await fetchJson(`${URL_BI_TAR}/query`, { f:"json", where:`TareaGlobalID IN (${inListTar}) AND Vigencia=${vig}`, outFields:"*" });
+          qBiTar.features.forEach(f => biTarCtx.set(f.attributes.TareaGlobalID, f.attributes));
+      }
+  } catch (e) { console.warn("Contexto PLAN/BI incompleto o no disponible.", e); }
+
+  // 3. Render Panel de Contexto (Solo Lectura)
+  if (planActCtx) {
+      actContextPanel.style.display = "block";
+      const aplicaAct = String(planActCtx.Aplica || "SI").toUpperCase() !== "NO";
+      actContextPanel.innerHTML = `
+          <div style="margin-bottom: 8px;"><strong>Contexto de Planeación (${vig})</strong> ${!aplicaAct ? '<span class="status-badge status-badge--devuelto" style="margin-left:10px;">NO APLICA EN LA VIGENCIA</span>' : ''}</div>
+          <div style="display:flex; gap: 10px; flex-wrap: wrap;">
+              <span class="ctx-badge">Indicador: ${planActCtx.IndicadorID ?? 'N/A'}</span>
+              <span class="ctx-badge">Línea Base: ${planActCtx.LineaBase ?? 'N/A'}</span>
+              <span class="ctx-badge">Meta Prog.: ${planActCtx.MetaProgramada ?? 'N/A'}</span>
+              <span class="ctx-badge">Unidad: ${planActCtx.UnidadMedida ?? 'N/A'}</span>
+              <span class="ctx-badge" style="background:#dcfce7; color:#166534;">Avance Acum. Calculado: ${biActCtx?.AvanceAcumulado ?? 0}%</span>
+          </div>
+      `;
+  } else { actContextPanel.style.display = "none"; }
+
   elIndicadores.innerHTML = cacheSubactividades.map(sa => subActividadCardHtml(sa)).join("");
   await loadExistingData(actividadGlobalId); 
   wireCardEvents();
   evaluateHistoricalMode();
-  setStatus("Formulario cargado.", "success");
+  setStatus("Formulario operativo cargado.", "success");
 }
 
-// --- Render y Estados ---
+// --- Render y Estados V4 ---
 function tareaRowHtml(t){
   const rowId = crypto.randomUUID(), gid = t.GlobalID, cod = t.CodigoTarea, nom = t.NombreTarea, geo = toYesNo(t.EsGeorreferenciable);
   rowLocations.set(rowId, []);
+  
+  // Regla Aplica = No
+  const pTar = planTarCtx.get(gid);
+  const aplica = !(pTar && String(pTar.Aplica).toUpperCase() === 'NO');
+  const classNotApp = !aplica ? 'is-not-applicable is-readonly' : '';
+  
+  const bTar = biTarCtx.get(gid);
+
   return `
-  <div class="row" data-row-id="${rowId}" data-tarea-gid="${gid}" data-geo="${geo?"1":"0"}">
+  <div class="row ${classNotApp}" data-row-id="${rowId}" data-tarea-gid="${gid}" data-geo="${geo?"1":"0"}">
     <div class="row__left">
       <div class="field" style="padding:0; grid-column: 1 / span 2;">
         <label>Tarea ${cod}</label>
         <div class="mono" style="font-size:12px; margin-bottom:6px;">${nom}</div>
-        <div id="badge-container-${rowId}"></div>
+        <div id="badge-container-${rowId}">
+           ${!aplica ? '<span class="status-badge status-badge--devuelto" style="background:#fee2e2;color:#991b1b;">NO APLICA</span>' : ''}
+        </div>
+        ${aplica && bTar ? `<div style="font-size:11px; margin-top:4px; color:var(--primary-2);"><b>Acumulado:</b> ${bTar.AvanceAcumulado??0}%</div>` : ''}
       </div>
       <div class="field field-motivo" id="container-motivo-${rowId}" style="display:none; grid-column: 1 / span 2;">
         <label style="color:var(--danger);">Motivo de ajuste (Devuelto)</label>
-        <input type="text" class="row-motivo" placeholder="Indica qué corregiste..." />
+        <input type="text" class="row-motivo" placeholder="Indica qué corregiste..." ${!aplica ? 'disabled' : ''} />
       </div>
-      <div class="field" style="padding:0;"><label>Valor reportado</label><input class="row-valor" type="number" step="any" /></div>
-      <div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Observaciones</label><input class="row-obs" type="text" /></div>
-      <div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Evidencia (URL)</label><input class="row-obs row-evi" type="url" /></div>
+      <div class="field" style="padding:0;"><label>Valor reportado</label><input class="row-valor" type="number" step="any" ${!aplica ? 'disabled' : ''} /></div>
+      <div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Observaciones</label><input class="row-obs" type="text" ${!aplica ? 'disabled' : ''} /></div>
+      <div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Evidencia (URL)</label><input class="row-obs row-evi" type="url" ${!aplica ? 'disabled' : ''} /></div>
       ${geo ? `<div class="loc-list" id="loc-list-${rowId}"></div>` : ``}
     </div>
     <div class="row__right">
-      ${geo ? `<button class="btn btn--ghost btn-activar">Ubicar punto(s)</button>` : ``}
+      ${geo ? `<button class="btn btn--ghost btn-activar" ${!aplica ? 'style="display:none;"' : ''}>Ubicar punto(s)</button>` : ``}
       <button class="btn btn--danger btn-eliminar" style="display:none;">Eliminar Fila (Local)</button>
     </div>
   </div>`;
@@ -226,15 +360,41 @@ function tareaRowHtml(t){
 function subActividadCardHtml(sa){
   const rows = cacheTareas.filter(t => t.SubActividadGlobalID === sa.GlobalID);
   if(!rows.length) return "";
-  return `<div class="card"><div class="card__top"><p class="card__title">${sa.CodigoSubActividad} - ${sa.NombreSubActividad}</p></div><div class="rows">${rows.map(tareaRowHtml).join("")}</div></div>`;
+  const pSub = planSubCtx.get(sa.GlobalID);
+  const aplicaSub = !(pSub && String(pSub.Aplica).toUpperCase() === 'NO');
+
+  // Integración de BI_AvanceSubActividad (Lectura en UI y Uso de SemaforoGestion)
+  const bSub = biSubCtx.get(sa.GlobalID);
+  let biHtml = "";
+  if (aplicaSub && bSub) {
+      const av = bSub.AvanceAcumulado ?? bSub.AvanceAcumuladoVigencia ?? 0;
+      biHtml += `<span class="ctx-badge" style="background:#dcfce7; color:#166534; font-size:11px;">Avance Acum: ${av}%</span>`;
+      if (bSub.EstadoFlujo) {
+          biHtml += `<span class="ctx-badge" style="background:#e0f2fe; color:#1e40af; font-size:11px;">Estado: ${bSub.EstadoFlujo}</span>`;
+      }
+      if (bSub.SemaforoGestion) {
+          biHtml += `<span class="ctx-badge" style="background:#fef9c3; color:#854d0e; font-size:11px;">Semáforo: ${bSub.SemaforoGestion}</span>`;
+      }
+  }
+  
+  return `<div class="card ${!aplicaSub ? 'is-not-applicable' : ''}">
+            <div class="card__top" style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+                <p class="card__title" style="margin-right:auto;">${sa.CodigoSubActividad} - ${sa.NombreSubActividad}</p>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                    ${!aplicaSub ? '<span class="ctx-badge" style="background:#fee2e2; color:#991b1b; font-size:11px;">SUBACTIVIDAD NO APLICA</span>' : ''}
+                    ${biHtml}
+                </div>
+            </div>
+            <div class="rows">${rows.map(tareaRowHtml).join("")}</div>
+          </div>`;
 }
 
-// --- LECTURA BIDIRECCIONAL V3 ---
+// --- LECTURA BIDIRECCIONAL V4 ---
 async function loadExistingData(actGid) {
   const vig = elVigencia.value, per = elPeriodo.value;
   const avGuids = [];
 
-  // --- Limpieza preventiva para evitar duplicación visual de ubicaciones al recargar ---
+  // Limpieza preventiva 
   existingAvances.clear();
   existingWFSolicitudes.clear();
   existingNarrativa = null;
@@ -246,13 +406,11 @@ async function loadExistingData(actGid) {
       const locList = rowEl.querySelector(".loc-list");
       if (locList) locList.innerHTML = "";
   });
-  // -----------------------------------------------------------------------------------
   
   // 1. Narrativa
   const qNar = await fetchJson(`${URL_NARRATIVA}/query`, { f:"json", where:`ActividadGlobalID='${actGid}' AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
   if(qNar.features.length) {
     existingNarrativa = qNar.features[0].attributes;
-    // Estandarizar estado desde la carga
     existingNarrativa.EstadoRegistro = normalizeState(existingNarrativa.EstadoRegistro);
     document.getElementById("txt-reporte-narrativo").value = existingNarrativa.TextoNarrativo || "";
     document.getElementById("txt-logros-descripcion").value = existingNarrativa.DescripcionLogrosAlcanzados || "";
@@ -313,14 +471,25 @@ async function loadExistingData(actGid) {
 }
 
 function applyReadonlyStateTask(rowEl, estado) {
-  const isReadonly = ["Enviado", "EnRevision", "Aprobado", "Publicado"].includes(estado);
-  rowEl.querySelector(`[id^="badge-container-"]`).innerHTML = `<span class="status-badge status-badge--${estado.toLowerCase()}">${estado}</span>`;
-  if(estado === "Devuelto") rowEl.querySelector(".field-motivo").style.display = "block";
+  // Respetamos si ya tiene un badge de "NO APLICA", solo agregamos el de estado.
+  const badgeHtml = `<span class="status-badge status-badge--${estado.toLowerCase()}">${estado}</span>`;
+  const container = rowEl.querySelector(`[id^="badge-container-"]`);
+  if (!container.innerHTML.includes("NO APLICA")) {
+      container.innerHTML = badgeHtml;
+  } else {
+      container.innerHTML += badgeHtml;
+  }
 
+  if(estado === "Devuelto" && !rowEl.classList.contains("is-not-applicable")) {
+      rowEl.querySelector(".field-motivo").style.display = "block";
+  }
+
+  const isReadonly = ["Enviado", "EnRevision", "Aprobado", "Publicado"].includes(estado);
   if(isReadonly) {
     rowEl.classList.add("is-readonly");
     rowEl.querySelectorAll("input").forEach(i => i.disabled = true);
     const btnAct = rowEl.querySelector(".btn-activar"); if(btnAct) btnAct.style.display = "none";
+    // Si la fila queda en readonly, los botones de eliminar ubicaciones que ya existían se ocultan
     rowEl.querySelectorAll(".btn-loc-del").forEach(b => b.style.display = "none");
   }
 }
@@ -336,15 +505,16 @@ function evaluateHistoricalMode() {
     let allLocked = true;
     let hasData = false;
 
-    // Verificar tareas
     document.querySelectorAll(".row").forEach(rowEl => {
-        hasData = true;
-        if (!rowEl.classList.contains("is-readonly")) {
-            allLocked = false;
+        // Ignorar las que no aplican para el check de bloqueo general, o contarlas como bloqueadas
+        if (!rowEl.classList.contains("is-not-applicable")) {
+            hasData = true;
+            if (!rowEl.classList.contains("is-readonly")) {
+                allLocked = false;
+            }
         }
     });
 
-    // Verificar narrativa
     if (existingNarrativa) {
         hasData = true;
         if (!["Enviado", "EnRevision", "Aprobado", "Publicado"].includes(existingNarrativa.EstadoRegistro)) {
@@ -352,7 +522,6 @@ function evaluateHistoricalMode() {
         }
     }
 
-    // Modo Lectura Total (Histórico)
     if (hasData && allLocked) {
         viewOnlyMode = true;
         elModo.style.display = "flex";
@@ -361,9 +530,6 @@ function evaluateHistoricalMode() {
         elModo.style.color = "#991b1b";
         btnGuardar.style.display = "none";
         btnEnviar.style.display = "none";
-        
-        // Deshabilitar todos los inputs locales de ubicación si existieran residuales
-        document.querySelectorAll(".loc-item input").forEach(i => i.disabled = true);
     } else {
         viewOnlyMode = false;
         elModo.style.display = "flex";
@@ -379,10 +545,13 @@ function wireCardEvents() {
   document.querySelectorAll(".btn-activar").forEach(btn => {
     btn.addEventListener("click", (e) => {
       const rowEl = e.target.closest(".row");
-      if (rowEl.classList.contains("is-readonly") || viewOnlyMode) return;
+      const rowId = rowEl.getAttribute("data-row-id");
+      // Validación estricta por fila
+      if (isTaskReadonly(rowId)) return setStatus("Esta tarea está bloqueada o no aplica.", "error");
+      
       document.querySelectorAll(".row").forEach(r => r.style.borderColor = "rgba(15,23,42,0.20)");
       rowEl.style.borderColor = "var(--primary)";
-      activeRowId = rowEl.getAttribute("data-row-id");
+      activeRowId = rowId;
       const numTarea = rowEl.querySelector(".mono").textContent;
       document.getElementById("pill-active").textContent = `Activo: ${numTarea.substring(0, 30)}...`;
     });
@@ -390,7 +559,9 @@ function wireCardEvents() {
 }
 
 function deleteLocation(rowId, ptId) {
-  if (viewOnlyMode) return;
+  // Chequeo estricto por fila en lugar del viewOnlyMode global
+  if (isTaskReadonly(rowId)) return setStatus("Tarea bloqueada. No se pueden eliminar ubicaciones.", "error");
+  
   removeGraphicForPoint(ptId);
   const locs = rowLocations.get(rowId) || [];
   const locObj = locs.find(l => l.ptId === ptId);
@@ -403,18 +574,22 @@ function appendLocationUI(rowId, ptId, lon, lat, desc="", mun="", dane="") {
   const listEl = document.getElementById(`loc-list-${rowId}`); if(!listEl) return;
   const div = document.createElement("div"); div.className = "loc-item"; div.id = `loc-${ptId}`;
   const isError = mun === "Fuera de CAR" ? 'style="border: 1px solid red; background: #fff5f5;"' : '';
+  
+  // Propagar readonly al crear el UI del punto si la tarea está bloqueada
+  const readonly = isTaskReadonly(rowId);
+
   div.innerHTML = `
-    <div class="loc-item__header" ${isError}><span>📍 Sitio: <span class="loc-coords">${lat.toFixed(5)}, ${lon.toFixed(5)}</span></span><button class="btn-loc-del" ${viewOnlyMode?'style="display:none;"':''}>Eliminar</button></div>
-    <div class="field" style="padding:0;"><input class="loc-desc" type="text" value="${escapeHtml(desc)}" placeholder="Descripción del sitio..." ${viewOnlyMode?'disabled':''} /></div>
+    <div class="loc-item__header" ${isError}><span>📍 Sitio: <span class="loc-coords">${lat.toFixed(5)}, ${lon.toFixed(5)}</span></span><button class="btn-loc-del" ${readonly?'style="display:none;"':''}>Eliminar</button></div>
+    <div class="field" style="padding:0;"><input class="loc-desc" type="text" value="${escapeHtml(desc)}" placeholder="Descripción del sitio..." ${readonly?'disabled':''} /></div>
     <div class="loc-item__grid">
-      <div class="field" style="padding:0;"><input class="loc-mun" type="text" value="${escapeHtml(mun)}" readonly ${viewOnlyMode?'disabled':''} /></div>
-      <div class="field" style="padding:0;"><input class="loc-dane" type="text" value="${escapeHtml(dane)}" readonly ${viewOnlyMode?'disabled':''} /></div>
+      <div class="field" style="padding:0;"><input class="loc-mun" type="text" value="${escapeHtml(mun)}" readonly ${readonly?'disabled':''} /></div>
+      <div class="field" style="padding:0;"><input class="loc-dane" type="text" value="${escapeHtml(dane)}" readonly ${readonly?'disabled':''} /></div>
     </div>`;
   div.querySelector(".btn-loc-del").addEventListener("click", () => deleteLocation(rowId, ptId));
   listEl.appendChild(div);
 }
 
-// --- MAPA ---
+// --- MAPA V4 ---
 function initMap(){
   return new Promise((resolve, reject) => {
     require([ "esri/Map", "esri/views/MapView", "esri/layers/GraphicsLayer", "esri/layers/FeatureLayer", "esri/Graphic", "esri/widgets/Sketch/SketchViewModel", "esri/geometry/support/webMercatorUtils", "esri/widgets/Search", "esri/widgets/BasemapGallery", "esri/widgets/Expand"
@@ -429,8 +604,15 @@ function initMap(){
       sketchVM = new SketchViewModel({ view, layer: graphicsLayer, updateOnGraphicClick: false });
 
       sketchVM.on("update", async (evt) => {
-        if(viewOnlyMode || evt.state !== "complete") return;
+        if(evt.state !== "complete") return;
         const g = evt.graphics?.[0]; if(!g || !g.attributes?.rowId || !g.attributes?.ptId) return;
+        
+        // Bloqueo de actualización si la fila está en estado readonly o no aplica
+        if(isTaskReadonly(g.attributes.rowId)) {
+            setStatus("Edición de punto denegada. Tarea bloqueada.", "error");
+            return; 
+        }
+
         const geo = getGeographicLocation(g.geometry); const rId = g.attributes.rowId; const pId = g.attributes.ptId;
         const locs = rowLocations.get(rId) || []; const locObj = locs.find(l => l.ptId === pId);
         if(locObj){ locObj.lon = geo.longitude; locObj.lat = geo.latitude; const el = document.getElementById(`loc-${pId}`); if(el) el.querySelector('.loc-coords').textContent = `${geo.latitude.toFixed(5)}, ${geo.longitude.toFixed(5)}`; }
@@ -438,8 +620,14 @@ function initMap(){
       });
 
       view.on("click", async (evt) => {
-        if(viewOnlyMode) return;
-        if(!activeRowId){ setStatus("Activa un registro en el panel para georreferenciar.", "error"); return; }
+        if(!activeRowId) return setStatus("Activa un registro en el panel para georreferenciar.", "error"); 
+        
+        // Validar fila activa antes de crear el punto
+        if (isTaskReadonly(activeRowId)) {
+            setStatus("La tarea activa está bloqueada. No puedes añadir puntos.", "error");
+            return;
+        }
+
         const geo = getGeographicLocation(evt.mapPoint); const ptId = crypto.randomUUID(); const locs = rowLocations.get(activeRowId) || [];
         locs.push({ ptId, lon: geo.longitude, lat: geo.latitude, mun: "", dane: "", desc: "" }); rowLocations.set(activeRowId, locs);
         addGraphicForPoint(activeRowId, ptId, geo.longitude, geo.latitude, Graphic);
@@ -456,7 +644,7 @@ function removeAllGraphicsForRow(rowId){ if(graphicsLayer) graphicsLayer.graphic
 function addGraphicForPoint(rowId, ptId, lon, lat, Graphic){ removeGraphicForPoint(ptId); const graphic = new Graphic({ geometry: { type: "point", longitude: lon, latitude: lat, spatialReference: { wkid: 4326 } }, symbol: { type: "simple-marker", style: "circle", color: [23,151,209,0.9], size: 10, outline: { color: [11,82,105,1], width: 2 } }, attributes: { rowId, ptId } }); graphicsLayer.add(graphic); return graphic; }
 function getGeographicLocation(p) { return (p.spatialReference && p.spatialReference.isWebMercator && webMercatorUtils) ? webMercatorUtils.webMercatorToGeographic(p) : p; }
 async function updateMunicipioFromCAR(rowId, ptId, mapPoint){
-  if (!jurisdiccionLayerView || viewOnlyMode) return;
+  if (!jurisdiccionLayerView || isTaskReadonly(rowId)) return;
   try{
     document.body.style.cursor = 'wait';
     const result = await jurisdiccionLayerView.queryFeatures({ geometry: mapPoint, spatialRelationship: "intersects", returnGeometry: false, outFields: ["*"] });
@@ -485,7 +673,7 @@ async function updateMunicipioFromCAR(rowId, ptId, mapPoint){
   }catch(e){ console.error(e); }finally{ document.body.style.cursor = 'default'; }
 }
 
-// --- GUARDAR Y ENVIAR (V3) ---
+// --- GUARDAR Y ENVIAR V4 ---
 btnGuardar.addEventListener("click", () => processSave(false));
 btnEnviar.addEventListener("click", () => processSave(true));
 
@@ -498,12 +686,11 @@ async function processSave(isSubmit) {
     
     const draft = collectDraft(isSubmit);
     if(!draft.updates.length && !draft.adds.length && !draft.narrAdds.length && !draft.narrUpdates.length && !deletedLocations.length) {
-       setStatus("No hay cambios para guardar.", "info"); return;
+       setStatus("No hay cambios operativos para guardar.", "info"); return;
     }
     
     await executeSave(draft);
     
-    // Trazabilidad y auditoría
     const eventType = isSubmit ? "ENVIAR_REVISION" : "GUARDAR_BORRADOR";
     const detailMsg = `Actividad: ${elActividad.options[elActividad.selectedIndex].text}. Tareas afect: ${draft.adds.length + draft.updates.length}.`;
     await writeAuditEvent(eventType, "APP_REPORTE", draft.actGid, "OK", detailMsg);
@@ -526,7 +713,9 @@ function collectDraft(isSubmit) {
   
   // AVANCES TAREAS
   document.querySelectorAll(".row").forEach(rowEl => {
-    if(rowEl.classList.contains("is-readonly")) return; 
+    // Si no aplica o es solo lectura (Enviado/Aprobado), no capturar
+    if(rowEl.classList.contains("is-readonly") || rowEl.classList.contains("is-not-applicable")) return; 
+    
     const tareaGid = rowEl.getAttribute("data-tarea-gid"), rowId = rowEl.getAttribute("data-row-id");
     const val = rowEl.querySelector(".row-valor")?.value, obs = rowEl.querySelector(".row-obs")?.value, evi = rowEl.querySelector(".row-evi")?.value;
     const motivo = rowEl.querySelector(".row-motivo")?.value;
@@ -536,7 +725,6 @@ function collectDraft(isSubmit) {
         const domLoc = document.getElementById(`loc-${loc.ptId}`); 
         if(domLoc) loc.desc = domLoc.querySelector(".loc-desc").value; 
         
-        // REGLA 10: Validación Territorial CAR Estricta
         if (loc.mun === "Fuera de CAR" || !loc.mun) {
             rowEl.classList.add("row--error");
             throw new Error(`Existen ubicaciones fuera de la jurisdicción CAR en la tarea observada. Elimine o corrija el punto para poder continuar.`);
@@ -547,7 +735,6 @@ function collectDraft(isSubmit) {
 
     const exist = existingAvances.get(tareaGid);
     
-    // REGLA 4: Validación dura del MotivoAjuste para Devoluciones
     if (exist && exist.EstadoRegistro === "Devuelto" && (!motivo || motivo.trim() === "")) {
       rowEl.classList.add("row--error");
       throw new Error(`Debes diligenciar obligatoriamente el 'Motivo de ajuste' en la tarea devuelta.`);
@@ -595,12 +782,12 @@ function collectDraft(isSubmit) {
       else { uAttrs[F_UBI.fkAvance] = avanceGidFinal; res.ubicAdds.push({ attributes: uAttrs, geometry: geom }); }
     });
 
-    // REGLA Workflow SolicitudRevision
+    // Workflow Avance
     if(isSubmit) {
       const existingWf = existingWFSolicitudes.get(avanceGidFinal);
       const wfPayload = {
         [F_WF.tipo]: "AvanceTarea", [F_WF.objGid]: avanceGidFinal, [F_WF.vig]: vig, [F_WF.per]: per, [F_WF.persId]: currentUser.pid, [F_WF.fec]: epochNow, [F_WF.est]: "Enviado",
-        ComentarioSolicitante: motivo ? `Corrección operativa: ${motivo}` : "Reporte operativo V3", Version: versionActual
+        ComentarioSolicitante: motivo ? `Corrección operativa: ${motivo}` : "Reporte operativo V4", Version: versionActual
       };
 
       if(existingWf) {
@@ -639,7 +826,7 @@ function collectDraft(isSubmit) {
       
       if(isSubmit) {
         const existingWfN = existingWFSolicitudes.get(narrGidFinal);
-        const wfPayloadN = { [F_WF.tipo]: "ReporteNarrativo", [F_WF.objGid]: narrGidFinal, [F_WF.vig]: vig, [F_WF.per]: per, [F_WF.persId]: currentUser.pid, [F_WF.fec]: epochNow, [F_WF.est]: "Enviado", ComentarioSolicitante: motivoN ? `Corrección operativa: ${motivoN}` : "Reporte operativo V3", Version: versionActualN };
+        const wfPayloadN = { [F_WF.tipo]: "ReporteNarrativo", [F_WF.objGid]: narrGidFinal, [F_WF.vig]: vig, [F_WF.per]: per, [F_WF.persId]: currentUser.pid, [F_WF.fec]: epochNow, [F_WF.est]: "Enviado", ComentarioSolicitante: motivoN ? `Corrección operativa: ${motivoN}` : "Reporte operativo V4", Version: versionActualN };
         
         if(existingWfN) { wfPayloadN.OBJECTID = existingWfN.OBJECTID; res.wfUpdates.push({ attributes: wfPayloadN }); } 
         else { wfPayloadN.GlobalID = generateGUID(); wfPayloadN.SolicitudID = generateGUID(); res.wfAdds.push({ attributes: wfPayloadN }); }
@@ -668,12 +855,13 @@ function clearForm(){
 }
 btnLimpiar.addEventListener("click", () => { clearForm(); setStatus("Vista limpiada.", "info"); });
 
-// --- Botón Recargar (Ajuste Final) ---
+// --- Botón Recargar ---
 btnRefresh.addEventListener("click", async () => { 
     if(elVigencia.value && currentUser) {
         setStatus("Recargando asignaciones y actividades...", "info");
         clearForm();
         elIndicadores.innerHTML = "";
+        actContextPanel.style.display = "none";
         document.getElementById("narrativa-badge-container").innerHTML = "";
         document.getElementById("container-motivo-narrativa").style.display = "none";
         elModo.style.display = "none";
@@ -694,6 +882,7 @@ elVigencia.addEventListener("change", async () => {
     setStatus("Recargando asignaciones para la vigencia seleccionada...", "info");
     clearForm(); 
     elIndicadores.innerHTML = ""; 
+    actContextPanel.style.display = "none";
     document.getElementById("narrativa-badge-container").innerHTML = "";
     document.getElementById("container-motivo-narrativa").style.display = "none";
     elModo.style.display = "none"; 
