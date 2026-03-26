@@ -3,7 +3,8 @@
    Esquema: DATAPAC_V4
    Mejoras (Final): Seguridad SEG_Alcance de GUID a GUID estricta, 
                     Inyección de UI para BI_AvanceSubActividad (SemaforoGestion), 
-                    Respeto total de Aplica="No" y Estados.
+                    Respeto total de Aplica="No" y Estados,
+                    Bypass de Prueba Total para SUPERADMIN.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -154,6 +155,12 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
     document.getElementById("pill-user").style.display = "block";
     document.getElementById("pill-user").textContent = `Usuario: ${currentUser.nombre}`;
     
+    if (currentUser.roles.includes("SUPERADMIN")) {
+        document.getElementById("pill-superadmin").style.display = "block";
+    } else {
+        document.getElementById("pill-superadmin").style.display = "none";
+    }
+    
     await initMap(); await loadAsignaciones(); await loadActividades();
   } catch(e) { document.getElementById("login-msg-2").textContent = e.message; }
 });
@@ -161,6 +168,11 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
 // --- Filtros SEG_Asignacion + SEG_Alcance V4 (Cruce Estricto por GlobalID) ---
 async function loadAsignaciones() {
   if(!currentUser) return;
+  if(currentUser.roles.includes("SUPERADMIN")) {
+      asignacionesActivas = []; // SuperAdmin no requiere SEG_Asignacion local para el panel operativo
+      return;
+  }
+
   const vig = elVigencia.value;
   
   // 1. Asignaciones directas operativas de la tabla SEG_Asignacion
@@ -219,8 +231,20 @@ async function loadAsignaciones() {
 
 async function loadActividades() {
   if(!currentUser) return;
+  const vig = elVigencia.value;
+
+  if (currentUser.roles.includes("SUPERADMIN")) {
+      const qAct = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
+      if(qAct.features && qAct.features.length > 0) {
+          elActividad.innerHTML = `<option value="">— Selecciona —</option>` + qAct.features.map(f => `<option value="${f.attributes.GlobalID}" data-codigo="${f.attributes.ActividadID}">${f.attributes.ActividadID} - ${f.attributes.NombreActividad}</option>`).join("");
+      } else {
+          elActividad.innerHTML = `<option value="">Sin actividades operativas en ${vig}</option>`; 
+      }
+      elIndicadores.innerHTML = "";
+      return;
+  }
+
   const actGuids = [...new Set(asignacionesActivas.map(a => a.ActividadGlobalID).filter(Boolean))];
-  
   if(!actGuids.length) { 
       elActividad.innerHTML = `<option value="">Sin actividades operativas en ${elVigencia.value}</option>`; 
       elIndicadores.innerHTML = "";
@@ -267,7 +291,11 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
   if(inListSub) {
     const tareaQ = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub})`, outFields:"*" });
     let allTasks = (tareaQ.features||[]).map(f=>f.attributes);
-    if(tareasAsignadas.length > 0) allTasks = allTasks.filter(t => tareasAsignadas.includes(t.GlobalID));
+    
+    if (!currentUser.roles.includes("SUPERADMIN")) {
+        allTasks = allTasks.filter(t => tareasAsignadas.includes(t.GlobalID));
+    }
+    
     cacheTareas = allTasks;
   }
 
@@ -855,7 +883,7 @@ function clearForm(){
 }
 btnLimpiar.addEventListener("click", () => { clearForm(); setStatus("Vista limpiada.", "info"); });
 
-// --- Botón Recargar ---
+// --- Botón Recargar (Modificado para Bypass de Prueba Final) ---
 btnRefresh.addEventListener("click", async () => { 
     if(elVigencia.value && currentUser) {
         setStatus("Recargando asignaciones y actividades...", "info");
