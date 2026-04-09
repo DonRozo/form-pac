@@ -45,7 +45,7 @@ const F_UBI = { fkAvance: "AvanceTareaGlobalID", dane: "CodigoDANE", mun: "Munic
 const F_WF = { solId: "SolicitudID", tipo: "TipoObjeto", objId: "ObjetoID", objGid: "ObjetoGlobalID", vig: "Vigencia", per: "Periodo", persId: "PersonaSolicitaID", fec: "FechaSolicitud", est: "EstadoActual" };
 
 // DOM
-const elVigencia = document.getElementById("sel-vigencia"), elIndicadores = document.getElementById("indicadores");
+const elVigencia = document.getElementById("sel-vigencia"), elPeriodo = document.getElementById("sel-periodo"), elIndicadores = document.getElementById("indicadores");
 const btnGuardar = document.getElementById("btn-guardar"), btnEnviar = document.getElementById("btn-enviar"), btnLimpiar = document.getElementById("btn-limpiar"), btnRefresh = document.getElementById("btn-refresh");
 const elStatus = document.getElementById("status"), pillActive = document.getElementById("pill-active");
 const elModo = document.getElementById("pill-modo"), actContextPanel = document.getElementById("actividad-context");
@@ -133,7 +133,6 @@ function renderCombo(containerId, data, placeholder, onChange) {
     document.addEventListener("click", (e) => {
         if(!container.contains(e.target)) {
             list.style.display = "none";
-            // Forzar reseteo visual si no hay valor confirmado
             if(!hidden.value) { input.value = ""; clear.style.display = "none"; } 
         }
     });
@@ -171,15 +170,9 @@ function setComboValue(containerId, value, label) {
 }
 
 function getActividadId() { const h = document.querySelector("#combo-actividad .combo-value"); return h ? h.value : ""; }
-function getPeriodo() { const h = document.querySelector("#combo-periodo .combo-value"); return h ? (h.value || "T4") : "T4"; }
+function getPeriodo() { return elPeriodo.value || "T4"; }
 
 function initCombosFijos() {
-    const periodos = [{value:"T1",label:"T1"}, {value:"T2",label:"T2"}, {value:"T3",label:"T3"}, {value:"T4",label:"T4"}];
-    renderCombo("combo-periodo", periodos, "Selecciona periodo", async (val) => {
-        const actGid = getActividadId();
-        if(actGid) await loadSubactividadesYTareas(actGid);
-    });
-    setComboValue("combo-periodo", "T4", "T4");
     renderCombo("combo-actividad", [], "Cargando...");
 }
 
@@ -252,7 +245,7 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
     }
     
     await initMap(); 
-    initCombosFijos(); // Inicializa combos visuales
+    initCombosFijos(); 
     await loadAsignaciones(); 
     await loadActividades();
   } catch(e) { document.getElementById("login-msg-2").textContent = e.message; }
@@ -748,7 +741,7 @@ function wireCardEvents() {
       rowEl.style.borderColor = "var(--primary)";
       activeRowId = rowId;
       const numTarea = rowEl.querySelector(".mono").textContent;
-      document.getElementById("pill-active").textContent = `Activo: ${numTarea.substring(0, 30)}...`;
+      document.getElementById("pill-active").textContent = `Tarea activa para georreferenciar: ${numTarea.substring(0, 20)}...`;
     });
   });
 }
@@ -1034,7 +1027,7 @@ async function executeSave(draft) {
 // --- Limpieza UI ---
 function clearForm(){
   if(document.getElementById("txt-reporte-narrativo")) document.getElementById("txt-reporte-narrativo").value = ""; if(document.getElementById("txt-logros-descripcion")) document.getElementById("txt-logros-descripcion").value = ""; if(document.getElementById("txt-logros-principales")) document.getElementById("txt-logros-principales").value = "";
-  rowLocations.clear(); clearMapGraphics(); activeRowId = null; pillActive.textContent = "Registro activo: —";
+  rowLocations.clear(); clearMapGraphics(); activeRowId = null; pillActive.textContent = "Tarea activa para georreferenciar: —";
   document.querySelectorAll(".row").forEach(r => {
     r.querySelector(".row-valor").value = ""; r.querySelector(".row-obs").value = ""; r.querySelector(".row-evi").value = "";
     const locList = r.querySelector(".loc-list"); if(locList) locList.innerHTML = "";
@@ -1080,4 +1073,10 @@ elVigencia.addEventListener("change", async () => {
     await loadAsignaciones(); 
     await loadActividades(); 
     setStatus("Asignaciones actualizadas.", "success");
+});
+
+// Evento de Cambio de Periodo nativo
+elPeriodo.addEventListener("change", async () => {
+    const actGid = getActividadId();
+    if (actGid) await loadSubactividadesYTareas(actGid);
 });

@@ -62,7 +62,13 @@
           </div>
           <div class="field">
             <label>Periodo (Trimestre)</label>
-            <div id="combo-periodo"></div>
+            <select id="sel-periodo">
+              <option value="">Selecciona periodo</option>
+              <option value="T1">T1</option>
+              <option value="T2">T2</option>
+              <option value="T3">T3</option>
+              <option value="T4" selected>T4</option>
+            </select>
           </div>
         </div>
 
@@ -127,7 +133,7 @@
             <p class="muted">Activa un registro y haz clic en el mapa. El bloqueo de estado aplica individualmente por tarea.</p>
           </div>
           <div class="maptools">
-            <div class="pill" id="pill-active">Registro activo: —</div>
+            <div class="pill" id="pill-active">Tarea activa para georreferenciar: —</div>
             <button class="btn btn--ghost" id="btn-centrar" title="Centrar a Cundinamarca">Centrar</button>
           </div>
         </div>
