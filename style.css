@@ -138,7 +138,22 @@ input:focus, select:focus, textarea:focus{ border-color: rgba(23,151,209,0.55); 
 
 .review-box { background: linear-gradient(to bottom, #fff, #f8fafc); border-color: #cbd5e1; }
 
-/* UBICACIONES */
+/* COMBOS V4 (Búsqueda integrada) */
+.combo-wrap { position: relative; width: 100%; }
+.combo-input { width: 100%; padding-right: 30px; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
+.combo-clear { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); cursor: pointer; color: var(--muted); font-weight: bold; font-size: 16px; display: none; user-select: none; z-index: 2; line-height: 1; }
+.combo-clear:hover { color: var(--danger); }
+.combo-list { position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: #fff; border: 1px solid var(--border); border-radius: 8px; max-height: 250px; overflow-y: auto; z-index: 100; box-shadow: 0 10px 25px rgba(0,0,0,0.15); display: none; }
+.combo-option { padding: 10px 12px; font-size: 13px; cursor: pointer; border-bottom: 1px solid #f1f5f9; transition: background 0.1s; }
+.combo-option:last-child { border-bottom: none; }
+.combo-option:hover { background: rgba(23,151,209,0.08); color: var(--primary-2); }
+.combo-empty { color: var(--muted); cursor: default; font-style: italic; }
+.combo-empty:hover { background: transparent; color: var(--muted); }
+
+/* MAPA Y UBICACIONES V4 */
+.panel--map { display: flex; flex-direction: column; }
+.map { flex: 1; min-height: 300px; width: 100%; background: #e2e8f0; border-radius: 0 0 var(--radius) var(--radius); position: relative; }
+
 .loc-list { display: flex; flex-direction: column; gap: 8px; }
 .loc-item { border: 1px solid #e2e8f0; background: #fff; padding: 10px; border-radius: 8px; font-size: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .loc-item__desc { grid-column: 1 / span 2; font-weight: bold; }

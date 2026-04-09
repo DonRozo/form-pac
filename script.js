@@ -5,7 +5,8 @@
                     Inyección de UI para BI_AvanceSubActividad (SemaforoGestion), 
                     Respeto total de Aplica="No" y Estados,
                     Bypass de Prueba Total para SUPERADMIN.
-                    Soporte Híbrido SEG_Asignacion (Actividad / Tarea) [Cierre Final].
+                    Soporte Híbrido SEG_Asignacion (Actividad / Tarea).
+                    Restauración Mapa y Combos de Selección Filtrables [Cierre UX].
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -44,7 +45,7 @@ const F_UBI = { fkAvance: "AvanceTareaGlobalID", dane: "CodigoDANE", mun: "Munic
 const F_WF = { solId: "SolicitudID", tipo: "TipoObjeto", objId: "ObjetoID", objGid: "ObjetoGlobalID", vig: "Vigencia", per: "Periodo", persId: "PersonaSolicitaID", fec: "FechaSolicitud", est: "EstadoActual" };
 
 // DOM
-const elActividad = document.getElementById("sel-actividad"), elVigencia = document.getElementById("sel-vigencia"), elPeriodo = document.getElementById("sel-periodo"), elIndicadores = document.getElementById("indicadores");
+const elVigencia = document.getElementById("sel-vigencia"), elIndicadores = document.getElementById("indicadores");
 const btnGuardar = document.getElementById("btn-guardar"), btnEnviar = document.getElementById("btn-enviar"), btnLimpiar = document.getElementById("btn-limpiar"), btnRefresh = document.getElementById("btn-refresh");
 const elStatus = document.getElementById("status"), pillActive = document.getElementById("pill-active");
 const elModo = document.getElementById("pill-modo"), actContextPanel = document.getElementById("actividad-context");
@@ -85,13 +86,101 @@ function normalizeState(st) {
     return "Borrador";
 }
 
-// Verifica si una fila de tarea ESPECÍFICA está bloqueada (por estado o porque no aplica)
 function isTaskReadonly(rowId) {
     if (viewOnlyMode) return true;
     if (!rowId) return true;
     const rowEl = document.querySelector(`.row[data-row-id="${rowId}"]`);
     if (!rowEl) return true;
     return rowEl.classList.contains("is-readonly") || rowEl.classList.contains("is-not-applicable");
+}
+
+// --- CORE: Listas Filtrables (Combos) ---
+function renderCombo(containerId, data, placeholder, onChange) {
+    const container = document.getElementById(containerId);
+    if(!container) return;
+    
+    container.innerHTML = `
+      <div class="combo-wrap">
+        <input type="text" class="combo-input" placeholder="${placeholder}" autocomplete="off" />
+        <input type="hidden" class="combo-value" />
+        <span class="combo-clear" title="Limpiar">×</span>
+        <div class="combo-list"></div>
+      </div>
+    `;
+    
+    const input = container.querySelector(".combo-input");
+    const hidden = container.querySelector(".combo-value");
+    const list = container.querySelector(".combo-list");
+    const clear = container.querySelector(".combo-clear");
+
+    const renderList = (filter = "") => {
+        const f = filter.toLowerCase();
+        const filtered = data.filter(d => d.label.toLowerCase().includes(f));
+        if(!filtered.length) {
+            list.innerHTML = `<div class="combo-option combo-empty">Sin resultados</div>`;
+            return;
+        }
+        list.innerHTML = filtered.map(d => `<div class="combo-option" data-val="${d.value}">${escapeHtml(d.label)}</div>`).join("");
+    };
+
+    input.addEventListener("focus", () => { renderList(input.value); list.style.display = "block"; });
+    input.addEventListener("input", (e) => { 
+        renderList(e.target.value); 
+        list.style.display = "block"; 
+        clear.style.display = input.value ? "block" : "none"; 
+    });
+
+    document.addEventListener("click", (e) => {
+        if(!container.contains(e.target)) {
+            list.style.display = "none";
+            // Forzar reseteo visual si no hay valor confirmado
+            if(!hidden.value) { input.value = ""; clear.style.display = "none"; } 
+        }
+    });
+
+    list.addEventListener("click", (e) => {
+        if(e.target.classList.contains("combo-option") && !e.target.classList.contains("combo-empty")) {
+            const val = e.target.getAttribute("data-val");
+            const txt = e.target.textContent;
+            input.value = txt;
+            hidden.value = val;
+            list.style.display = "none";
+            clear.style.display = "block";
+            if(onChange) onChange(val);
+        }
+    });
+
+    clear.addEventListener("click", () => {
+        input.value = "";
+        hidden.value = "";
+        clear.style.display = "none";
+        if(onChange) onChange("");
+        input.focus();
+    });
+}
+
+function setComboValue(containerId, value, label) {
+    const container = document.getElementById(containerId);
+    if(!container) return;
+    const input = container.querySelector(".combo-input");
+    const hidden = container.querySelector(".combo-value");
+    const clear = container.querySelector(".combo-clear");
+    if(input) input.value = label || "";
+    if(hidden) hidden.value = value || "";
+    if(clear) clear.style.display = value ? "block" : "none";
+}
+
+function getActividadId() { const h = document.querySelector("#combo-actividad .combo-value"); return h ? h.value : ""; }
+function getPeriodo() { const h = document.querySelector("#combo-periodo .combo-value"); return h ? (h.value || "T4") : "T4"; }
+
+function initCombosFijos() {
+    const periodos = [{value:"T1",label:"T1"}, {value:"T2",label:"T2"}, {value:"T3",label:"T3"}, {value:"T4",label:"T4"}];
+    renderCombo("combo-periodo", periodos, "Selecciona periodo", async (val) => {
+        const actGid = getActividadId();
+        if(actGid) await loadSubactividadesYTareas(actGid);
+    });
+    setComboValue("combo-periodo", "T4", "T4");
+    renderCombo("combo-actividad", [], "Cargando...");
 }
 
 // --- Funciones de Auditoría ---
@@ -162,7 +251,10 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
         document.getElementById("pill-superadmin").style.display = "none";
     }
     
-    await initMap(); await loadAsignaciones(); await loadActividades();
+    await initMap(); 
+    initCombosFijos(); // Inicializa combos visuales
+    await loadAsignaciones(); 
+    await loadActividades();
   } catch(e) { document.getElementById("login-msg-2").textContent = e.message; }
 });
 
@@ -176,7 +268,7 @@ async function loadAsignaciones() {
 
   const vig = elVigencia.value;
   
-  // 1. Asignaciones directas operativas de la tabla SEG_Asignacion (con Activo, Vigencia y GlobalID explícitos)
+  // 1. Asignaciones directas operativas de la tabla SEG_Asignacion
   const qAsig = await fetchJson(`${URL_ASIGNACION}/query`, { 
       f: "json", 
       where: `PersonaGlobalID='${currentUser.gid}' AND Vigencia=${vig} AND Activo='SI'`, 
@@ -193,7 +285,7 @@ async function loadAsignaciones() {
       const actGid = a.ActividadGlobalID;
       const tarGid = a.TareaGlobalID;
 
-      // Caso Asignacion por Actividad (Validación estricta de herencia)
+      // Caso Asignacion por Actividad
       if (tipo === "ACTIVIDAD") {
           if (hereda === "SI" && actGid) {
               asigActividades.push(actGid);
@@ -205,22 +297,16 @@ async function loadAsignaciones() {
       else if (tipo === "TAREA") {
           if (tarGid) {
               asigTareas.push(tarGid);
-              if (hereda === "SI") {
-                  console.warn(`[SEG_Asignacion] Herencia ignorada de forma segura para asignación puntual tipo TAREA. TareaGlobalID: ${tarGid}`);
-              }
+              if (hereda === "SI") console.warn(`[SEG_Asignacion] Herencia ignorada de forma segura para asignación puntual tipo TAREA. TareaGlobalID: ${tarGid}`);
           } else {
               console.warn(`[SEG_Asignacion] Ignorado: Registro inconsistente para TAREA (falta TareaGlobalID). GlobalID: ${a.GlobalID}`);
           }
       }
       // Caso Legacy o Indeterminado
       else {
-          if (tarGid) {
-              asigTareas.push(tarGid); // Tratar como puntual legacy
-          } else if (actGid && hereda === "SI") {
-              asigActividades.push(actGid); // Tratar como heredable legacy
-          } else {
-              console.warn(`[SEG_Asignacion] Ignorado: Registro legado no interpretable de forma segura. GlobalID: ${a.GlobalID}`);
-          }
+          if (tarGid) asigTareas.push(tarGid);
+          else if (actGid && hereda === "SI") asigActividades.push(actGid); 
+          else console.warn(`[SEG_Asignacion] Ignorado: Registro legado no interpretable de forma segura. GlobalID: ${a.GlobalID}`);
       }
   });
 
@@ -252,7 +338,7 @@ async function loadAsignaciones() {
                   
                   qT.features.forEach(t => {
                       t.attributes.ActividadGlobalID = mapSubToAct.get(t.attributes.SubActividadGlobalID);
-                      t.attributes.OrigenConsolidado = 'ACTIVIDAD'; // Trazabilidad interna
+                      t.attributes.OrigenConsolidado = 'ACTIVIDAD'; 
                       qJerarquiaFeatures.push(t);
                       collectedTaskGuids.add(t.attributes.GlobalID);
                   });
@@ -283,9 +369,8 @@ async function loadAsignaciones() {
 
       tareasPuntuales.forEach(t => {
           t.attributes.ActividadGlobalID = subMap.get(t.attributes.SubActividadGlobalID);
-          // Prevenir duplicados en la jerarquía si ya entró por herencia de actividad
           if (!collectedTaskGuids.has(t.attributes.GlobalID)) {
-              t.attributes.OrigenConsolidado = 'TAREA'; // Trazabilidad interna
+              t.attributes.OrigenConsolidado = 'TAREA'; 
               qJerarquiaFeatures.push(t);
               collectedTaskGuids.add(t.attributes.GlobalID);
           }
@@ -293,9 +378,9 @@ async function loadAsignaciones() {
   }
 
   // 4. Mapeo y cruce estricto con SEG_Alcance (Seguridad Consolidada)
-  const tarMap = new Map(); // TareaGlobalID -> SubActividadGlobalID
-  const subMap = new Map(); // SubActividadGlobalID -> ActividadGlobalID
-  const originMap = new Map(); // TareaGlobalID -> OrigenConsolidado
+  const tarMap = new Map(); 
+  const subMap = new Map(); 
+  const originMap = new Map(); 
   const validTaskGuids = [];
 
   qJerarquiaFeatures.forEach(f => {
@@ -324,62 +409,52 @@ async function loadAsignaciones() {
       finalTasks = []; 
   }
 
-  // 5. Se consolida el array final de asignaciones válidas (plano, deduplicado y autorizado)
+  // 5. Consolidar el array final de asignaciones válidas
   asignacionesActivas = finalTasks.map(tGuid => {
       const sGuid = tarMap.get(tGuid);
       const aGuid = sGuid ? subMap.get(sGuid) : null;
       const oGuid = originMap.get(tGuid);
-      return { 
-          TareaGlobalID: tGuid, 
-          SubActividadGlobalID: sGuid, 
-          ActividadGlobalID: aGuid,
-          TipoOrigenAsignacion: oGuid
-      };
+      return { TareaGlobalID: tGuid, SubActividadGlobalID: sGuid, ActividadGlobalID: aGuid, TipoOrigenAsignacion: oGuid };
   });
 }
 
 async function loadActividades() {
   if(!currentUser) return;
   const vig = elVigencia.value;
+  let data = [];
 
   if (currentUser.roles.includes("SUPERADMIN")) {
       const qAct = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
       if(qAct.features && qAct.features.length > 0) {
-          elActividad.innerHTML = `<option value="">— Selecciona —</option>` + qAct.features.map(f => `<option value="${f.attributes.GlobalID}" data-codigo="${f.attributes.ActividadID}">${f.attributes.ActividadID} - ${f.attributes.NombreActividad}</option>`).join("");
-      } else {
-          elActividad.innerHTML = `<option value="">Sin actividades operativas en ${vig}</option>`; 
+          data = qAct.features.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
       }
-      elIndicadores.innerHTML = "";
-      return;
+  } else {
+      const actGuids = [...new Set(asignacionesActivas.map(a => a.ActividadGlobalID).filter(Boolean))];
+      if(actGuids.length > 0) { 
+          let qActFeatures = [];
+          for (let i = 0; i < actGuids.length; i += 200) {
+              const chunk = actGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
+              const qA = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk}) AND Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
+              if(qA.features) qActFeatures.push(...qA.features);
+          }
+          data = qActFeatures.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
+      }
   }
 
-  const actGuids = [...new Set(asignacionesActivas.map(a => a.ActividadGlobalID).filter(Boolean))];
-  if(!actGuids.length) { 
-      elActividad.innerHTML = `<option value="">Sin actividades operativas en ${elVigencia.value}</option>`; 
-      elIndicadores.innerHTML = "";
-      return; 
-  }
+  // Renderiza usando el patrón de combos filtrables
+  renderCombo("combo-actividad", data, data.length ? "— Selecciona o busca —" : `Sin actividades operativas en ${vig}`, async (val) => {
+      if(!val) { 
+          elIndicadores.innerHTML = ""; 
+          actContextPanel.style.display = "none"; 
+          document.getElementById("lbl-responsable").textContent = "Responsable: —";
+          return; 
+      }
+      document.getElementById("lbl-responsable").textContent = `Responsable: ${currentUser.nombre}`;
+      await loadSubactividadesYTareas(val);
+  });
   
-  let qActFeatures = [];
-  for (let i = 0; i < actGuids.length; i += 200) {
-      const chunk = actGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
-      const qA = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk}) AND Activo='SI' AND Vigencia=${elVigencia.value}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
-      if(qA.features) qActFeatures.push(...qA.features);
-  }
-  
-  elActividad.innerHTML = `<option value="">— Selecciona —</option>` + qActFeatures.map(f => `<option value="${f.attributes.GlobalID}" data-codigo="${f.attributes.ActividadID}">${f.attributes.ActividadID} - ${f.attributes.NombreActividad}</option>`).join("");
+  if(!data.length) { elIndicadores.innerHTML = ""; }
 }
-
-elActividad.addEventListener("change", async () => {
-  const actGid = elActividad.value;
-  if(!actGid) { elIndicadores.innerHTML = ""; actContextPanel.style.display = "none"; return; }
-  document.getElementById("lbl-responsable").textContent = `Responsable: ${currentUser.nombre}`;
-  await loadSubactividadesYTareas(actGid);
-});
-
-elPeriodo.addEventListener("change", async () => {
-  if(elActividad.value) await loadSubactividadesYTareas(elActividad.value);
-});
 
 async function loadSubactividadesYTareas(actividadGlobalId) {
   elIndicadores.innerHTML = ""; cacheSubactividades = []; cacheTareas = [];
@@ -500,18 +575,13 @@ function subActividadCardHtml(sa){
   const pSub = planSubCtx.get(sa.GlobalID);
   const aplicaSub = !(pSub && String(pSub.Aplica).toUpperCase() === 'NO');
 
-  // Integración de BI_AvanceSubActividad (Lectura en UI y Uso de SemaforoGestion)
   const bSub = biSubCtx.get(sa.GlobalID);
   let biHtml = "";
   if (aplicaSub && bSub) {
       const av = bSub.AvanceAcumulado ?? bSub.AvanceAcumuladoVigencia ?? 0;
       biHtml += `<span class="ctx-badge" style="background:#dcfce7; color:#166534; font-size:11px;">Avance Acum: ${av}%</span>`;
-      if (bSub.EstadoFlujo) {
-          biHtml += `<span class="ctx-badge" style="background:#e0f2fe; color:#1e40af; font-size:11px;">Estado: ${bSub.EstadoFlujo}</span>`;
-      }
-      if (bSub.SemaforoGestion) {
-          biHtml += `<span class="ctx-badge" style="background:#fef9c3; color:#854d0e; font-size:11px;">Semáforo: ${bSub.SemaforoGestion}</span>`;
-      }
+      if (bSub.EstadoFlujo) biHtml += `<span class="ctx-badge" style="background:#e0f2fe; color:#1e40af; font-size:11px;">Estado: ${bSub.EstadoFlujo}</span>`;
+      if (bSub.SemaforoGestion) biHtml += `<span class="ctx-badge" style="background:#fef9c3; color:#854d0e; font-size:11px;">Semáforo: ${bSub.SemaforoGestion}</span>`;
   }
   
   return `<div class="card ${!aplicaSub ? 'is-not-applicable' : ''}">
@@ -528,10 +598,9 @@ function subActividadCardHtml(sa){
 
 // --- LECTURA BIDIRECCIONAL V4 ---
 async function loadExistingData(actGid) {
-  const vig = elVigencia.value, per = elPeriodo.value;
+  const vig = elVigencia.value, per = getPeriodo();
   const avGuids = [];
 
-  // Limpieza preventiva 
   existingAvances.clear();
   existingWFSolicitudes.clear();
   existingNarrativa = null;
@@ -597,7 +666,7 @@ async function loadExistingData(actGid) {
     });
   }
 
-  // 4. Workflow (Evitar Duplicados)
+  // 4. Workflow
   const allObjGuids = avGuids.concat(existingNarrativa ? [`'${existingNarrativa.GlobalID}'`] : []);
   if(allObjGuids.length > 0) {
     const qWf = await fetchJson(`${URL_WF_SOLICITUD}/query`, { 
@@ -608,14 +677,10 @@ async function loadExistingData(actGid) {
 }
 
 function applyReadonlyStateTask(rowEl, estado) {
-  // Respetamos si ya tiene un badge de "NO APLICA", solo agregamos el de estado.
   const badgeHtml = `<span class="status-badge status-badge--${estado.toLowerCase()}">${estado}</span>`;
   const container = rowEl.querySelector(`[id^="badge-container-"]`);
-  if (!container.innerHTML.includes("NO APLICA")) {
-      container.innerHTML = badgeHtml;
-  } else {
-      container.innerHTML += badgeHtml;
-  }
+  if (!container.innerHTML.includes("NO APLICA")) container.innerHTML = badgeHtml;
+  else container.innerHTML += badgeHtml;
 
   if(estado === "Devuelto" && !rowEl.classList.contains("is-not-applicable")) {
       rowEl.querySelector(".field-motivo").style.display = "block";
@@ -626,7 +691,6 @@ function applyReadonlyStateTask(rowEl, estado) {
     rowEl.classList.add("is-readonly");
     rowEl.querySelectorAll("input").forEach(i => i.disabled = true);
     const btnAct = rowEl.querySelector(".btn-activar"); if(btnAct) btnAct.style.display = "none";
-    // Si la fila queda en readonly, los botones de eliminar ubicaciones que ya existían se ocultan
     rowEl.querySelectorAll(".btn-loc-del").forEach(b => b.style.display = "none");
   }
 }
@@ -643,20 +707,15 @@ function evaluateHistoricalMode() {
     let hasData = false;
 
     document.querySelectorAll(".row").forEach(rowEl => {
-        // Ignorar las que no aplican para el check de bloqueo general, o contarlas como bloqueadas
         if (!rowEl.classList.contains("is-not-applicable")) {
             hasData = true;
-            if (!rowEl.classList.contains("is-readonly")) {
-                allLocked = false;
-            }
+            if (!rowEl.classList.contains("is-readonly")) allLocked = false;
         }
     });
 
     if (existingNarrativa) {
         hasData = true;
-        if (!["Enviado", "EnRevision", "Aprobado", "Publicado"].includes(existingNarrativa.EstadoRegistro)) {
-            allLocked = false;
-        }
+        if (!["Enviado", "EnRevision", "Aprobado", "Publicado"].includes(existingNarrativa.EstadoRegistro)) allLocked = false;
     }
 
     if (hasData && allLocked) {
@@ -683,7 +742,6 @@ function wireCardEvents() {
     btn.addEventListener("click", (e) => {
       const rowEl = e.target.closest(".row");
       const rowId = rowEl.getAttribute("data-row-id");
-      // Validación estricta por fila
       if (isTaskReadonly(rowId)) return setStatus("Esta tarea está bloqueada o no aplica.", "error");
       
       document.querySelectorAll(".row").forEach(r => r.style.borderColor = "rgba(15,23,42,0.20)");
@@ -696,7 +754,6 @@ function wireCardEvents() {
 }
 
 function deleteLocation(rowId, ptId) {
-  // Chequeo estricto por fila en lugar del viewOnlyMode global
   if (isTaskReadonly(rowId)) return setStatus("Tarea bloqueada. No se pueden eliminar ubicaciones.", "error");
   
   removeGraphicForPoint(ptId);
@@ -711,8 +768,6 @@ function appendLocationUI(rowId, ptId, lon, lat, desc="", mun="", dane="") {
   const listEl = document.getElementById(`loc-list-${rowId}`); if(!listEl) return;
   const div = document.createElement("div"); div.className = "loc-item"; div.id = `loc-${ptId}`;
   const isError = mun === "Fuera de CAR" ? 'style="border: 1px solid red; background: #fff5f5;"' : '';
-  
-  // Propagar readonly al crear el UI del punto si la tarea está bloqueada
   const readonly = isTaskReadonly(rowId);
 
   div.innerHTML = `
@@ -737,18 +792,17 @@ function initMap(){
       view = new MapView({ container: "map", map, center: [-74.2, 4.7], zoom: 8, popup: { dockEnabled: true, dockOptions: { position: "top-right", breakpoint: false } } });
       view.ui.add(new Search({ view: view }), "top-right");
       view.ui.add(new Expand({ view: view, content: new BasemapGallery({ view: view, container: document.createElement("div") }), expandIcon: "basemap" }), "top-left");
+      
       view.whenLayerView(jurisdiccionLayer).then((layerView) => { jurisdiccionLayerView = layerView; });
+      view.when(() => view.resize()); // Forzar render flex seguro
+      
       sketchVM = new SketchViewModel({ view, layer: graphicsLayer, updateOnGraphicClick: false });
 
       sketchVM.on("update", async (evt) => {
         if(evt.state !== "complete") return;
         const g = evt.graphics?.[0]; if(!g || !g.attributes?.rowId || !g.attributes?.ptId) return;
         
-        // Bloqueo de actualización si la fila está en estado readonly o no aplica
-        if(isTaskReadonly(g.attributes.rowId)) {
-            setStatus("Edición de punto denegada. Tarea bloqueada.", "error");
-            return; 
-        }
+        if(isTaskReadonly(g.attributes.rowId)) return setStatus("Edición de punto denegada. Tarea bloqueada.", "error");
 
         const geo = getGeographicLocation(g.geometry); const rId = g.attributes.rowId; const pId = g.attributes.ptId;
         const locs = rowLocations.get(rId) || []; const locObj = locs.find(l => l.ptId === pId);
@@ -758,12 +812,7 @@ function initMap(){
 
       view.on("click", async (evt) => {
         if(!activeRowId) return setStatus("Activa un registro en el panel para georreferenciar.", "error"); 
-        
-        // Validar fila activa antes de crear el punto
-        if (isTaskReadonly(activeRowId)) {
-            setStatus("La tarea activa está bloqueada. No puedes añadir puntos.", "error");
-            return;
-        }
+        if (isTaskReadonly(activeRowId)) return setStatus("La tarea activa está bloqueada. No puedes añadir puntos.", "error");
 
         const geo = getGeographicLocation(evt.mapPoint); const ptId = crypto.randomUUID(); const locs = rowLocations.get(activeRowId) || [];
         locs.push({ ptId, lon: geo.longitude, lat: geo.latitude, mun: "", dane: "", desc: "" }); rowLocations.set(activeRowId, locs);
@@ -775,11 +824,13 @@ function initMap(){
     });
   });
 }
+
 function clearMapGraphics(){ if(graphicsLayer) graphicsLayer.removeAll(); }
 function removeGraphicForPoint(ptId){ if(graphicsLayer) graphicsLayer.graphics.filter(g => g?.attributes?.ptId === ptId).forEach(g => graphicsLayer.remove(g)); }
 function removeAllGraphicsForRow(rowId){ if(graphicsLayer) graphicsLayer.graphics.filter(g => g?.attributes?.rowId === rowId).forEach(g => graphicsLayer.remove(g)); }
 function addGraphicForPoint(rowId, ptId, lon, lat, Graphic){ removeGraphicForPoint(ptId); const graphic = new Graphic({ geometry: { type: "point", longitude: lon, latitude: lat, spatialReference: { wkid: 4326 } }, symbol: { type: "simple-marker", style: "circle", color: [23,151,209,0.9], size: 10, outline: { color: [11,82,105,1], width: 2 } }, attributes: { rowId, ptId } }); graphicsLayer.add(graphic); return graphic; }
 function getGeographicLocation(p) { return (p.spatialReference && p.spatialReference.isWebMercator && webMercatorUtils) ? webMercatorUtils.webMercatorToGeographic(p) : p; }
+
 async function updateMunicipioFromCAR(rowId, ptId, mapPoint){
   if (!jurisdiccionLayerView || isTaskReadonly(rowId)) return;
   try{
@@ -828,12 +879,13 @@ async function processSave(isSubmit) {
     
     await executeSave(draft);
     
+    const inputAct = document.querySelector("#combo-actividad .combo-input");
     const eventType = isSubmit ? "ENVIAR_REVISION" : "GUARDAR_BORRADOR";
-    const detailMsg = `Actividad: ${elActividad.options[elActividad.selectedIndex].text}. Tareas afect: ${draft.adds.length + draft.updates.length}.`;
+    const detailMsg = `Actividad: ${inputAct ? inputAct.value : 'Desconocida'}. Tareas afect: ${draft.adds.length + draft.updates.length}.`;
     await writeAuditEvent(eventType, "APP_REPORTE", draft.actGid, "OK", detailMsg);
 
     setStatus(isSubmit ? "Reporte enviado a revisión." : "Borrador guardado exitosamente.", "success");
-    await loadExistingData(elActividad.value); 
+    await loadExistingData(getActividadId()); 
     evaluateHistoricalMode();
   } catch(e) { 
       console.error(e); 
@@ -844,13 +896,12 @@ async function processSave(isSubmit) {
 }
 
 function collectDraft(isSubmit) {
-  const actGid = elActividad.value, vig = Number(elVigencia.value), per = elPeriodo.value;
+  const actGid = getActividadId(), vig = Number(elVigencia.value), per = getPeriodo();
   const epochNow = Date.now();
   const res = { actGid, adds: [], updates: [], ubicAdds: [], ubicUpdates: [], wfAdds: [], wfUpdates: [], narrAdds: [], narrUpdates: [] };
   
   // AVANCES TAREAS
   document.querySelectorAll(".row").forEach(rowEl => {
-    // Si no aplica o es solo lectura (Enviado/Aprobado), no capturar
     if(rowEl.classList.contains("is-readonly") || rowEl.classList.contains("is-not-applicable")) return; 
     
     const tareaGid = rowEl.getAttribute("data-tarea-gid"), rowId = rowEl.getAttribute("data-row-id");
@@ -992,7 +1043,7 @@ function clearForm(){
 }
 btnLimpiar.addEventListener("click", () => { clearForm(); setStatus("Vista limpiada.", "info"); });
 
-// --- Botón Recargar (Modificado para Bypass de Prueba Final) ---
+// --- Botón Recargar ---
 btnRefresh.addEventListener("click", async () => { 
     if(elVigencia.value && currentUser) {
         setStatus("Recargando asignaciones y actividades...", "info");
@@ -1003,8 +1054,8 @@ btnRefresh.addEventListener("click", async () => {
         document.getElementById("container-motivo-narrativa").style.display = "none";
         elModo.style.display = "none";
         viewOnlyMode = false;
-        elActividad.innerHTML = '<option value="">Cargando...</option>';
-
+        
+        renderCombo("combo-actividad", [], "Cargando...");
         await loadAsignaciones();
         await loadActividades();
         setStatus("Datos recargados correctamente.", "success");
@@ -1024,8 +1075,8 @@ elVigencia.addEventListener("change", async () => {
     document.getElementById("container-motivo-narrativa").style.display = "none";
     elModo.style.display = "none"; 
     viewOnlyMode = false;
-    elActividad.innerHTML = '<option value="">Cargando...</option>';
     
+    renderCombo("combo-actividad", [], "Cargando...");
     await loadAsignaciones(); 
     await loadActividades(); 
     setStatus("Asignaciones actualizadas.", "success");

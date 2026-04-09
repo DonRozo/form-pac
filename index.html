@@ -61,23 +61,16 @@
             <input id="sel-vigencia" type="number" min="2020" max="2100" />
           </div>
           <div class="field">
-            <label for="sel-periodo">Periodo (Trimestre)</label>
-            <select id="sel-periodo">
-              <option value="T1">T1</option>
-              <option value="T2">T2</option>
-              <option value="T3">T3</option>
-              <option value="T4" selected>T4</option>
-            </select>
+            <label>Periodo (Trimestre)</label>
+            <div id="combo-periodo"></div>
           </div>
         </div>
 
         <div class="field">
-          <label for="sel-actividad">Actividad Asignada</label>
-          <select id="sel-actividad">
-            <option value="">Cargando actividades…</option>
-          </select>
-          <div class="help" style="display: flex; justify-content: space-between;">
-            <span>Módulo de captura operativa</span>
+          <label>Actividad Asignada</label>
+          <div id="combo-actividad"></div>
+          <div class="help" style="display: flex; justify-content: space-between; margin-top: 6px;">
+            <span class="muted">Módulo de captura operativa</span>
             <strong id="lbl-responsable" style="color: var(--primary-2);">Responsable: —</strong>
           </div>
         </div>
