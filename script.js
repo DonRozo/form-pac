@@ -5,6 +5,7 @@
                     Inyección de UI para BI_AvanceSubActividad (SemaforoGestion), 
                     Respeto total de Aplica="No" y Estados,
                     Bypass de Prueba Total para SUPERADMIN.
+                    Soporte Híbrido SEG_Asignacion (Actividad / Tarea) [Cierre Final].
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -165,7 +166,7 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
   } catch(e) { document.getElementById("login-msg-2").textContent = e.message; }
 });
 
-// --- Filtros SEG_Asignacion + SEG_Alcance V4 (Cruce Estricto por GlobalID) ---
+// --- Filtros SEG_Asignacion Híbrido + SEG_Alcance V4 ---
 async function loadAsignaciones() {
   if(!currentUser) return;
   if(currentUser.roles.includes("SUPERADMIN")) {
@@ -175,58 +176,166 @@ async function loadAsignaciones() {
 
   const vig = elVigencia.value;
   
-  // 1. Asignaciones directas operativas de la tabla SEG_Asignacion
-  const qAsig = await fetchJson(`${URL_ASIGNACION}/query`, { f:"json", where:`PersonaGlobalID='${currentUser.gid}' AND Vigencia=${vig} AND Activo='SI'`, outFields:"TareaGlobalID" });
-  let validTaskGuids = (qAsig.features || []).map(f => f.attributes.TareaGlobalID).filter(Boolean);
+  // 1. Asignaciones directas operativas de la tabla SEG_Asignacion (con Activo, Vigencia y GlobalID explícitos)
+  const qAsig = await fetchJson(`${URL_ASIGNACION}/query`, { 
+      f: "json", 
+      where: `PersonaGlobalID='${currentUser.gid}' AND Vigencia=${vig} AND Activo='SI'`, 
+      outFields: "GlobalID,TipoAsignacion,ActividadGlobalID,TareaGlobalID,HeredaHijos,Activo,Vigencia" 
+  });
   
-  if (validTaskGuids.length > 0) {
-      // 2. Extraemos jerarquía estructural real de las tareas hacia arriba
-      let qJerarquiaFeatures = [];
-      for (let i = 0; i < validTaskGuids.length; i += 200) {
-          const chunk = validTaskGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
-          const qJ = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
-          if(qJ.features) qJerarquiaFeatures.push(...qJ.features);
+  let asigActividades = [];
+  let asigTareas = [];
+
+  (qAsig.features || []).forEach(f => {
+      const a = f.attributes;
+      const tipo = (a.TipoAsignacion || "").toUpperCase();
+      const hereda = (a.HeredaHijos || "").toUpperCase();
+      const actGid = a.ActividadGlobalID;
+      const tarGid = a.TareaGlobalID;
+
+      // Caso Asignacion por Actividad (Validación estricta de herencia)
+      if (tipo === "ACTIVIDAD") {
+          if (hereda === "SI" && actGid) {
+              asigActividades.push(actGid);
+          } else {
+              console.warn(`[SEG_Asignacion] Ignorado: Registro inconsistente o no heredable para ACTIVIDAD (HeredaHijos!=SI o falta ID). GlobalID: ${a.GlobalID}`);
+          }
+      } 
+      // Caso Asignacion por Tarea (Excepción puntual)
+      else if (tipo === "TAREA") {
+          if (tarGid) {
+              asigTareas.push(tarGid);
+              if (hereda === "SI") {
+                  console.warn(`[SEG_Asignacion] Herencia ignorada de forma segura para asignación puntual tipo TAREA. TareaGlobalID: ${tarGid}`);
+              }
+          } else {
+              console.warn(`[SEG_Asignacion] Ignorado: Registro inconsistente para TAREA (falta TareaGlobalID). GlobalID: ${a.GlobalID}`);
+          }
       }
+      // Caso Legacy o Indeterminado
+      else {
+          if (tarGid) {
+              asigTareas.push(tarGid); // Tratar como puntual legacy
+          } else if (actGid && hereda === "SI") {
+              asigActividades.push(actGid); // Tratar como heredable legacy
+          } else {
+              console.warn(`[SEG_Asignacion] Ignorado: Registro legado no interpretable de forma segura. GlobalID: ${a.GlobalID}`);
+          }
+      }
+  });
 
-      const tarMap = new Map(); // TareaGlobalID -> SubActividadGlobalID
-      const validSubIds = new Set();
-      qJerarquiaFeatures.forEach(f => {
-          tarMap.set(f.attributes.GlobalID, f.attributes.SubActividadGlobalID);
-          if (f.attributes.SubActividadGlobalID) validSubIds.add(f.attributes.SubActividadGlobalID);
-      });
+  asigActividades = [...new Set(asigActividades)];
+  asigTareas = [...new Set(asigTareas)];
 
-      const subMap = new Map(); // SubActividadGlobalID -> ActividadGlobalID
-      if (validSubIds.size > 0) {
-          const subArr = Array.from(validSubIds);
-          for (let i = 0; i < subArr.length; i += 200) {
-              const chunk = subArr.slice(i, i + 200).map(g => `'${g}'`).join(",");
+  let qJerarquiaFeatures = [];
+  const collectedTaskGuids = new Set();
+
+  // 2. Extraer jerarquía Top-Down (Herencia de Actividad hacia Tareas)
+  if (asigActividades.length > 0) {
+      let subDeActividades = [];
+      for (let i = 0; i < asigActividades.length; i += 200) {
+          const chunk = asigActividades.slice(i, i + 200).map(g => `'${g}'`).join(",");
+          const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
+          if(qS.features) subDeActividades.push(...qS.features);
+      }
+      
+      const subGuids = subDeActividades.map(f => f.attributes.GlobalID);
+      
+      if (subGuids.length > 0) {
+          for (let i = 0; i < subGuids.length; i += 200) {
+              const chunk = subGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
+              const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
+              
+              if(qT.features) {
+                  const mapSubToAct = new Map();
+                  subDeActividades.forEach(s => mapSubToAct.set(s.attributes.GlobalID, s.attributes.ActividadGlobalID));
+                  
+                  qT.features.forEach(t => {
+                      t.attributes.ActividadGlobalID = mapSubToAct.get(t.attributes.SubActividadGlobalID);
+                      t.attributes.OrigenConsolidado = 'ACTIVIDAD'; // Trazabilidad interna
+                      qJerarquiaFeatures.push(t);
+                      collectedTaskGuids.add(t.attributes.GlobalID);
+                  });
+              }
+          }
+      }
+  }
+
+  // 3. Extraer jerarquía Bottom-Up (Excepciones Tarea hacia Actividad)
+  if (asigTareas.length > 0) {
+      let tareasPuntuales = [];
+      for (let i = 0; i < asigTareas.length; i += 200) {
+          const chunk = asigTareas.slice(i, i + 200).map(g => `'${g}'`).join(",");
+          const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
+          if(qT.features) tareasPuntuales.push(...qT.features);
+      }
+      
+      const validSubIds = [...new Set(tareasPuntuales.map(t => t.attributes.SubActividadGlobalID).filter(Boolean))];
+      const subMap = new Map();
+      
+      if (validSubIds.length > 0) {
+          for (let i = 0; i < validSubIds.length; i += 200) {
+              const chunk = validSubIds.slice(i, i + 200).map(g => `'${g}'`).join(",");
               const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
               if(qS.features) qS.features.forEach(f => subMap.set(f.attributes.GlobalID, f.attributes.ActividadGlobalID));
           }
       }
 
-      // 3. SEG_Alcance (Seguridad Consolidada cruzando exclusivamente de GUID a GUID)
-      if (!currentUser.hasGlobalScope && currentUser.alcances.length > 0) {
-          validTaskGuids = validTaskGuids.filter(tGuid => {
-              const sGuid = tarMap.get(tGuid);
-              const aGuid = sGuid ? subMap.get(sGuid) : null;
-              return currentUser.alcances.includes(tGuid) ||
-                     (sGuid && currentUser.alcances.includes(sGuid)) ||
-                     (aGuid && currentUser.alcances.includes(aGuid));
-          });
-      } else if (!currentUser.hasGlobalScope && currentUser.alcances.length === 0) {
-          validTaskGuids = []; 
-      }
+      tareasPuntuales.forEach(t => {
+          t.attributes.ActividadGlobalID = subMap.get(t.attributes.SubActividadGlobalID);
+          // Prevenir duplicados en la jerarquía si ya entró por herencia de actividad
+          if (!collectedTaskGuids.has(t.attributes.GlobalID)) {
+              t.attributes.OrigenConsolidado = 'TAREA'; // Trazabilidad interna
+              qJerarquiaFeatures.push(t);
+              collectedTaskGuids.add(t.attributes.GlobalID);
+          }
+      });
+  }
 
-      // 4. Se consolida el array final de asignaciones válidas con su árbol
-      asignacionesActivas = validTaskGuids.map(tGuid => {
+  // 4. Mapeo y cruce estricto con SEG_Alcance (Seguridad Consolidada)
+  const tarMap = new Map(); // TareaGlobalID -> SubActividadGlobalID
+  const subMap = new Map(); // SubActividadGlobalID -> ActividadGlobalID
+  const originMap = new Map(); // TareaGlobalID -> OrigenConsolidado
+  const validTaskGuids = [];
+
+  qJerarquiaFeatures.forEach(f => {
+      const tGuid = f.attributes.GlobalID;
+      const sGuid = f.attributes.SubActividadGlobalID;
+      const aGuid = f.attributes.ActividadGlobalID;
+      const oGuid = f.attributes.OrigenConsolidado;
+      
+      validTaskGuids.push(tGuid);
+      tarMap.set(tGuid, sGuid);
+      originMap.set(tGuid, oGuid);
+      if(sGuid) subMap.set(sGuid, aGuid);
+  });
+
+  let finalTasks = validTaskGuids;
+
+  if (!currentUser.hasGlobalScope && currentUser.alcances.length > 0) {
+      finalTasks = validTaskGuids.filter(tGuid => {
           const sGuid = tarMap.get(tGuid);
           const aGuid = sGuid ? subMap.get(sGuid) : null;
-          return { TareaGlobalID: tGuid, SubActividadGlobalID: sGuid, ActividadGlobalID: aGuid };
+          return currentUser.alcances.includes(tGuid) ||
+                 (sGuid && currentUser.alcances.includes(sGuid)) ||
+                 (aGuid && currentUser.alcances.includes(aGuid));
       });
-  } else { 
-      asignacionesActivas = []; 
+  } else if (!currentUser.hasGlobalScope && currentUser.alcances.length === 0) {
+      finalTasks = []; 
   }
+
+  // 5. Se consolida el array final de asignaciones válidas (plano, deduplicado y autorizado)
+  asignacionesActivas = finalTasks.map(tGuid => {
+      const sGuid = tarMap.get(tGuid);
+      const aGuid = sGuid ? subMap.get(sGuid) : null;
+      const oGuid = originMap.get(tGuid);
+      return { 
+          TareaGlobalID: tGuid, 
+          SubActividadGlobalID: sGuid, 
+          ActividadGlobalID: aGuid,
+          TipoOrigenAsignacion: oGuid
+      };
+  });
 }
 
 async function loadActividades() {
