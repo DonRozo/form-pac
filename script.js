@@ -8,6 +8,7 @@
                     Soporte Híbrido SEG_Asignacion (Actividad / Tarea).
                     Restauración Mapa y Combos de Selección Filtrables.
                     Corrección UX: Fila Georreferenciación (Selectores & Active Row).
+                    Corrección UX 2: Delegación robusta y activación sin dependencia de histórico.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -446,11 +447,52 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
       `;
   } else actContextPanel.style.display = "none"; 
 
+  // 1. Renderiza interfaz de Tareas operativas de forma inmediata.
   elIndicadores.innerHTML = cacheSubactividades.map(sa => subActividadCardHtml(sa)).join("");
-  await loadExistingData(actividadGlobalId); 
-  wireCardEvents();
-  evaluateHistoricalMode();
-  setStatus("Formulario operativo cargado.", "success");
+
+  // 2. Desacople: La interfaz de activación ya es interactiva a partir de aquí gracias a la Delegación Global.
+  //    Intentamos cargar el histórico sin bloquear la operativa del usuario en caso de estar vacío (1era vez) o fallar.
+  try {
+      await loadExistingData(actividadGlobalId); 
+      evaluateHistoricalMode();
+      setStatus("Formulario operativo cargado.", "success");
+  } catch (err) {
+      console.warn("Histórico no disponible o vacío:", err);
+      evaluateHistoricalMode();
+      setStatus("Se cargó la estructura operativa, pero no se pudo recuperar parte del histórico. Puedes continuar capturando.", "info");
+  }
+}
+
+// --- Event Delegation para Activación y Click de Tareas ---
+elIndicadores.addEventListener("click", (e) => {
+    // Si hace clic en el botón de seleccionar, activamos la fila inmediatamente
+    const btnActivar = e.target.closest(".btn-activar");
+    if (btnActivar) {
+        const rowEl = btnActivar.closest(".row");
+        if (rowEl) activateTaskRow(rowEl);
+    }
+});
+
+function activateTaskRow(rowEl) {
+    const rowId = rowEl.getAttribute("data-row-id");
+    
+    if (isTaskReadonly(rowId)) return setStatus("Esta tarea está bloqueada o no aplica.", "error");
+    
+    // Remueve activación previa
+    document.querySelectorAll(".row").forEach(r => r.classList.remove("row--active"));
+    
+    // Activa fila actual
+    rowEl.classList.add("row--active");
+    activeRowId = rowId;
+    
+    // Actualiza el Pill (Truncando solo si es muy largo)
+    const codTarea = rowEl.querySelector("label").textContent.replace("Tarea ", "").trim();
+    const nomTarea = rowEl.querySelector(".mono").textContent.trim();
+    document.getElementById("pill-active").textContent = `Tarea activa para georreferenciar: ${codTarea} - ${nomTarea.substring(0, 20)}...`;
+    
+    // Feedback adicional
+    rowEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    setStatus("Tarea seleccionada para ubicar puntos en el mapa.", "success");
 }
 
 // --- Render y Estados V4 ---
@@ -656,27 +698,6 @@ function evaluateHistoricalMode() {
         btnGuardar.style.display = "inline-flex";
         btnEnviar.style.display = "inline-flex";
     }
-}
-
-function wireCardEvents() {
-  document.querySelectorAll(".btn-activar").forEach(btn => {
-    btn.addEventListener("click", (e) => {
-      const rowEl = e.target.closest(".row");
-      const rowId = rowEl.getAttribute("data-row-id");
-      
-      if (isTaskReadonly(rowId)) return setStatus("Esta tarea está bloqueada o no aplica.", "error");
-      
-      // Control centralizado del estado Visual
-      document.querySelectorAll(".row").forEach(r => r.classList.remove("row--active"));
-      rowEl.classList.add("row--active");
-      activeRowId = rowId;
-      
-      // Extracción limpia para el Pill
-      const codTarea = rowEl.querySelector("label").textContent.replace("Tarea ", "").trim();
-      const nomTarea = rowEl.querySelector(".mono").textContent.trim();
-      document.getElementById("pill-active").textContent = `Tarea activa para georreferenciar: ${codTarea} - ${nomTarea.substring(0, 20)}...`;
-    });
-  });
 }
 
 function deleteLocation(rowId, ptId) {
