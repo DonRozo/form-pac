@@ -116,9 +116,14 @@ input:focus, select:focus, textarea:focus{ border-color: rgba(23,151,209,0.55); 
 .diag-v { font-weight: bold; color: #f8fafc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .diag-err { grid-column: 1 / span 2; margin-top: 6px; padding-top: 8px; border-top: 1px dashed #334155; color: #fca5a5; line-height: 1.3;}
 
-/* LOGIN OVERLAY */
+/* LOGIN OVERLAY Y PASOS */
 .login-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(14,23,30,0.85); backdrop-filter: blur(8px); display: flex; justify-content: center; align-items: center; z-index: 9999; }
 .login-card { background: var(--card); padding: 30px; border-radius: 16px; width: 100%; max-width: 400px; box-shadow: 0 20px 40px rgba(0,0,0,0.2); }
+.login-card h2 { text-align: center; margin-bottom: 8px; font-size: 20px; }
+.login-step { display: none; }
+.login-step.active { display: block; }
+.login-card .btn { width: 100%; margin-top: 16px; padding: 10px; }
+.msg-error { color: var(--danger); font-size: 12px; margin-top: 10px; text-align: center; font-weight: bold; }
 
 /* ESTILOS DE ESTADO V4 */
 .status-badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 800; text-transform: uppercase; }
