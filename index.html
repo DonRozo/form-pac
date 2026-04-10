@@ -118,12 +118,28 @@
           <textarea id="txt-logros-principales" rows="3" placeholder="Lista breve de principales logros (viñetas o texto)..."></textarea>
         </div>
 
-        <div class="actions">
+        <div id="diagnostic-panel" class="diag-panel" style="display:none;">
+            <h3>Herramientas de Diagnóstico (SuperAdmin)</h3>
+            <div class="diag-grid">
+              <div class="diag-kv"><span class="diag-k">Usuario</span><span class="diag-v" id="diag-usr">-</span></div>
+              <div class="diag-kv"><span class="diag-k">Roles</span><span class="diag-v" id="diag-rol">-</span></div>
+              <div class="diag-kv"><span class="diag-k">Vig/Per</span><span class="diag-v" id="diag-vp">-</span></div>
+              <div class="diag-kv"><span class="diag-k">Actividad GUID</span><span class="diag-v" id="diag-act">-</span></div>
+              <div class="diag-kv"><span class="diag-k">Tareas (Total/Asig)</span><span class="diag-v" id="diag-tar">-</span></div>
+              <div class="diag-kv"><span class="diag-k">Tarea Geo Activa</span><span class="diag-v" id="diag-geo">-</span></div>
+              <div class="diag-kv"><span class="diag-k">Locs en Memoria</span><span class="diag-v" id="diag-loc">0</span></div>
+              <div class="diag-kv"><span class="diag-k">Modo Interfaz</span><span class="diag-v" id="diag-mod">Edición</span></div>
+              <div class="diag-err" id="diag-err">Último Incidente: Ninguno</div>
+            </div>
+        </div>
+
+        <div id="status" class="status" role="status" aria-live="polite" style="display:none;"></div>
+        
+        <div class="actions" style="margin-top: 14px;">
           <button class="btn btn--ghost" id="btn-guardar">Guardar Borrador</button>
           <button class="btn btn--primary" id="btn-enviar">Enviar a Revisión</button>
           <button class="btn btn--danger" id="btn-limpiar">Limpiar Vista</button>
         </div>
-        <div id="status" class="status" role="status" aria-live="polite"></div>
       </section>
 
       <section class="panel panel--map" aria-label="Mapa">
