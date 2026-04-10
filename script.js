@@ -9,6 +9,7 @@
                     Restauración Mapa y Combos de Selección Filtrables.
                     Corrección UX: Fila Georreferenciación (Selectores & Active Row).
                     Corrección UX 2: Delegación robusta y activación sin dependencia de histórico.
+                    Corrección UX 3: Rediseño y alineación estética de tarjetas de ubicación.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -451,7 +452,6 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
   elIndicadores.innerHTML = cacheSubactividades.map(sa => subActividadCardHtml(sa)).join("");
 
   // 2. Desacople: La interfaz de activación ya es interactiva a partir de aquí gracias a la Delegación Global.
-  //    Intentamos cargar el histórico sin bloquear la operativa del usuario en caso de estar vacío (1era vez) o fallar.
   try {
       await loadExistingData(actividadGlobalId); 
       evaluateHistoricalMode();
@@ -465,7 +465,6 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
 
 // --- Event Delegation para Activación y Click de Tareas ---
 elIndicadores.addEventListener("click", (e) => {
-    // Si hace clic en el botón de seleccionar, activamos la fila inmediatamente
     const btnActivar = e.target.closest(".btn-activar");
     if (btnActivar) {
         const rowEl = btnActivar.closest(".row");
@@ -478,19 +477,14 @@ function activateTaskRow(rowEl) {
     
     if (isTaskReadonly(rowId)) return setStatus("Esta tarea está bloqueada o no aplica.", "error");
     
-    // Remueve activación previa
     document.querySelectorAll(".row").forEach(r => r.classList.remove("row--active"));
-    
-    // Activa fila actual
     rowEl.classList.add("row--active");
     activeRowId = rowId;
     
-    // Actualiza el Pill (Truncando solo si es muy largo)
     const codTarea = rowEl.querySelector("label").textContent.replace("Tarea ", "").trim();
     const nomTarea = rowEl.querySelector(".mono").textContent.trim();
     document.getElementById("pill-active").textContent = `Tarea activa para georreferenciar: ${codTarea} - ${nomTarea.substring(0, 20)}...`;
     
-    // Feedback adicional
     rowEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
     setStatus("Tarea seleccionada para ubicar puntos en el mapa.", "success");
 }
@@ -655,6 +649,7 @@ function applyReadonlyStateTask(rowEl, estado) {
     rowEl.querySelectorAll("input").forEach(i => i.disabled = true);
     const btnAct = rowEl.querySelector(".btn-activar"); if(btnAct) btnAct.style.display = "none";
     rowEl.querySelectorAll(".btn-loc-del").forEach(b => b.style.display = "none");
+    rowEl.querySelectorAll(".loc-item__actions").forEach(a => a.style.display = "none");
   }
 }
 
@@ -714,17 +709,29 @@ function deleteLocation(rowId, ptId) {
 function appendLocationUI(rowId, ptId, lon, lat, desc="", mun="", dane="") {
   const listEl = document.getElementById(`loc-list-${rowId}`); if(!listEl) return;
   const div = document.createElement("div"); div.className = "loc-item"; div.id = `loc-${ptId}`;
-  const isError = mun === "Fuera de CAR" ? 'style="border: 1px solid red; background: #fff5f5;"' : '';
+  const isError = mun === "Fuera de CAR" ? 'style="color: #d64545;"' : '';
   const readonly = isTaskReadonly(rowId);
 
   div.innerHTML = `
-    <div class="loc-item__header" ${isError}><span>📍 Sitio: <span class="loc-coords">${lat.toFixed(5)}, ${lon.toFixed(5)}</span></span><button class="btn-loc-del" ${readonly?'style="display:none;"':''}>Eliminar</button></div>
+    <div class="loc-item__header" ${isError}>
+        <span>📍 Sitio: <span class="loc-coords">${lat.toFixed(5)}, ${lon.toFixed(5)}</span></span>
+    </div>
     <div class="field" style="padding:0;"><input class="loc-desc" type="text" value="${escapeHtml(desc)}" placeholder="Descripción del sitio..." ${readonly?'disabled':''} /></div>
     <div class="loc-item__grid">
       <div class="field" style="padding:0;"><input class="loc-mun" type="text" value="${escapeHtml(mun)}" readonly ${readonly?'disabled':''} /></div>
       <div class="field" style="padding:0;"><input class="loc-dane" type="text" value="${escapeHtml(dane)}" readonly ${readonly?'disabled':''} /></div>
+    </div>
+    <div class="loc-item__actions" ${readonly?'style="display:none;"':''}>
+        <button type="button" class="btn-loc-del">Eliminar</button>
     </div>`;
+  
   div.querySelector(".btn-loc-del").addEventListener("click", () => deleteLocation(rowId, ptId));
+  
+  // Retiene el borde indicador visual si el municipio es Fuera de CAR inicialmente
+  if (mun === "Fuera de CAR") {
+      div.querySelector(".loc-item__header").style.borderBottom = "1px solid red";
+  }
+
   listEl.appendChild(div);
 }
 
@@ -788,15 +795,15 @@ async function updateMunicipioFromCAR(rowId, ptId, mapPoint){
     
     if(!result.features.length){
       if(munEl) munEl.value = "Fuera de CAR"; if(daneEl) daneEl.value = "N/A";
-      locEl.querySelector(".loc-item__header").style.border = "1px solid red";
-      locEl.querySelector(".loc-item__header").style.background = "#fff5f5";
+      locEl.querySelector(".loc-item__header").style.borderBottom = "1px solid red";
+      locEl.querySelector(".loc-item__header").style.color = "#d64545";
       view.popup.open({ title: "Atención: Fuera de jurisdicción", content: "Este punto no está dentro de la CAR. El sistema bloqueará el guardado si no lo corrige.", location: mapPoint });
       const locs = rowLocations.get(rowId) || []; const locObj = locs.find(l => l.ptId === ptId);
       if(locObj) { locObj.mun = "Fuera de CAR"; locObj.dane = "N/A"; }
       return;
     }
-    locEl.querySelector(".loc-item__header").style.border = "none";
-    locEl.querySelector(".loc-item__header").style.background = "transparent";
+    locEl.querySelector(".loc-item__header").style.borderBottom = "none";
+    locEl.querySelector(".loc-item__header").style.color = "inherit";
 
     const a = result.features[0].attributes; const keys = Object.keys(a);
     const mun = a[keys.find(k => k.toLowerCase().includes("municipio") || k.toLowerCase().includes("mpio"))] || "";

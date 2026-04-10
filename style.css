@@ -199,5 +199,23 @@ input:focus, select:focus, textarea:focus{ border-color: rgba(23,151,209,0.55); 
 .map { flex: 1; min-height: 300px; width: 100%; background: #e2e8f0; border-radius: 0 0 var(--radius) var(--radius); position: relative; }
 
 .loc-list { display: flex; flex-direction: column; gap: 8px; }
-.loc-item { border: 1px solid #e2e8f0; background: #fff; padding: 10px; border-radius: 8px; font-size: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.loc-item__desc { grid-column: 1 / span 2; font-weight: bold; }
+.loc-item { border: 1px solid #e2e8f0; background: #fff; padding: 12px; border-radius: 8px; font-size: 12px; display: flex; flex-direction: column; gap: 8px; }
+.loc-item__header { display: flex; justify-content: flex-start; align-items: center; font-weight: bold; padding: 6px 8px; border-radius: 6px; }
+.loc-item__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.loc-item__actions { display: flex; justify-content: flex-end; padding-top: 8px; margin-top: 2px; border-top: 1px dashed #e2e8f0; }
+
+.btn-loc-del {
+    background: #fff;
+    color: #b91c1c;
+    border: 1px solid #fecaca;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.btn-loc-del:hover {
+    background: #fef2f2;
+    border-color: #f87171;
+}
