@@ -7,14 +7,16 @@
                     Bypass de Prueba Total para SUPERADMIN.
                     Soporte Híbrido SEG_Asignacion (Actividad / Tarea).
                     Restauración Mapa y Combos de Selección Filtrables.
-                    Corrección UX: Fila Georreferenciación, Delegación, Rediseño Tarjetas.
-                    Integración UX/Soporte: Preflight Validation, Diagnostic Panel y Error Auditing.
+                    Corrección UX: Fila Georreferenciación (Selectores & Active Row).
+                    Corrección UX 2: Delegación robusta y activación sin dependencia de histórico.
+                    Corrección UX 3: Rediseño y alineación estética de tarjetas de ubicación.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
 const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/MpiosCAR/FeatureServer";
 const CAR_JUR_LAYER_ID = 0; 
 
+// URL PowerAutomate OTP
 const URL_WEBHOOK_POWERAUTOMATE = "https://default64f30d63182749d899511db17d0949.e4.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/1123b3fd4a854b40b2b22dd45b03ca7c/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=Qz68D2G5RAq9cmMvOew1roy8bD3YQPtju4KPW2vEtvc"; 
 
 // Índices DATAPAC_V4
@@ -67,46 +69,15 @@ let activeRowId = null;
 let viewOnlyMode = false;
 let map, view, graphicsLayer, webMercatorUtils, sketchVM, jurisdiccionLayerView;
 
-// Estado Diagnóstico
-const diagnosticState = { user: '-', roles: '-', vigencia: '-', periodo: '-', actividad: '-', totalTareas: 0, tareasAsignadas: 0, tareaGeo: '-', locsMemoria: 0, modo: 'Edición', lastError: 'Ninguno' };
-
-// --- Helpers & UI Feedback ---
-function setStatus(msg, type="info", code=null) { 
-    const icons = { info: "ℹ️", success: "✅", warning: "⚠️", error: "❌" };
-    const prefix = code ? `[${code}] ` : "";
-    elStatus.innerHTML = `${icons[type]} <strong>${prefix}</strong>${msg}`; 
-    elStatus.className = `status status--${type} active`;
-    
-    if (type === "error" && code) {
-        diagnosticState.lastError = `${code}: ${msg}`;
-        updateDiagnosticPanel();
-    }
-}
-
-function updateDiagnosticPanel() {
-    if (!currentUser || !currentUser.roles.includes("SUPERADMIN")) return;
-    document.getElementById("diag-usr").textContent = diagnosticState.user;
-    document.getElementById("diag-rol").textContent = diagnosticState.roles;
-    document.getElementById("diag-vp").textContent = `${diagnosticState.vigencia} / ${diagnosticState.periodo}`;
-    document.getElementById("diag-act").textContent = diagnosticState.actividad || 'Ninguna';
-    document.getElementById("diag-tar").textContent = `${diagnosticState.totalTareas} / ${diagnosticState.tareasAsignadas}`;
-    document.getElementById("diag-geo").textContent = diagnosticState.tareaGeo;
-    document.getElementById("diag-loc").textContent = diagnosticState.locsMemoria;
-    document.getElementById("diag-mod").textContent = diagnosticState.modo;
-    document.getElementById("diag-err").textContent = `Último Incidente: ${diagnosticState.lastError}`;
-}
-
-function calcLocsMemoria() {
-    diagnosticState.locsMemoria = Array.from(rowLocations.values()).reduce((acc, curr) => acc + curr.length, 0);
-    updateDiagnosticPanel();
-}
-
+// --- Helpers ---
+function setStatus(msg, type="info"){ elStatus.textContent = (type==="error"?"❌ ":(type==="success"?"✅ ":"ℹ️ ")) + msg; }
 function escapeHtml(s){ return (s??"").toString().replaceAll("<","&lt;").replaceAll(">","&gt;"); }
 function toYesNo(v){ const s=(v||"").toString().toLowerCase(); return (s==="si"||s==="sí"||s==="true")?true:(s==="no"||s==="false"?false:null); }
 async function fetchJson(url, params){ const u=new URL(url); Object.entries(params||{}).forEach(([k,v])=>u.searchParams.set(k,v)); const r=await fetch(u, {method:"GET"}); if(!r.ok) throw new Error(`HTTP ${r.status}`); return await r.json(); }
 async function postForm(url, formObj){ const form=new URLSearchParams(); Object.entries(formObj).forEach(([k,v])=>{ if(v!=null) form.append(k,typeof v==="string"?v:JSON.stringify(v)); }); const r=await fetch(url, {method:"POST", body:form}); return await r.json(); }
 function generateGUID() { return '{' + crypto.randomUUID().toUpperCase() + '}'; }
 
+// --- Lógica de Estado Individual V4 ---
 function normalizeState(st) {
     if (!st) return "Borrador";
     const s = String(st).toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -126,7 +97,7 @@ function isTaskReadonly(rowId) {
     return rowEl.classList.contains("is-readonly") || rowEl.classList.contains("is-not-applicable");
 }
 
-// --- Listas Filtrables (Combos) ---
+// --- CORE: Listas Filtrables (Combos) ---
 function renderCombo(containerId, data, placeholder, onChange) {
     const container = document.getElementById(containerId);
     if(!container) return;
@@ -148,34 +119,67 @@ function renderCombo(containerId, data, placeholder, onChange) {
     const renderList = (filter = "") => {
         const f = filter.toLowerCase();
         const filtered = data.filter(d => d.label.toLowerCase().includes(f));
-        if(!filtered.length) { list.innerHTML = `<div class="combo-option combo-empty">Sin resultados</div>`; return; }
+        if(!filtered.length) {
+            list.innerHTML = `<div class="combo-option combo-empty">Sin resultados</div>`;
+            return;
+        }
         list.innerHTML = filtered.map(d => `<div class="combo-option" data-val="${d.value}">${escapeHtml(d.label)}</div>`).join("");
     };
 
     input.addEventListener("focus", () => { renderList(input.value); list.style.display = "block"; });
-    input.addEventListener("input", (e) => { renderList(e.target.value); list.style.display = "block"; clear.style.display = input.value ? "block" : "none"; });
-    document.addEventListener("click", (e) => { if(!container.contains(e.target)) { list.style.display = "none"; if(!hidden.value) { input.value = ""; clear.style.display = "none"; } } });
+    input.addEventListener("input", (e) => { 
+        renderList(e.target.value); 
+        list.style.display = "block"; 
+        clear.style.display = input.value ? "block" : "none"; 
+    });
+
+    document.addEventListener("click", (e) => {
+        if(!container.contains(e.target)) {
+            list.style.display = "none";
+            if(!hidden.value) { input.value = ""; clear.style.display = "none"; } 
+        }
+    });
+
     list.addEventListener("click", (e) => {
         if(e.target.classList.contains("combo-option") && !e.target.classList.contains("combo-empty")) {
-            const val = e.target.getAttribute("data-val"), txt = e.target.textContent;
-            input.value = txt; hidden.value = val; list.style.display = "none"; clear.style.display = "block";
+            const val = e.target.getAttribute("data-val");
+            const txt = e.target.textContent;
+            input.value = txt;
+            hidden.value = val;
+            list.style.display = "none";
+            clear.style.display = "block";
             if(onChange) onChange(val);
         }
     });
-    clear.addEventListener("click", () => { input.value = ""; hidden.value = ""; clear.style.display = "none"; if(onChange) onChange(""); input.focus(); });
+
+    clear.addEventListener("click", () => {
+        input.value = "";
+        hidden.value = "";
+        clear.style.display = "none";
+        if(onChange) onChange("");
+        input.focus();
+    });
 }
 
 function setComboValue(containerId, value, label) {
-    const container = document.getElementById(containerId); if(!container) return;
-    const input = container.querySelector(".combo-input"), hidden = container.querySelector(".combo-value"), clear = container.querySelector(".combo-clear");
-    if(input) input.value = label || ""; if(hidden) hidden.value = value || ""; if(clear) clear.style.display = value ? "block" : "none";
+    const container = document.getElementById(containerId);
+    if(!container) return;
+    const input = container.querySelector(".combo-input");
+    const hidden = container.querySelector(".combo-value");
+    const clear = container.querySelector(".combo-clear");
+    if(input) input.value = label || "";
+    if(hidden) hidden.value = value || "";
+    if(clear) clear.style.display = value ? "block" : "none";
 }
 
 function getActividadId() { const h = document.querySelector("#combo-actividad .combo-value"); return h ? h.value : ""; }
 function getPeriodo() { return elPeriodo.value || "T4"; }
-function initCombosFijos() { renderCombo("combo-actividad", [], "Cargando..."); }
 
-// --- Funciones de Auditoría y Control Operativo ---
+function initCombosFijos() {
+    renderCombo("combo-actividad", [], "Cargando...");
+}
+
+// --- Funciones de Auditoría ---
 async function writeAuditEvent(tipo, entidad, objGid, resultado, detalle) {
   if (!currentUser) return;
   try {
@@ -190,14 +194,6 @@ async function writeAuditHistory(tipoObj, objGid, campo, valAnt, valNuevo, motiv
     const attrs = { GlobalID: generateGUID(), TipoObjeto: tipoObj, ObjetoID: "0", ObjetoGlobalID: objGid || "", CampoModificado: campo || "", ValorAnterior: valAnt ? String(valAnt).substring(0, 1000) : "", ValorNuevo: valNuevo ? String(valNuevo).substring(0, 1000) : "", PersonaID: currentUser.pid, FechaCambio: Date.now(), MotivoCambio: motivo || "", OrigenCambio: "APP_REPORTE" };
     await postForm(`${URL_AUD_HISTORIAL}/applyEdits`, { adds: [{attributes: attrs}] });
   } catch(e) { console.warn("Auditoría Historial falló (silenciado):", e); }
-}
-
-async function reportOperationalError(code, modulo, userMsg, devDetails) {
-    console.error(`[${code}] ${modulo}: ${devDetails}`);
-    setStatus(userMsg, "error", code);
-    if (currentUser) {
-        await writeAuditEvent("ERROR_OPERATIVO", modulo, currentUser.gid, "ERROR", `[${code}] ${String(devDetails).substring(0, 240)}`);
-    }
 }
 
 // --- Autenticación OTP y Roles V4 ---
@@ -223,16 +219,20 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
     if(!qPers.features.length) throw new Error("Usuario inactivo o no encontrado en el sistema.");
     const pid = qPers.features[0].attributes.PersonaID;
 
+    // Validación de Roles
     const resR = await fetchJson(`${URL_ROL}/query`, { f: "json", where: `(PersonaID='${otp.PersonaGlobalID}' OR PersonaID='${pid}') AND Activo='SI'`, outFields: "RolID", returnGeometry: false });
     const roles = (resR.features || []).map(f => String(f.attributes.RolID).trim().toUpperCase());
     
-    if (!roles.includes("EDITOR") && !roles.includes("SUPERADMIN")) throw new Error("Acceso denegado: Su rol no le permite utilizar esta aplicación operativa.");
+    if (!roles.includes("EDITOR") && !roles.includes("SUPERADMIN")) {
+        throw new Error("Acceso denegado: Su rol no le permite utilizar esta aplicación de captura operativa.");
+    }
 
     currentUser = { gid: otp.PersonaGlobalID, pid: pid, nombre: qPers.features[0].attributes.Nombre, correo, roles, alcances: [] };
     
     await postForm(`${URL_OTP}/applyEdits`, { f:"json", updates: [{attributes: {OBJECTID: otp.OBJECTID, Usado: "SI"}}] });
     await writeAuditEvent("OTP_VALIDATE", "APP_REPORTE", currentUser.gid, "OK", "Ingreso exitoso a módulo operativo V4");
     
+    // Cargar SEG_Alcance para este usuario
     const qAlcance = await fetchJson(`${URL_ALCANCE}/query`, { f:"json", where:`(PersonaID='${currentUser.gid}' OR PersonaID='${currentUser.pid}') AND Activo='SI'`, outFields:"ObjetoGlobalID" });
     currentUser.alcances = qAlcance.features.map(f => f.attributes.ObjetoGlobalID).filter(Boolean);
     currentUser.hasGlobalScope = qAlcance.features.some(f => !f.attributes.ObjetoGlobalID);
@@ -241,133 +241,121 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
     document.getElementById("pill-user").style.display = "block";
     document.getElementById("pill-user").textContent = `Usuario: ${currentUser.nombre}`;
     
-    diagnosticState.user = currentUser.nombre;
-    diagnosticState.roles = currentUser.roles.join(", ");
-
-    if (currentUser.roles.includes("SUPERADMIN")) {
-        document.getElementById("pill-superadmin").style.display = "block";
-        document.getElementById("diagnostic-panel").style.display = "block";
-        updateDiagnosticPanel();
-    }
+    if (currentUser.roles.includes("SUPERADMIN")) document.getElementById("pill-superadmin").style.display = "block";
+    else document.getElementById("pill-superadmin").style.display = "none";
     
     await initMap(); 
     initCombosFijos(); 
     await loadAsignaciones(); 
     await loadActividades();
-  } catch(e) { 
-      document.getElementById("login-msg-2").textContent = e.message; 
-      reportOperationalError("REP-AUTH-001", "AUTH", "Error de autenticación.", e.message);
-  }
+  } catch(e) { document.getElementById("login-msg-2").textContent = e.message; }
 });
 
 // --- Filtros SEG_Asignacion Híbrido + SEG_Alcance V4 ---
 async function loadAsignaciones() {
   if(!currentUser) return;
-  try {
-      if(currentUser.roles.includes("SUPERADMIN")) { asignacionesActivas = []; return; }
-
-      const vig = elVigencia.value;
-      diagnosticState.vigencia = vig; diagnosticState.periodo = getPeriodo();
-
-      const qAsig = await fetchJson(`${URL_ASIGNACION}/query`, { 
-          f: "json", where: `PersonaGlobalID='${currentUser.gid}' AND Vigencia=${vig} AND Activo='SI'`, 
-          outFields: "GlobalID,TipoAsignacion,ActividadGlobalID,TareaGlobalID,HeredaHijos,Activo,Vigencia" 
-      });
-      
-      let asigActividades = [], asigTareas = [];
-
-      (qAsig.features || []).forEach(f => {
-          const a = f.attributes;
-          const tipo = (a.TipoAsignacion || "").toUpperCase(), hereda = (a.HeredaHijos || "").toUpperCase();
-          const actGid = a.ActividadGlobalID, tarGid = a.TareaGlobalID;
-
-          if (tipo === "ACTIVIDAD") {
-              if (hereda === "SI" && actGid) asigActividades.push(actGid);
-              else console.warn(`[SEG_Asignacion] Ignorado: Registro inconsistente. GlobalID: ${a.GlobalID}`);
-          } else if (tipo === "TAREA") {
-              if (tarGid) {
-                  asigTareas.push(tarGid);
-                  if (hereda === "SI") console.warn(`[SEG_Asignacion] Herencia ignorada para asignación puntual. TareaGlobalID: ${tarGid}`);
-              } else console.warn(`[SEG_Asignacion] Ignorado: TAREA sin TareaGlobalID. GlobalID: ${a.GlobalID}`);
-          } else {
-              if (tarGid) asigTareas.push(tarGid);
-              else if (actGid && hereda === "SI") asigActividades.push(actGid); 
-              else console.warn(`[SEG_Asignacion] Ignorado: Registro legado no interpretable. GlobalID: ${a.GlobalID}`);
-          }
-      });
-
-      asigActividades = [...new Set(asigActividades)]; asigTareas = [...new Set(asigTareas)];
-
-      let qJerarquiaFeatures = []; const collectedTaskGuids = new Set();
-
-      if (asigActividades.length > 0) {
-          let subDeActividades = [];
-          for (let i = 0; i < asigActividades.length; i += 200) {
-              const chunk = asigActividades.slice(i, i + 200).map(g => `'${g}'`).join(",");
-              const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
-              if(qS.features) subDeActividades.push(...qS.features);
-          }
-          
-          const subGuids = subDeActividades.map(f => f.attributes.GlobalID);
-          if (subGuids.length > 0) {
-              for (let i = 0; i < subGuids.length; i += 200) {
-                  const chunk = subGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
-                  const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
-                  if(qT.features) {
-                      const mapSubToAct = new Map(); subDeActividades.forEach(s => mapSubToAct.set(s.attributes.GlobalID, s.attributes.ActividadGlobalID));
-                      qT.features.forEach(t => {
-                          t.attributes.ActividadGlobalID = mapSubToAct.get(t.attributes.SubActividadGlobalID);
-                          t.attributes.OrigenConsolidado = 'ACTIVIDAD'; qJerarquiaFeatures.push(t); collectedTaskGuids.add(t.attributes.GlobalID);
-                      });
-                  }
-              }
-          }
-      }
-
-      if (asigTareas.length > 0) {
-          let tareasPuntuales = [];
-          for (let i = 0; i < asigTareas.length; i += 200) {
-              const chunk = asigTareas.slice(i, i + 200).map(g => `'${g}'`).join(",");
-              const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
-              if(qT.features) tareasPuntuales.push(...qT.features);
-          }
-          
-          const validSubIds = [...new Set(tareasPuntuales.map(t => t.attributes.SubActividadGlobalID).filter(Boolean))];
-          const subMap = new Map();
-          if (validSubIds.length > 0) {
-              for (let i = 0; i < validSubIds.length; i += 200) {
-                  const chunk = validSubIds.slice(i, i + 200).map(g => `'${g}'`).join(",");
-                  const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
-                  if(qS.features) qS.features.forEach(f => subMap.set(f.attributes.GlobalID, f.attributes.ActividadGlobalID));
-              }
-          }
-
-          tareasPuntuales.forEach(t => {
-              t.attributes.ActividadGlobalID = subMap.get(t.attributes.SubActividadGlobalID);
-              if (!collectedTaskGuids.has(t.attributes.GlobalID)) {
-                  t.attributes.OrigenConsolidado = 'TAREA'; qJerarquiaFeatures.push(t); collectedTaskGuids.add(t.attributes.GlobalID);
-              }
-          });
-      }
-
-      const tarMap = new Map(), subMap = new Map(), originMap = new Map(); const validTaskGuids = [];
-      qJerarquiaFeatures.forEach(f => {
-          const tGuid = f.attributes.GlobalID, sGuid = f.attributes.SubActividadGlobalID, aGuid = f.attributes.ActividadGlobalID, oGuid = f.attributes.OrigenConsolidado;
-          validTaskGuids.push(tGuid); tarMap.set(tGuid, sGuid); originMap.set(tGuid, oGuid); if(sGuid) subMap.set(sGuid, aGuid);
-      });
-
-      let finalTasks = validTaskGuids;
-      if (!currentUser.hasGlobalScope && currentUser.alcances.length > 0) {
-          finalTasks = validTaskGuids.filter(tGuid => {
-              const sGuid = tarMap.get(tGuid), aGuid = sGuid ? subMap.get(sGuid) : null;
-              return currentUser.alcances.includes(tGuid) || (sGuid && currentUser.alcances.includes(sGuid)) || (aGuid && currentUser.alcances.includes(aGuid));
-          });
-      } else if (!currentUser.hasGlobalScope && currentUser.alcances.length === 0) finalTasks = []; 
-
-      asignacionesActivas = finalTasks.map(tGuid => ({ TareaGlobalID: tGuid, SubActividadGlobalID: tarMap.get(tGuid), ActividadGlobalID: tarMap.get(tGuid) ? subMap.get(tarMap.get(tGuid)) : null, TipoOrigenAsignacion: originMap.get(tGuid) }));
-  } catch (e) {
-      reportOperationalError("REP-LOAD-001", "ASIGNACION", "Problema al cargar matriz de permisos.", e.message);
+  if(currentUser.roles.includes("SUPERADMIN")) {
+      asignacionesActivas = []; 
+      return;
   }
+
+  const vig = elVigencia.value;
+  const qAsig = await fetchJson(`${URL_ASIGNACION}/query`, { 
+      f: "json", where: `PersonaGlobalID='${currentUser.gid}' AND Vigencia=${vig} AND Activo='SI'`, 
+      outFields: "GlobalID,TipoAsignacion,ActividadGlobalID,TareaGlobalID,HeredaHijos,Activo,Vigencia" 
+  });
+  
+  let asigActividades = [], asigTareas = [];
+
+  (qAsig.features || []).forEach(f => {
+      const a = f.attributes;
+      const tipo = (a.TipoAsignacion || "").toUpperCase(), hereda = (a.HeredaHijos || "").toUpperCase();
+      const actGid = a.ActividadGlobalID, tarGid = a.TareaGlobalID;
+
+      if (tipo === "ACTIVIDAD") {
+          if (hereda === "SI" && actGid) asigActividades.push(actGid);
+          else console.warn(`[SEG_Asignacion] Ignorado: Registro inconsistente. GlobalID: ${a.GlobalID}`);
+      } else if (tipo === "TAREA") {
+          if (tarGid) {
+              asigTareas.push(tarGid);
+              if (hereda === "SI") console.warn(`[SEG_Asignacion] Herencia ignorada para asignación puntual. TareaGlobalID: ${tarGid}`);
+          } else console.warn(`[SEG_Asignacion] Ignorado: TAREA sin TareaGlobalID. GlobalID: ${a.GlobalID}`);
+      } else {
+          if (tarGid) asigTareas.push(tarGid);
+          else if (actGid && hereda === "SI") asigActividades.push(actGid); 
+          else console.warn(`[SEG_Asignacion] Ignorado: Registro legado no interpretable. GlobalID: ${a.GlobalID}`);
+      }
+  });
+
+  asigActividades = [...new Set(asigActividades)]; asigTareas = [...new Set(asigTareas)];
+
+  let qJerarquiaFeatures = []; const collectedTaskGuids = new Set();
+
+  if (asigActividades.length > 0) {
+      let subDeActividades = [];
+      for (let i = 0; i < asigActividades.length; i += 200) {
+          const chunk = asigActividades.slice(i, i + 200).map(g => `'${g}'`).join(",");
+          const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
+          if(qS.features) subDeActividades.push(...qS.features);
+      }
+      
+      const subGuids = subDeActividades.map(f => f.attributes.GlobalID);
+      if (subGuids.length > 0) {
+          for (let i = 0; i < subGuids.length; i += 200) {
+              const chunk = subGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
+              const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
+              if(qT.features) {
+                  const mapSubToAct = new Map(); subDeActividades.forEach(s => mapSubToAct.set(s.attributes.GlobalID, s.attributes.ActividadGlobalID));
+                  qT.features.forEach(t => {
+                      t.attributes.ActividadGlobalID = mapSubToAct.get(t.attributes.SubActividadGlobalID);
+                      t.attributes.OrigenConsolidado = 'ACTIVIDAD'; qJerarquiaFeatures.push(t); collectedTaskGuids.add(t.attributes.GlobalID);
+                  });
+              }
+          }
+      }
+  }
+
+  if (asigTareas.length > 0) {
+      let tareasPuntuales = [];
+      for (let i = 0; i < asigTareas.length; i += 200) {
+          const chunk = asigTareas.slice(i, i + 200).map(g => `'${g}'`).join(",");
+          const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
+          if(qT.features) tareasPuntuales.push(...qT.features);
+      }
+      
+      const validSubIds = [...new Set(tareasPuntuales.map(t => t.attributes.SubActividadGlobalID).filter(Boolean))];
+      const subMap = new Map();
+      if (validSubIds.length > 0) {
+          for (let i = 0; i < validSubIds.length; i += 200) {
+              const chunk = validSubIds.slice(i, i + 200).map(g => `'${g}'`).join(",");
+              const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
+              if(qS.features) qS.features.forEach(f => subMap.set(f.attributes.GlobalID, f.attributes.ActividadGlobalID));
+          }
+      }
+
+      tareasPuntuales.forEach(t => {
+          t.attributes.ActividadGlobalID = subMap.get(t.attributes.SubActividadGlobalID);
+          if (!collectedTaskGuids.has(t.attributes.GlobalID)) {
+              t.attributes.OrigenConsolidado = 'TAREA'; qJerarquiaFeatures.push(t); collectedTaskGuids.add(t.attributes.GlobalID);
+          }
+      });
+  }
+
+  const tarMap = new Map(), subMap = new Map(), originMap = new Map(); const validTaskGuids = [];
+  qJerarquiaFeatures.forEach(f => {
+      const tGuid = f.attributes.GlobalID, sGuid = f.attributes.SubActividadGlobalID, aGuid = f.attributes.ActividadGlobalID, oGuid = f.attributes.OrigenConsolidado;
+      validTaskGuids.push(tGuid); tarMap.set(tGuid, sGuid); originMap.set(tGuid, oGuid); if(sGuid) subMap.set(sGuid, aGuid);
+  });
+
+  let finalTasks = validTaskGuids;
+  if (!currentUser.hasGlobalScope && currentUser.alcances.length > 0) {
+      finalTasks = validTaskGuids.filter(tGuid => {
+          const sGuid = tarMap.get(tGuid), aGuid = sGuid ? subMap.get(sGuid) : null;
+          return currentUser.alcances.includes(tGuid) || (sGuid && currentUser.alcances.includes(sGuid)) || (aGuid && currentUser.alcances.includes(aGuid));
+      });
+  } else if (!currentUser.hasGlobalScope && currentUser.alcances.length === 0) finalTasks = []; 
+
+  asignacionesActivas = finalTasks.map(tGuid => ({ TareaGlobalID: tGuid, SubActividadGlobalID: tarMap.get(tGuid), ActividadGlobalID: tarMap.get(tGuid) ? subMap.get(tarMap.get(tGuid)) : null, TipoOrigenAsignacion: originMap.get(tGuid) }));
 }
 
 async function loadActividades() {
@@ -375,38 +363,31 @@ async function loadActividades() {
   const vig = elVigencia.value;
   let data = [];
 
-  try {
-      if (currentUser.roles.includes("SUPERADMIN")) {
-          const qAct = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
-          if(qAct.features && qAct.features.length > 0) data = qAct.features.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
-      } else {
-          const actGuids = [...new Set(asignacionesActivas.map(a => a.ActividadGlobalID).filter(Boolean))];
-          if(actGuids.length > 0) { 
-              let qActFeatures = [];
-              for (let i = 0; i < actGuids.length; i += 200) {
-                  const chunk = actGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
-                  const qA = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk}) AND Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
-                  if(qA.features) qActFeatures.push(...qA.features);
-              }
-              data = qActFeatures.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
+  if (currentUser.roles.includes("SUPERADMIN")) {
+      const qAct = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
+      if(qAct.features && qAct.features.length > 0) data = qAct.features.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
+  } else {
+      const actGuids = [...new Set(asignacionesActivas.map(a => a.ActividadGlobalID).filter(Boolean))];
+      if(actGuids.length > 0) { 
+          let qActFeatures = [];
+          for (let i = 0; i < actGuids.length; i += 200) {
+              const chunk = actGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
+              const qA = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk}) AND Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
+              if(qA.features) qActFeatures.push(...qA.features);
           }
+          data = qActFeatures.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
       }
-
-      renderCombo("combo-actividad", data, data.length ? "— Selecciona o busca —" : `Sin actividades operativas en ${vig}`, async (val) => {
-          if(!val) { 
-              elIndicadores.innerHTML = ""; actContextPanel.style.display = "none"; document.getElementById("lbl-responsable").textContent = "Responsable: —"; 
-              diagnosticState.actividad = '-'; updateDiagnosticPanel();
-              return; 
-          }
-          document.getElementById("lbl-responsable").textContent = `Responsable: ${currentUser.nombre}`;
-          diagnosticState.actividad = val; updateDiagnosticPanel();
-          await loadSubactividadesYTareas(val);
-      });
-      
-      if(!data.length) elIndicadores.innerHTML = ""; 
-  } catch (e) {
-      reportOperationalError("REP-LOAD-002", "ACTIVIDADES", "Fallo al cargar catálogo de actividades operativas.", e.message);
   }
+
+  renderCombo("combo-actividad", data, data.length ? "— Selecciona o busca —" : `Sin actividades operativas en ${vig}`, async (val) => {
+      if(!val) { 
+          elIndicadores.innerHTML = ""; actContextPanel.style.display = "none"; document.getElementById("lbl-responsable").textContent = "Responsable: —"; return; 
+      }
+      document.getElementById("lbl-responsable").textContent = `Responsable: ${currentUser.nombre}`;
+      await loadSubactividadesYTareas(val);
+  });
+  
+  if(!data.length) elIndicadores.innerHTML = ""; 
 }
 
 async function loadSubactividadesYTareas(actividadGlobalId) {
@@ -414,26 +395,23 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
   rowLocations.clear(); existingAvances.clear(); existingWFSolicitudes.clear(); deletedLocations = []; existingNarrativa = null;
   planActCtx = null; biActCtx = null; planSubCtx.clear(); biSubCtx.clear(); planTarCtx.clear(); biTarCtx.clear();
   viewOnlyMode = false;
-  setStatus("Cargando estructura, contexto de planeación y reportes...", "info");
+  setStatus("Cargando estructura, contexto de planeación y reportes...");
 
   const vig = elVigencia.value;
+  const subQ = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}'`, outFields:"*" });
+  cacheSubactividades = (subQ.features||[]).map(f=>f.attributes);
   
-  try {
-      const subQ = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}'`, outFields:"*" });
-      cacheSubactividades = (subQ.features||[]).map(f=>f.attributes);
-      
-      const tareasAsignadas = asignacionesActivas.filter(a => a.ActividadGlobalID === actividadGlobalId).map(a => a.TareaGlobalID);
-      const inListSub = cacheSubactividades.map(s => `'${s.GlobalID}'`).join(",");
-      
-      if(inListSub) {
-        const tareaQ = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub})`, outFields:"*" });
-        let allTasks = (tareaQ.features||[]).map(f=>f.attributes);
-        diagnosticState.totalTareas = allTasks.length;
-        if (!currentUser.roles.includes("SUPERADMIN")) allTasks = allTasks.filter(t => tareasAsignadas.includes(t.GlobalID));
-        cacheTareas = allTasks;
-        diagnosticState.tareasAsignadas = cacheTareas.length;
-      }
+  const tareasAsignadas = asignacionesActivas.filter(a => a.ActividadGlobalID === actividadGlobalId).map(a => a.TareaGlobalID);
+  const inListSub = cacheSubactividades.map(s => `'${s.GlobalID}'`).join(",");
+  
+  if(inListSub) {
+    const tareaQ = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub})`, outFields:"*" });
+    let allTasks = (tareaQ.features||[]).map(f=>f.attributes);
+    if (!currentUser.roles.includes("SUPERADMIN")) allTasks = allTasks.filter(t => tareasAsignadas.includes(t.GlobalID));
+    cacheTareas = allTasks;
+  }
 
+  try {
       const qPlanAct = await fetchJson(`${URL_PLAN_ACT}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}' AND Vigencia=${vig}`, outFields:"*" });
       if(qPlanAct.features.length) planActCtx = qPlanAct.features[0].attributes;
       const qBiAct = await fetchJson(`${URL_BI_ACT}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}' AND Vigencia=${vig}`, outFields:"*" });
@@ -453,43 +431,39 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
           const qBiTar = await fetchJson(`${URL_BI_TAR}/query`, { f:"json", where:`TareaGlobalID IN (${inListTar}) AND Vigencia=${vig}`, outFields:"*" });
           qBiTar.features.forEach(f => biTarCtx.set(f.attributes.TareaGlobalID, f.attributes));
       }
-      
-      updateDiagnosticPanel();
+  } catch (e) { console.warn("Contexto PLAN/BI incompleto o no disponible.", e); }
 
-      if (planActCtx) {
-          actContextPanel.style.display = "block";
-          const aplicaAct = String(planActCtx.Aplica || "SI").toUpperCase() !== "NO";
-          actContextPanel.innerHTML = `
-              <div style="margin-bottom: 8px;"><strong>Contexto de Planeación (${vig})</strong> ${!aplicaAct ? '<span class="status-badge status-badge--devuelto" style="margin-left:10px;">NO APLICA EN LA VIGENCIA</span>' : ''}</div>
-              <div style="display:flex; gap: 10px; flex-wrap: wrap;">
-                  <span class="ctx-badge">Indicador: ${planActCtx.IndicadorID ?? 'N/A'}</span>
-                  <span class="ctx-badge">Línea Base: ${planActCtx.LineaBase ?? 'N/A'}</span>
-                  <span class="ctx-badge">Meta Prog.: ${planActCtx.MetaProgramada ?? 'N/A'}</span>
-                  <span class="ctx-badge">Unidad: ${planActCtx.UnidadMedida ?? 'N/A'}</span>
-                  <span class="ctx-badge" style="background:#dcfce7; color:#166534;">Avance Acum. Calculado: ${biActCtx?.AvanceAcumulado ?? 0}%</span>
-              </div>
-          `;
-      } else actContextPanel.style.display = "none"; 
+  if (planActCtx) {
+      actContextPanel.style.display = "block";
+      const aplicaAct = String(planActCtx.Aplica || "SI").toUpperCase() !== "NO";
+      actContextPanel.innerHTML = `
+          <div style="margin-bottom: 8px;"><strong>Contexto de Planeación (${vig})</strong> ${!aplicaAct ? '<span class="status-badge status-badge--devuelto" style="margin-left:10px;">NO APLICA EN LA VIGENCIA</span>' : ''}</div>
+          <div style="display:flex; gap: 10px; flex-wrap: wrap;">
+              <span class="ctx-badge">Indicador: ${planActCtx.IndicadorID ?? 'N/A'}</span>
+              <span class="ctx-badge">Línea Base: ${planActCtx.LineaBase ?? 'N/A'}</span>
+              <span class="ctx-badge">Meta Prog.: ${planActCtx.MetaProgramada ?? 'N/A'}</span>
+              <span class="ctx-badge">Unidad: ${planActCtx.UnidadMedida ?? 'N/A'}</span>
+              <span class="ctx-badge" style="background:#dcfce7; color:#166534;">Avance Acum. Calculado: ${biActCtx?.AvanceAcumulado ?? 0}%</span>
+          </div>
+      `;
+  } else actContextPanel.style.display = "none"; 
 
-      elIndicadores.innerHTML = cacheSubactividades.map(sa => subActividadCardHtml(sa)).join("");
+  // 1. Renderiza interfaz de Tareas operativas de forma inmediata.
+  elIndicadores.innerHTML = cacheSubactividades.map(sa => subActividadCardHtml(sa)).join("");
 
-  } catch (err) {
-      reportOperationalError("REP-LOAD-002", "ESTRUCTURA", "Fallo al armar la estructura operativa de la actividad.", err.message);
-      return; // Stop if core structure fails
-  }
-
-  // Histórico No Bloqueante
+  // 2. Desacople: La interfaz de activación ya es interactiva a partir de aquí gracias a la Delegación Global.
   try {
       await loadExistingData(actividadGlobalId); 
       evaluateHistoricalMode();
-      setStatus("Formulario operativo cargado con éxito.", "success");
+      setStatus("Formulario operativo cargado.", "success");
   } catch (err) {
-      reportOperationalError("REP-LOAD-003", "HISTORICO", "Se cargó la estructura operativa, pero no se pudo recuperar parte del histórico. Puedes continuar capturando.", err.message);
+      console.warn("Histórico no disponible o vacío:", err);
       evaluateHistoricalMode();
+      setStatus("Se cargó la estructura operativa, pero no se pudo recuperar parte del histórico. Puedes continuar capturando.", "info");
   }
 }
 
-// --- Event Delegation para Activación ---
+// --- Event Delegation para Activación y Click de Tareas ---
 elIndicadores.addEventListener("click", (e) => {
     const btnActivar = e.target.closest(".btn-activar");
     if (btnActivar) {
@@ -501,7 +475,7 @@ elIndicadores.addEventListener("click", (e) => {
 function activateTaskRow(rowEl) {
     const rowId = rowEl.getAttribute("data-row-id");
     
-    if (isTaskReadonly(rowId)) return setStatus("No es posible activar: Esta tarea está bloqueada o no aplica en la vigencia.", "warning");
+    if (isTaskReadonly(rowId)) return setStatus("Esta tarea está bloqueada o no aplica.", "error");
     
     document.querySelectorAll(".row").forEach(r => r.classList.remove("row--active"));
     rowEl.classList.add("row--active");
@@ -511,10 +485,8 @@ function activateTaskRow(rowEl) {
     const nomTarea = rowEl.querySelector(".mono").textContent.trim();
     document.getElementById("pill-active").textContent = `Tarea activa para georreferenciar: ${codTarea} - ${nomTarea.substring(0, 20)}...`;
     
-    diagnosticState.tareaGeo = codTarea; updateDiagnosticPanel();
-
     rowEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    setStatus("Tarea seleccionada correctamente para ubicar puntos en el mapa.", "success");
+    setStatus("Tarea seleccionada para ubicar puntos en el mapa.", "success");
 }
 
 // --- Render y Estados V4 ---
@@ -598,6 +570,7 @@ async function loadExistingData(actGid) {
       if (locList) locList.innerHTML = "";
   });
   
+  // 1. Narrativa
   const qNar = await fetchJson(`${URL_NARRATIVA}/query`, { f:"json", where:`ActividadGlobalID='${actGid}' AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
   if(qNar.features.length) {
     existingNarrativa = qNar.features[0].attributes;
@@ -612,6 +585,7 @@ async function loadExistingData(actGid) {
     document.getElementById("container-motivo-narrativa").style.display = "none";
   }
 
+  // 2. Avances
   const tGuids = cacheTareas.map(t=>`'${t.GlobalID}'`).join(",");
   if(tGuids) {
     const qAv = await fetchJson(`${URL_AVANCE_TAREA}/query`, { f:"json", where:`TareaGlobalID IN (${tGuids}) AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
@@ -630,6 +604,7 @@ async function loadExistingData(actGid) {
     });
   }
 
+  // 3. Ubicaciones
   if(avGuids.length) {
     const qUb = await fetchJson(`${URL_TAREA_UBICACION}/query`, { f:"json", where:`AvanceTareaGlobalID IN (${avGuids.join(",")})`, outFields:"*", returnGeometry:true, outSR:"4326" });
     qUb.features.forEach(f => {
@@ -648,6 +623,7 @@ async function loadExistingData(actGid) {
     });
   }
 
+  // 4. Workflow
   const allObjGuids = avGuids.concat(existingNarrativa ? [`'${existingNarrativa.GlobalID}'`] : []);
   if(allObjGuids.length > 0) {
     const qWf = await fetchJson(`${URL_WF_SOLICITUD}/query`, { 
@@ -655,8 +631,6 @@ async function loadExistingData(actGid) {
     });
     qWf.features.forEach(f => existingWFSolicitudes.set(f.attributes.ObjetoGlobalID, f.attributes));
   }
-  
-  calcLocsMemoria();
 }
 
 function applyReadonlyStateTask(rowEl, estado) {
@@ -710,7 +684,6 @@ function evaluateHistoricalMode() {
         elModo.style.color = "#991b1b";
         btnGuardar.style.display = "none";
         btnEnviar.style.display = "none";
-        diagnosticState.modo = 'Histórico (Solo Lectura)';
     } else {
         viewOnlyMode = false;
         elModo.style.display = "flex";
@@ -719,13 +692,11 @@ function evaluateHistoricalMode() {
         elModo.style.color = "#1d4ed8";
         btnGuardar.style.display = "inline-flex";
         btnEnviar.style.display = "inline-flex";
-        diagnosticState.modo = 'Edición';
     }
-    updateDiagnosticPanel();
 }
 
 function deleteLocation(rowId, ptId) {
-  if (isTaskReadonly(rowId)) return setStatus("Tarea bloqueada. No se pueden eliminar ubicaciones.", "warning");
+  if (isTaskReadonly(rowId)) return setStatus("Tarea bloqueada. No se pueden eliminar ubicaciones.", "error");
   
   removeGraphicForPoint(ptId);
   const locs = rowLocations.get(rowId) || [];
@@ -733,8 +704,6 @@ function deleteLocation(rowId, ptId) {
   if(locObj && locObj.isExisting) deletedLocations.push(ptId); 
   rowLocations.set(rowId, locs.filter(l => l.ptId !== ptId));
   const el = document.getElementById(`loc-${ptId}`); if(el) el.remove();
-  
-  calcLocsMemoria();
 }
 
 function appendLocationUI(rowId, ptId, lon, lat, desc="", mun="", dane="") {
@@ -758,7 +727,10 @@ function appendLocationUI(rowId, ptId, lon, lat, desc="", mun="", dane="") {
   
   div.querySelector(".btn-loc-del").addEventListener("click", () => deleteLocation(rowId, ptId));
   
-  if (mun === "Fuera de CAR") div.querySelector(".loc-item__header").style.borderBottom = "1px solid red";
+  // Retiene el borde indicador visual si el municipio es Fuera de CAR inicialmente
+  if (mun === "Fuera de CAR") {
+      div.querySelector(".loc-item__header").style.borderBottom = "1px solid red";
+  }
 
   listEl.appendChild(div);
 }
@@ -776,14 +748,15 @@ function initMap(){
       view.ui.add(new Expand({ view: view, content: new BasemapGallery({ view: view, container: document.createElement("div") }), expandIcon: "basemap" }), "top-left");
       
       view.whenLayerView(jurisdiccionLayer).then((layerView) => { jurisdiccionLayerView = layerView; });
-      view.when(() => view.resize());
+      view.when(() => view.resize()); // Forzar render flex seguro
       
       sketchVM = new SketchViewModel({ view, layer: graphicsLayer, updateOnGraphicClick: false });
 
       sketchVM.on("update", async (evt) => {
         if(evt.state !== "complete") return;
         const g = evt.graphics?.[0]; if(!g || !g.attributes?.rowId || !g.attributes?.ptId) return;
-        if(isTaskReadonly(g.attributes.rowId)) return setStatus("Edición de punto denegada. La tarea está bloqueada.", "error");
+        
+        if(isTaskReadonly(g.attributes.rowId)) return setStatus("Edición de punto denegada. Tarea bloqueada.", "error");
 
         const geo = getGeographicLocation(g.geometry); const rId = g.attributes.rowId; const pId = g.attributes.ptId;
         const locs = rowLocations.get(rId) || []; const locObj = locs.find(l => l.ptId === pId);
@@ -792,14 +765,13 @@ function initMap(){
       });
 
       view.on("click", async (evt) => {
-        if(!activeRowId) return setStatus("Para añadir puntos, primero debes seleccionar una tarea operativa en el panel izquierdo.", "warning"); 
-        if (isTaskReadonly(activeRowId)) return setStatus("No puedes añadir puntos. La tarea activa está bloqueada.", "error");
+        if(!activeRowId) return setStatus("Activa un registro en el panel para georreferenciar.", "error"); 
+        if (isTaskReadonly(activeRowId)) return setStatus("La tarea activa está bloqueada. No puedes añadir puntos.", "error");
 
         const geo = getGeographicLocation(evt.mapPoint); const ptId = crypto.randomUUID(); const locs = rowLocations.get(activeRowId) || [];
         locs.push({ ptId, lon: geo.longitude, lat: geo.latitude, mun: "", dane: "", desc: "" }); rowLocations.set(activeRowId, locs);
         addGraphicForPoint(activeRowId, ptId, geo.longitude, geo.latitude, Graphic);
         appendLocationUI(activeRowId, ptId, geo.longitude, geo.latitude);
-        calcLocsMemoria();
         await updateMunicipioFromCAR(activeRowId, ptId, evt.mapPoint);
       });
       resolve(true);
@@ -828,8 +800,6 @@ async function updateMunicipioFromCAR(rowId, ptId, mapPoint){
       view.popup.open({ title: "Atención: Fuera de jurisdicción", content: "Este punto no está dentro de la CAR. El sistema bloqueará el guardado si no lo corrige.", location: mapPoint });
       const locs = rowLocations.get(rowId) || []; const locObj = locs.find(l => l.ptId === ptId);
       if(locObj) { locObj.mun = "Fuera de CAR"; locObj.dane = "N/A"; }
-      
-      setStatus("Punto registrado fuera de la jurisdicción CAR. Debes eliminarlo o moverlo para poder continuar.", "warning", "REP-MAP-002");
       return;
     }
     locEl.querySelector(".loc-item__header").style.borderBottom = "none";
@@ -845,95 +815,20 @@ async function updateMunicipioFromCAR(rowId, ptId, mapPoint){
   }catch(e){ console.error(e); }finally{ document.body.style.cursor = 'default'; }
 }
 
-// --- VALIDACION PRE-VUELO ---
-function runPreflightValidation(isSubmit) {
-    const res = { ok: true, errors: [], firstErrorRowId: null };
-    let hasChanges = false;
-    
-    document.querySelectorAll(".row").forEach(rowEl => {
-        rowEl.classList.remove("row--error");
-        if(rowEl.classList.contains("is-readonly") || rowEl.classList.contains("is-not-applicable")) return;
-        
-        const rowId = rowEl.getAttribute("data-row-id");
-        const tareaGid = rowEl.getAttribute("data-tarea-gid");
-        const locs = rowLocations.get(rowId) || [];
-        const exist = existingAvances.get(tareaGid);
-        const motivo = rowEl.querySelector(".row-motivo")?.value;
-        const val = rowEl.querySelector(".row-valor")?.value;
-        const obs = rowEl.querySelector(".row-obs")?.value;
-        const evi = rowEl.querySelector(".row-evi")?.value;
-        
-        if (val || obs || evi || locs.length > 0 || (exist && exist.EstadoRegistro !== "Borrador")) {
-            hasChanges = true;
-        }
-
-        const hasOutsideCar = locs.some(l => l.mun === "Fuera de CAR" || !l.mun);
-        if (hasOutsideCar) {
-            res.ok = false;
-            res.errors.push(`Ubicaciones fuera de la jurisdicción CAR en la Tarea evaluada.`);
-            rowEl.classList.add("row--error");
-            if (!res.firstErrorRowId) res.firstErrorRowId = rowId;
-        }
-        
-        if (exist && exist.EstadoRegistro === "Devuelto" && (!motivo || motivo.trim() === "")) {
-            res.ok = false;
-            res.errors.push(`Las tareas devueltas requieren obligatoriamente especificar el Motivo de Ajuste.`);
-            rowEl.classList.add("row--error");
-            if (!res.firstErrorRowId) res.firstErrorRowId = rowId;
-        }
-    });
-
-    if(!document.getElementById("txt-reporte-narrativo").disabled) {
-        document.getElementById("container-motivo-narrativa").classList.remove("row--error");
-        const txt1 = document.getElementById("txt-reporte-narrativo").value;
-        const txt2 = document.getElementById("txt-logros-descripcion").value;
-        const txt3 = document.getElementById("txt-logros-principales").value;
-        const motivoN = document.getElementById("txt-motivo-narrativa")?.value;
-        
-        if(txt1 || txt2 || txt3 || existingNarrativa) hasChanges = true;
-
-        if (existingNarrativa && existingNarrativa.EstadoRegistro === "Devuelto" && (!motivoN || motivoN.trim() === "")) {
-            res.ok = false;
-            res.errors.push(`La Narrativa fue devuelta y requiere especificar el Motivo de Ajuste.`);
-            document.getElementById("container-motivo-narrativa").classList.add("row--error");
-            if (!res.firstErrorRowId) res.firstErrorRowId = "container-motivo-narrativa";
-        }
-    }
-    
-    if (isSubmit && !hasChanges) {
-        res.ok = false;
-        res.errors.push(`No hay datos diligenciados ni histórico previo. No hay contenido para enviar a revisión.`);
-    }
-
-    return res;
-}
-
 // --- GUARDAR Y ENVIAR V4 ---
 btnGuardar.addEventListener("click", () => processSave(false));
 btnEnviar.addEventListener("click", () => processSave(true));
 
 async function processSave(isSubmit) {
-  if (viewOnlyMode) return setStatus("Modo lectura: el sistema está bloqueado para ediciones.", "warning");
-
-  const preflight = runPreflightValidation(isSubmit);
-  if (!preflight.ok) {
-      const firstErrorMsg = preflight.errors[0];
-      const actionTxt = isSubmit ? 'enviar a revisión' : 'guardar';
-      reportOperationalError("REP-VAL-001", "VALIDACION", `No puedes ${actionTxt} todavía: ${firstErrorMsg} Revisa las filas resaltadas en rojo.`, preflight.errors.join(" | "));
-      
-      if (preflight.firstErrorRowId) {
-          const targetEl = document.getElementById(preflight.firstErrorRowId) || document.querySelector(`[data-row-id="${preflight.firstErrorRowId}"]`);
-          if (targetEl) targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
-      return;
-  }
+  if (viewOnlyMode) return setStatus("Modo lectura: no se permiten cambios.", "error");
 
   try {
     btnGuardar.disabled = true; btnEnviar.disabled = true;
+    document.querySelectorAll(".row--error").forEach(r => r.classList.remove("row--error"));
     
     const draft = collectDraft(isSubmit);
     if(!draft.updates.length && !draft.adds.length && !draft.narrAdds.length && !draft.narrUpdates.length && !deletedLocations.length) {
-       setStatus("No hay cambios operativos para guardar en esta solicitud.", "info"); return;
+       setStatus("No hay cambios operativos para guardar.", "info"); return;
     }
     
     await executeSave(draft);
@@ -943,11 +838,12 @@ async function processSave(isSubmit) {
     const detailMsg = `Actividad: ${inputAct ? inputAct.value : 'Desconocida'}. Tareas afect: ${draft.adds.length + draft.updates.length}.`;
     await writeAuditEvent(eventType, "APP_REPORTE", draft.actGid, "OK", detailMsg);
 
-    setStatus(isSubmit ? "Reporte enviado a revisión de forma exitosa." : "Borrador funcional guardado exitosamente.", "success");
+    setStatus(isSubmit ? "Reporte enviado a revisión." : "Borrador guardado exitosamente.", "success");
     await loadExistingData(getActividadId()); 
     evaluateHistoricalMode();
   } catch(e) { 
-      reportOperationalError("REP-SAVE-001", "GUARDADO", "Ocurrió un error inesperado al intentar guardar los datos en el servidor.", e.message);
+      console.error(e); 
+      setStatus(e.message, "error"); 
   } finally { 
       btnGuardar.disabled = false; btnEnviar.disabled = false; 
   }
@@ -958,22 +854,34 @@ function collectDraft(isSubmit) {
   const epochNow = Date.now();
   const res = { actGid, adds: [], updates: [], ubicAdds: [], ubicUpdates: [], wfAdds: [], wfUpdates: [], narrAdds: [], narrUpdates: [] };
   
+  // AVANCES TAREAS
   document.querySelectorAll(".row").forEach(rowEl => {
     if(rowEl.classList.contains("is-readonly") || rowEl.classList.contains("is-not-applicable")) return; 
     
     const tareaGid = rowEl.getAttribute("data-tarea-gid"), rowId = rowEl.getAttribute("data-row-id");
     const val = rowEl.querySelector(".row-valor")?.value, obs = rowEl.querySelector(".row-obs")?.value, evi = rowEl.querySelector(".row-evi")?.value;
     const motivo = rowEl.querySelector(".row-motivo")?.value;
-    const locs = rowLocations.get(rowId) || [];
     
+    const locs = rowLocations.get(rowId) || [];
     locs.forEach(loc => { 
         const domLoc = document.getElementById(`loc-${loc.ptId}`); 
         if(domLoc) loc.desc = domLoc.querySelector(".loc-desc").value; 
+        
+        if (loc.mun === "Fuera de CAR" || !loc.mun) {
+            rowEl.classList.add("row--error");
+            throw new Error(`Existen ubicaciones fuera de la jurisdicción CAR en la tarea observada. Elimine o corrija el punto para poder continuar.`);
+        }
     });
 
     if(!val && !obs && !evi && locs.length === 0) return; 
 
     const exist = existingAvances.get(tareaGid);
+    
+    if (exist && exist.EstadoRegistro === "Devuelto" && (!motivo || motivo.trim() === "")) {
+      rowEl.classList.add("row--error");
+      throw new Error(`Debes diligenciar obligatoriamente el 'Motivo de ajuste' en la tarea devuelta.`);
+    }
+
     const estadoNuevo = isSubmit ? "Enviado" : (exist ? exist.EstadoRegistro : "Borrador");
     
     const baseAttrs = {
@@ -1004,9 +912,11 @@ function collectDraft(isSubmit) {
       baseAttrs.FechaRegistro = epochNow; baseAttrs.Responsable = currentUser.nombre;
       baseAttrs.GlobalID = avanceGidFinal; 
       res.adds.push({ attributes: baseAttrs });
+      
       writeAuditHistory("REP_AvanceTarea", avanceGidFinal, "__CREATE__", "", `Val:${val}|Obs:${obs}`, "");
     }
 
+    // Ubicaciones
     locs.forEach(pt => {
       const uAttrs = { [F_UBI.mun]: pt.mun, [F_UBI.dane]: pt.dane, [F_UBI.desc]: pt.desc, [F_UBI.fec]: epochNow };
       const geom = { x: pt.lon, y: pt.lat, spatialReference: { wkid: 4326 } };
@@ -1014,6 +924,7 @@ function collectDraft(isSubmit) {
       else { uAttrs[F_UBI.fkAvance] = avanceGidFinal; res.ubicAdds.push({ attributes: uAttrs, geometry: geom }); }
     });
 
+    // Workflow Avance
     if(isSubmit) {
       const existingWf = existingWFSolicitudes.get(avanceGidFinal);
       const wfPayload = {
@@ -1021,17 +932,30 @@ function collectDraft(isSubmit) {
         ComentarioSolicitante: motivo ? `Corrección operativa: ${motivo}` : "Reporte operativo V4", Version: versionActual
       };
 
-      if(existingWf) { wfPayload.OBJECTID = existingWf.OBJECTID; res.wfUpdates.push({ attributes: wfPayload }); } 
-      else { wfPayload.GlobalID = generateGUID(); wfPayload.SolicitudID = generateGUID(); res.wfAdds.push({ attributes: wfPayload }); }
+      if(existingWf) {
+        wfPayload.OBJECTID = existingWf.OBJECTID;
+        res.wfUpdates.push({ attributes: wfPayload });
+      } else {
+        wfPayload.GlobalID = generateGUID(); wfPayload.SolicitudID = generateGUID();
+        res.wfAdds.push({ attributes: wfPayload });
+      }
     }
   });
 
+  // NARRATIVA
   if(!document.getElementById("txt-reporte-narrativo").disabled) {
     const txt1 = document.getElementById("txt-reporte-narrativo").value, txt2 = document.getElementById("txt-logros-descripcion").value, txt3 = document.getElementById("txt-logros-principales").value, motivoN = document.getElementById("txt-motivo-narrativa")?.value;
     if(txt1 || txt2 || txt3) {
+      
+      if (existingNarrativa && existingNarrativa.EstadoRegistro === "Devuelto" && (!motivoN || motivoN.trim() === "")) {
+        throw new Error(`Debes diligenciar el 'Motivo de ajuste requerido' en la sección de Narrativa.`);
+      }
+
       const estadoNuevoN = isSubmit ? "Enviado" : (existingNarrativa ? existingNarrativa.EstadoRegistro : "Borrador");
       const baseN = { [F_NAR.estado]: estadoNuevoN, [F_NAR.pEdic]: currentUser.pid, [F_NAR.fEdic]: epochNow, [F_NAR.motivo]: motivoN || "", [F_NAR.txt1]: txt1, [F_NAR.txt2]: txt2, [F_NAR.txt3]: txt3 };
-      let narrGidFinal = null, versionActualN = 1;
+      
+      let narrGidFinal = null;
+      let versionActualN = 1;
 
       if(existingNarrativa) {
         narrGidFinal = existingNarrativa.GlobalID; versionActualN = (existingNarrativa.Version || 1) + 1;
@@ -1045,6 +969,7 @@ function collectDraft(isSubmit) {
       if(isSubmit) {
         const existingWfN = existingWFSolicitudes.get(narrGidFinal);
         const wfPayloadN = { [F_WF.tipo]: "ReporteNarrativo", [F_WF.objGid]: narrGidFinal, [F_WF.vig]: vig, [F_WF.per]: per, [F_WF.persId]: currentUser.pid, [F_WF.fec]: epochNow, [F_WF.est]: "Enviado", ComentarioSolicitante: motivoN ? `Corrección operativa: ${motivoN}` : "Reporte operativo V4", Version: versionActualN };
+        
         if(existingWfN) { wfPayloadN.OBJECTID = existingWfN.OBJECTID; res.wfUpdates.push({ attributes: wfPayloadN }); } 
         else { wfPayloadN.GlobalID = generateGUID(); wfPayloadN.SolicitudID = generateGUID(); res.wfAdds.push({ attributes: wfPayloadN }); }
       }
@@ -1064,21 +989,19 @@ async function executeSave(draft) {
 function clearForm(){
   if(document.getElementById("txt-reporte-narrativo")) document.getElementById("txt-reporte-narrativo").value = ""; if(document.getElementById("txt-logros-descripcion")) document.getElementById("txt-logros-descripcion").value = ""; if(document.getElementById("txt-logros-principales")) document.getElementById("txt-logros-principales").value = "";
   rowLocations.clear(); clearMapGraphics(); activeRowId = null; pillActive.textContent = "Tarea activa para georreferenciar: —";
-  diagnosticState.tareaGeo = "-"; diagnosticState.locsMemoria = 0; updateDiagnosticPanel();
   document.querySelectorAll(".row").forEach(r => {
     r.classList.remove("row--active");
     r.querySelector(".row-valor").value = ""; r.querySelector(".row-obs").value = ""; r.querySelector(".row-evi").value = "";
     const locList = r.querySelector(".loc-list"); if(locList) locList.innerHTML = "";
     r.classList.remove("row--error");
   });
-  document.getElementById("container-motivo-narrativa").classList.remove("row--error");
 }
-btnLimpiar.addEventListener("click", () => { clearForm(); setStatus("Formulario limpiado. Listo para nueva captura.", "info"); });
+btnLimpiar.addEventListener("click", () => { clearForm(); setStatus("Vista limpiada.", "info"); });
 
 // --- Botón Recargar ---
 btnRefresh.addEventListener("click", async () => { 
     if(elVigencia.value && currentUser) {
-        setStatus("Recargando asignaciones y actividades funcionales...", "info");
+        setStatus("Recargando asignaciones y actividades...", "info");
         clearForm();
         elIndicadores.innerHTML = "";
         actContextPanel.style.display = "none";
@@ -1090,16 +1013,16 @@ btnRefresh.addEventListener("click", async () => {
         renderCombo("combo-actividad", [], "Cargando...");
         await loadAsignaciones();
         await loadActividades();
-        setStatus("Datos recargados y sincronizados correctamente.", "success");
+        setStatus("Datos recargados correctamente.", "success");
     }
 });
 
 document.getElementById("btn-centrar").addEventListener("click", () => { view.goTo({ center: [-74.2, 4.7], zoom: 8 }); });
 
-// Cambio de Vigencia
+// Cambio de Vigencia (Recarga Asignaciones y Limpia Entorno)
 elVigencia.addEventListener("change", async () => { 
     if(!currentUser) return;
-    setStatus("Sincronizando asignaciones para la vigencia seleccionada...", "info");
+    setStatus("Recargando asignaciones para la vigencia seleccionada...", "info");
     clearForm(); 
     elIndicadores.innerHTML = ""; 
     actContextPanel.style.display = "none";
@@ -1111,12 +1034,11 @@ elVigencia.addEventListener("change", async () => {
     renderCombo("combo-actividad", [], "Cargando...");
     await loadAsignaciones(); 
     await loadActividades(); 
-    setStatus("Asignaciones de vigencia actualizadas.", "success");
+    setStatus("Asignaciones actualizadas.", "success");
 });
 
-// Cambio de Periodo
+// Evento de Cambio de Periodo nativo
 elPeriodo.addEventListener("change", async () => {
     const actGid = getActividadId();
-    diagnosticState.periodo = getPeriodo(); updateDiagnosticPanel();
     if (actGid) await loadSubactividadesYTareas(actGid);
 });
