@@ -10,22 +10,32 @@
 <body>
   <div id="login-overlay" class="login-overlay">
     <div class="login-card">
-      <h2>Ingreso a DATA-PAC V4</h2>
-      <p class="muted">Verificación de identidad funcional (Operación)</p>
-      <div id="login-step-1" class="login-step active">
-        <label>Cédula</label>
-        <input type="text" id="login-cedula" placeholder="Ej: 10203040" />
-        <label>Correo electrónico institucional</label>
-        <input type="email" id="login-correo" placeholder="usuario@car.gov.co" />
-        <button class="btn btn--primary" id="btn-solicitar-codigo">Solicitar Código</button>
-        <div id="login-msg-1" style="color: #d64545; font-size: 12px; margin-top: 10px; text-align: center;"></div>
+      <div style="text-align: center; margin-bottom: 24px;">
+        <div class="brand__dot" style="margin: 0 auto 10px auto; width: 20px; height: 20px;"></div>
+        <h2 style="margin:0; color:var(--primary-2);">DATA-PAC V4</h2>
+        <p class="muted">Ingreso al Sistema de Reporte</p>
       </div>
+      
+      <div id="login-step-1" class="login-step active">
+        <div class="field" style="padding:0; margin-bottom:16px;">
+          <label>Cédula</label>
+          <input type="text" id="login-cedula" placeholder="Ej: 10203040" />
+        </div>
+        <div class="field" style="padding:0; margin-bottom:20px;">
+          <label>Correo institucional</label>
+          <input type="email" id="login-correo" placeholder="usuario@car.gov.co" />
+        </div>
+        <button class="btn btn--primary" id="btn-solicitar-codigo" style="width:100%">Solicitar Código</button>
+        <div id="login-msg-1" style="color: var(--danger); font-size: 12px; margin-top: 12px; text-align: center; font-weight:600;"></div>
+      </div>
+
       <div id="login-step-2" class="login-step">
-        <p class="muted" style="margin-bottom: 10px;">Hemos enviado un código de 6 dígitos a tu correo.</p>
-        <label>Código de verificación (OTP)</label>
-        <input type="text" id="login-codigo" placeholder="Ej: 123456" maxlength="6" style="text-align: center; font-size: 24px; letter-spacing: 4px;" />
-        <button class="btn btn--primary" id="btn-validar-codigo">Verificar y Entrar</button>
-        <div id="login-msg-2" style="color: #d64545; font-size: 12px; margin-top: 10px; text-align: center;"></div>
+        <p class="muted" style="margin-bottom: 16px; text-align: center; font-size:13px;">Se ha enviado un código OTP a su correo.</p>
+        <div class="field" style="padding:0; margin-bottom:20px;">
+          <input type="text" id="login-codigo" placeholder="000000" maxlength="6" style="text-align: center; font-size: 24px; letter-spacing: 8px; font-weight: 800;" />
+        </div>
+        <button class="btn btn--primary" id="btn-validar-codigo" style="width:100%">Verificar y Entrar</button>
+        <div id="login-msg-2" style="color: var(--danger); font-size: 12px; margin-top: 12px; text-align: center; font-weight:600;"></div>
       </div>
     </div>
   </div>
@@ -36,111 +46,99 @@
         <div class="brand__dot"></div>
         <div class="brand__text">
           <div class="brand__title">DATA-PAC</div>
-          <div class="brand__subtitle">Reporte y Corrección de Avance V4</div>
+          <div class="brand__subtitle">Reporte y Corrección V4</div>
         </div>
       </div>
       <div class="topbar__right">
-        <div class="pill pill--mode" id="pill-modo" style="display:none; background: #e2e8f0; border-color: #cbd5e1; font-weight: bold;">Modo: —</div>
-        <div class="pill" id="pill-superadmin" style="display:none; background: #fef08a; color: #854d0e; border-color: #fde047; font-weight: bold;">Modo SuperAdmin</div>
-        <div class="pill" id="pill-service">Servicio: DATAPAC_V4</div>
+        <div class="pill" id="pill-modo" style="display:none; background:#f1f5f9; font-weight:bold;">MODO: —</div>
         <div class="pill" id="pill-user" style="display:none;">Usuario: —</div>
-        <button class="btn btn--ghost" id="btn-refresh" title="Recargar catálogos">Recargar</button>
+        <button class="btn btn--ghost" id="btn-refresh">Actualizar</button>
       </div>
     </header>
 
     <main class="layout">
-      <section class="panel panel--form" aria-label="Formulario">
+      <section class="panel panel--form">
         <div class="panel__header">
-          <h2>1) Selección</h2>
-          <p class="muted">Tus opciones están filtradas por tus asignaciones operativas y alcance.</p>
+          <h2>1) Selección de Actividad</h2>
+          <p class="muted" style="font-size:12px; margin-top:4px;">Los datos se filtran por su asignación vigente.</p>
         </div>
 
         <div class="grid2">
-          <div class="field">
-            <label for="sel-vigencia">Vigencia</label>
-            <input id="sel-vigencia" type="number" min="2020" max="2100" />
+          <div class="field" style="padding:0">
+            <label>Vigencia</label>
+            <input id="sel-vigencia" type="number" min="2024" max="2027" />
           </div>
-          <div class="field">
-            <label>Periodo (Trimestre)</label>
+          <div class="field" style="padding:0">
+            <label>Periodo</label>
             <select id="sel-periodo">
-              <option value="">Selecciona periodo</option>
-              <option value="T1">T1</option>
-              <option value="T2">T2</option>
-              <option value="T3">T3</option>
-              <option value="T4" selected>T4</option>
+              <option value="T1">Trimestre 1</option>
+              <option value="T2">Trimestre 2</option>
+              <option value="T3">Trimestre 3</option>
+              <option value="T4" selected>Trimestre 4</option>
             </select>
           </div>
         </div>
 
         <div class="field">
-          <label>Actividad Asignada</label>
+          <label>Actividad</label>
           <div id="combo-actividad"></div>
-          <div class="help" style="display: flex; justify-content: space-between; margin-top: 6px;">
-            <span class="muted">Módulo de captura operativa</span>
-            <strong id="lbl-responsable" style="color: var(--primary-2);">Responsable: —</strong>
-          </div>
+          <div style="margin-top:8px; font-size:11px; font-weight:700; color:var(--primary-2);" id="lbl-responsable">Responsable: —</div>
         </div>
 
         <div class="divider"></div>
 
         <div class="panel__header">
-          <h2>2) Avance por Tareas</h2>
-          <p class="muted">Registra o corrige el avance. Los campos y puntos del mapa se bloquearán si el estado es Enviado o superior.</p>
+          <h2>2) Avance de Tareas</h2>
+          <p class="muted" style="font-size:12px; margin-top:4px;">Registre el avance físico y georreferencie si aplica.</p>
         </div>
-
-        <div id="actividad-context" class="ctx-panel" style="display:none; margin: 0 16px 14px 16px;"></div>
 
         <div id="indicadores" class="indicadores"></div>
 
         <div class="divider"></div>
 
         <div class="panel__header">
-          <h2>3) Reporte narrativo (trimestral)</h2>
-          <p class="muted">Resumen ejecutivo del trimestre para la actividad seleccionada.</p>
-          <div id="narrativa-badge-container"></div>
+          <h2>3) Reporte Narrativo</h2>
+          <div id="narrativa-badge-container" style="margin-top:6px;"></div>
         </div>
 
-        <div class="field field-motivo" id="container-motivo-narrativa" style="display:none;">
-          <label style="color:var(--danger);">Motivo de ajuste requerido (Devuelto)</label>
-          <input type="text" id="txt-motivo-narrativa" placeholder="Indica qué corregiste en la narrativa..." />
+        <div id="msg-narrativa" style="margin: 0 24px 12px 24px;"></div>
+
+        <div class="field" id="container-motivo-narrativa" style="display:none;">
+          <label style="color:var(--danger)">Motivo del Ajuste (Devuelto)</label>
+          <input type="text" id="txt-motivo-narrativa" placeholder="Describa la corrección realizada..." />
         </div>
 
         <div class="field">
-          <label for="txt-reporte-narrativo">Reporte Narrativo</label>
-          <textarea id="txt-reporte-narrativo" rows="5" placeholder="Resumen ejecutivo del trimestre..."></textarea>
+          <label>Resumen del Trimestre</label>
+          <textarea id="txt-reporte-narrativo" rows="4" placeholder="Logros y dificultades generales..."></textarea>
         </div>
         <div class="field">
-          <label for="txt-logros-descripcion">Descripción de logros alcanzados</label>
-          <textarea id="txt-logros-descripcion" rows="4" placeholder="Describe los logros alcanzados en el trimestre..."></textarea>
+          <label>Descripción de Logros</label>
+          <textarea id="txt-logros-descripcion" rows="3"></textarea>
         </div>
-        <div class="field">
-          <label for="txt-logros-principales">Principales logros</label>
-          <textarea id="txt-logros-principales" rows="3" placeholder="Lista breve de principales logros (viñetas o texto)..."></textarea>
-        </div>
+
+        <div id="status" class="status-global"></div>
 
         <div class="actions">
           <button class="btn btn--ghost" id="btn-guardar">Guardar Borrador</button>
-          <button class="btn btn--primary" id="btn-enviar">Enviar a Revisión</button>
-          <button class="btn btn--danger" id="btn-limpiar">Limpiar Vista</button>
+          <button class="btn btn--primary" id="btn-enviar">Enviar Reporte</button>
+          <button class="btn btn--danger" id="btn-limpiar" style="margin-left:auto">Limpiar</button>
         </div>
-        <div id="status" class="status" role="status" aria-live="polite"></div>
       </section>
 
-      <section class="panel panel--map" aria-label="Mapa">
-        <div class="panel__header panel__header--map">
+      <section class="panel panel--map">
+        <div class="panel__header" style="background: #fff; border-bottom: 1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
           <div>
-            <h2>Georreferenciación de Múltiples Sitios</h2>
-            <p class="muted">Activa un registro y haz clic en el mapa. El bloqueo de estado aplica individualmente por tarea.</p>
+            <h2 style="font-size:14px;">Georreferenciación</h2>
+            <div class="pill" id="pill-active" style="margin-top:4px; border:none; padding:0; color:var(--primary);">Tarea activa: Ninguna</div>
           </div>
-          <div class="maptools">
-            <div class="pill" id="pill-active">Tarea activa para georreferenciar: —</div>
-            <button class="btn btn--ghost" id="btn-centrar" title="Centrar a Cundinamarca">Centrar</button>
-          </div>
+          <button class="btn btn--ghost" id="btn-centrar" style="padding:6px 12px;">Centrar Mapa</button>
         </div>
         <div id="map" class="map"></div>
       </section>
     </main>
   </div>
+
   <script src="https://js.arcgis.com/4.29/"></script>
   <script src="script.js"></script>
   <script>document.getElementById("sel-vigencia").value = new Date().getFullYear();</script>
