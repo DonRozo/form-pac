@@ -10,7 +10,8 @@
                     Corrección UX: Fila Georreferenciación (Selectores & Active Row).
                     Corrección UX 2: Delegación robusta y activación sin dependencia de histórico.
                     Corrección UX 3: Rediseño y alineación estética de tarjetas de ubicación.
-                    + Capa Mensajería UX Global e Inline.
+                    Capa Mensajería UX Global e Inline.
+                    + Capa de Validaciones Previas Centralizadas.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -70,7 +71,7 @@ let activeRowId = null;
 let viewOnlyMode = false;
 let map, view, graphicsLayer, webMercatorUtils, sketchVM, jurisdiccionLayerView;
 
-// --- Helpers UX (Nuevos) ---
+// --- Helpers UX ---
 function showGlobalMessage(text, type = "info") {
     const el = document.getElementById("status");
     if (!el) return;
@@ -106,7 +107,6 @@ function clearNarrativeMessage() {
     if (el) el.style.display = "none";
 }
 
-// --- Helpers Base ---
 function setStatus(msg, type="info"){ showGlobalMessage(msg, type); }
 function escapeHtml(s){ return (s??"").toString().replaceAll("<","&lt;").replaceAll(">","&gt;"); }
 function toYesNo(v){ const s=(v||"").toString().toLowerCase(); return (s==="si"||s==="sí"||s==="true")?true:(s==="no"||s==="false"?false:null); }
@@ -867,6 +867,140 @@ async function updateMunicipioFromCAR(rowId, ptId, mapPoint){
   }catch(e){ console.error(e); }finally{ document.body.style.cursor = 'default'; }
 }
 
+// --- VALIDACIONES PREVIAS CENTRALIZADAS ---
+function validateSelection() {
+    let errors = [];
+    if (!elVigencia.value) errors.push("Vigencia");
+    if (!getPeriodo()) errors.push("Periodo");
+    if (!getActividadId()) errors.push("Actividad");
+    return errors;
+}
+
+function validateTaskRows(isSubmit) {
+    let errorCount = 0;
+    document.querySelectorAll(".row").forEach(rowEl => {
+        if (rowEl.classList.contains("is-readonly") || rowEl.classList.contains("is-not-applicable")) return;
+        
+        const rowId = rowEl.getAttribute("data-row-id");
+        const tareaGid = rowEl.getAttribute("data-tarea-gid");
+        const val = rowEl.querySelector(".row-valor")?.value;
+        const obs = rowEl.querySelector(".row-obs")?.value;
+        const evi = rowEl.querySelector(".row-evi")?.value;
+        const motivo = rowEl.querySelector(".row-motivo")?.value;
+        const locs = rowLocations.get(rowId) || [];
+        
+        clearRowMessage(rowId);
+        rowEl.classList.remove("row--error");
+
+        let hasData = (val !== "" && val !== undefined) || (obs && obs.trim() !== "") || (evi && evi.trim() !== "") || locs.length > 0;
+        if (!hasData) return;
+
+        let rowErrors = [];
+
+        // 1. Validación de número
+        if (val !== "" && val !== undefined && isNaN(Number(val))) {
+            rowErrors.push("El Valor Reportado debe ser numérico.");
+        }
+
+        // 2. Validación de Estado Devuelto
+        const exist = existingAvances.get(tareaGid);
+        if (exist && exist.EstadoRegistro === "Devuelto") {
+            if (!motivo || motivo.trim() === "") {
+                rowErrors.push("Falta el motivo de ajuste para la tarea devuelta.");
+            }
+        }
+
+        // 3. Validación de límites CAR
+        locs.forEach(loc => {
+            const domLoc = document.getElementById(`loc-${loc.ptId}`);
+            if (domLoc) loc.desc = domLoc.querySelector(".loc-desc").value;
+            
+            if (loc.mun === "Fuera de CAR" || !loc.mun) {
+                rowErrors.push("Ubicación fuera de jurisdicción CAR.");
+            }
+        });
+
+        if (rowErrors.length > 0) {
+            showRowMessage(rowId, rowErrors.join(" "), "error");
+            rowEl.classList.add("row--error");
+            errorCount++;
+        }
+    });
+    return errorCount;
+}
+
+function validateTaskRowsForSave() { return validateTaskRows(false); }
+function validateTaskRowsForSubmit() { return validateTaskRows(true); }
+
+function validateNarrative(isSubmit) {
+    let errors = [];
+    clearNarrativeMessage();
+
+    const txt1 = document.getElementById("txt-reporte-narrativo")?.value || "";
+    const txt2 = document.getElementById("txt-logros-descripcion")?.value || "";
+    const txt3 = document.getElementById("txt-logros-principales")?.value || "";
+    const motivoN = document.getElementById("txt-motivo-narrativa")?.value || "";
+
+    const hasNarrativeData = txt1.trim() !== "" || txt2.trim() !== "" || txt3.trim() !== "";
+
+    if (!document.getElementById("txt-reporte-narrativo")?.disabled) {
+        
+        // 1. Validación de Estado Devuelto
+        if (existingNarrativa && existingNarrativa.EstadoRegistro === "Devuelto" && hasNarrativeData) {
+            if (motivoN.trim() === "") {
+                errors.push("Falta justificar el motivo de ajuste para la narrativa devuelta.");
+            }
+        }
+
+        // 2. Validación al enviar
+        if (isSubmit && hasNarrativeData) {
+             if (txt1.trim() === "") {
+                 errors.push("El campo Reporte Narrativo es obligatorio al enviar.");
+             }
+        }
+    }
+
+    if (errors.length > 0) {
+        showNarrativeMessage(errors.join(" "), "error");
+    }
+    return errors.length;
+}
+
+function validateNarrativeForSave() { return validateNarrative(false); }
+function validateNarrativeForSubmit() { return validateNarrative(true); }
+
+function validateBeforeSave() {
+    clearGlobalMessage();
+    let selErrors = validateSelection();
+    if (selErrors.length > 0) {
+        setStatus("Por favor seleccione: " + selErrors.join(", "), "error");
+        return false;
+    }
+    let taskErrors = validateTaskRowsForSave();
+    let narrErrors = validateNarrativeForSave();
+    if (taskErrors > 0 || narrErrors > 0) {
+        setStatus(`Revise las validaciones inline antes de guardar (${taskErrors} tareas con error).`, "error");
+        return false;
+    }
+    return true;
+}
+
+function validateBeforeSubmit() {
+    clearGlobalMessage();
+    let selErrors = validateSelection();
+    if (selErrors.length > 0) {
+        setStatus("Por favor seleccione: " + selErrors.join(", "), "error");
+        return false;
+    }
+    let taskErrors = validateTaskRowsForSubmit();
+    let narrErrors = validateNarrativeForSubmit();
+    if (taskErrors > 0 || narrErrors > 0) {
+        setStatus(`No se puede enviar a revisión. Corrija los errores indicados (${taskErrors} tareas con error).`, "error");
+        return false;
+    }
+    return true;
+}
+
 // --- GUARDAR Y ENVIAR V4 ---
 btnGuardar.addEventListener("click", () => processSave(false));
 btnEnviar.addEventListener("click", () => processSave(true));
@@ -874,9 +1008,12 @@ btnEnviar.addEventListener("click", () => processSave(true));
 async function processSave(isSubmit) {
   if (viewOnlyMode) return setStatus("Modo lectura: no se permiten cambios.", "error");
 
+  // Orquestación de validación previa
+  const isValid = isSubmit ? validateBeforeSubmit() : validateBeforeSave();
+  if (!isValid) return; 
+
   try {
     btnGuardar.disabled = true; btnEnviar.disabled = true;
-    document.querySelectorAll(".row--error").forEach(r => r.classList.remove("row--error"));
     
     const draft = collectDraft(isSubmit);
     if(!draft.updates.length && !draft.adds.length && !draft.narrAdds.length && !draft.narrUpdates.length && !deletedLocations.length) {
@@ -913,27 +1050,11 @@ function collectDraft(isSubmit) {
     const tareaGid = rowEl.getAttribute("data-tarea-gid"), rowId = rowEl.getAttribute("data-row-id");
     const val = rowEl.querySelector(".row-valor")?.value, obs = rowEl.querySelector(".row-obs")?.value, evi = rowEl.querySelector(".row-evi")?.value;
     const motivo = rowEl.querySelector(".row-motivo")?.value;
-    
     const locs = rowLocations.get(rowId) || [];
-    locs.forEach(loc => { 
-        const domLoc = document.getElementById(`loc-${loc.ptId}`); 
-        if(domLoc) loc.desc = domLoc.querySelector(".loc-desc").value; 
-        
-        if (loc.mun === "Fuera de CAR" || !loc.mun) {
-            rowEl.classList.add("row--error");
-            throw new Error(`Existen ubicaciones fuera de la jurisdicción CAR en la tarea observada. Elimine o corrija el punto para poder continuar.`);
-        }
-    });
 
     if(!val && !obs && !evi && locs.length === 0) return; 
 
     const exist = existingAvances.get(tareaGid);
-    
-    if (exist && exist.EstadoRegistro === "Devuelto" && (!motivo || motivo.trim() === "")) {
-      rowEl.classList.add("row--error");
-      throw new Error(`Debes diligenciar obligatoriamente el 'Motivo de ajuste' en la tarea devuelta.`);
-    }
-
     const estadoNuevo = isSubmit ? "Enviado" : (exist ? exist.EstadoRegistro : "Borrador");
     
     const baseAttrs = {
@@ -999,10 +1120,6 @@ function collectDraft(isSubmit) {
     const txt1 = document.getElementById("txt-reporte-narrativo").value, txt2 = document.getElementById("txt-logros-descripcion").value, txt3 = document.getElementById("txt-logros-principales").value, motivoN = document.getElementById("txt-motivo-narrativa")?.value;
     if(txt1 || txt2 || txt3) {
       
-      if (existingNarrativa && existingNarrativa.EstadoRegistro === "Devuelto" && (!motivoN || motivoN.trim() === "")) {
-        throw new Error(`Debes diligenciar el 'Motivo de ajuste requerido' en la sección de Narrativa.`);
-      }
-
       const estadoNuevoN = isSubmit ? "Enviado" : (existingNarrativa ? existingNarrativa.EstadoRegistro : "Borrador");
       const baseN = { [F_NAR.estado]: estadoNuevoN, [F_NAR.pEdic]: currentUser.pid, [F_NAR.fEdic]: epochNow, [F_NAR.motivo]: motivoN || "", [F_NAR.txt1]: txt1, [F_NAR.txt2]: txt2, [F_NAR.txt3]: txt3 };
       
