@@ -11,8 +11,8 @@
                     Corrección UX 2: Delegación robusta y activación sin dependencia de histórico.
                     Corrección UX 3: Rediseño y alineación estética de tarjetas de ubicación.
                     Capa Mensajería UX Global e Inline.
-                    Capa de Validaciones Previas Centralizadas (Corregidas).
-                    + Auditoría de Errores Técnicos y Funcionales Fortalecida.
+                    Capa de Validaciones Previas Centralizadas.
+                    + Auditoría de Errores Técnicos y Funcionales (Sin Duplicidad).
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -72,15 +72,20 @@ let activeRowId = null;
 let viewOnlyMode = false;
 let map, view, graphicsLayer, webMercatorUtils, sketchVM, jurisdiccionLayerView;
 
-// --- CAPA DE AUDITORÍA DE ERRORES GLOBAL (NUEVA) ---
+// --- CAPA DE AUDITORÍA DE ERRORES GLOBAL ---
 async function auditError(context, error, extra = {}) {
-    if (context === "AUDIT_SYSTEM") return; // Bypass absoluto para evitar recursión.
+    // REGLA: Evita doble auditoría del mismo objeto de error
+    if (error && typeof error === 'object' && error._audited) return; 
     
     const errorMsg = error instanceof Error ? error.message : String(error);
     const detail = `[${context}] ERR: ${errorMsg}`.substring(0, 255);
     const functionalContext = JSON.stringify(extra).substring(0, 255);
     
     console.error(`[AUDIT ERROR] ${context}:`, error, extra);
+    
+    if (error && typeof error === 'object') {
+        try { error._audited = true; } catch(err) {}
+    }
     
     try {
         const attrs = {
@@ -98,14 +103,12 @@ async function auditError(context, error, extra = {}) {
         form.append("f", "json");
         form.append("adds", JSON.stringify([{attributes: attrs}]));
         
-        // Uso directo de API Fetch para evadir postForm (y sus throws)
         await fetch(`${URL_AUD_EVENTO}/applyEdits`, { method: "POST", body: form });
     } catch(e) {
         console.error("[AUDIT ERROR] Falló el registro de auditoría en la tabla. Silenciando error local.", e);
     }
 }
 
-// Captura Global no controlada
 window.onerror = function (msg, url, lineNo, columnNo, error) {
     auditError("GLOBAL_WINDOW", error || msg, { lineNo, columnNo });
     return false;
@@ -131,12 +134,13 @@ function showRowMessage(rowId, text, type = "info") { const container = document
 function clearRowMessage(rowId) { const container = document.getElementById(`msg-container-${rowId}`); if (container) container.innerHTML = ""; }
 function showNarrativeMessage(text, type = "info") { const el = document.getElementById("msg-narrativa"); if (!el) return; el.className = `msg-inline msg--${type}`; el.textContent = text; el.style.display = "flex"; }
 function clearNarrativeMessage() { const el = document.getElementById("msg-narrativa"); if (el) el.style.display = "none"; }
+
 function setStatus(msg, type="info"){ showGlobalMessage(msg, type); }
 function escapeHtml(s){ return (s??"").toString().replaceAll("<","&lt;").replaceAll(">","&gt;"); }
 function toYesNo(v){ const s=(v||"").toString().toLowerCase(); return (s==="si"||s==="sí"||s==="true")?true:(s==="no"||s==="false"?false:null); }
 function generateGUID() { return '{' + crypto.randomUUID().toUpperCase() + '}'; }
 
-// --- Funciones Base con Try/Catch de Auditoría ---
+// --- Funciones Base (Técnicas) ---
 async function fetchJson(url, params){ 
     try {
         const u=new URL(url); Object.entries(params||{}).forEach(([k,v])=>u.searchParams.set(k,v)); 
@@ -144,7 +148,10 @@ async function fetchJson(url, params){
         if(!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`); 
         return await r.json(); 
     } catch(e) {
-        auditError("FETCH_JSON", e, { url: url.substring(0, 150) });
+        // Exclusión de auto-auditoría para las propias tablas de error
+        if (!url.includes("AUD_EventoSistema") && !url.includes("AUD_HistorialCambio")) {
+            auditError("FETCH_JSON", e, { url: url.substring(0, 150) });
+        }
         throw e;
     }
 }
@@ -156,7 +163,9 @@ async function postForm(url, formObj){
         if(!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`); 
         return await r.json(); 
     } catch(e) {
-        auditError("POST_FORM", e, { url: url.substring(0, 150) });
+        if (!url.includes("AUD_EventoSistema") && !url.includes("AUD_HistorialCambio")) {
+            auditError("POST_FORM", e, { url: url.substring(0, 150) });
+        }
         throw e;
     }
 }
@@ -212,13 +221,13 @@ function getPeriodo() { return elPeriodo.value || "T4"; }
 
 function initCombosFijos() { renderCombo("combo-actividad", [], "Cargando..."); }
 
-// --- Funciones de Auditoría Histórica ---
+// --- Funciones de Historial y Workflow ---
 async function writeAuditEvent(tipo, entidad, objGid, resultado, detalle) {
   if (!currentUser) return;
   try {
     const attrs = { GlobalID: generateGUID(), TipoEvento: tipo, Entidad: entidad, ObjetoGlobalID: objGid || "", Resultado: resultado, DetalleEvento: detalle ? detalle.substring(0, 255) : "", PersonaID: currentUser.pid, FechaEvento: Date.now() };
     await postForm(`${URL_AUD_EVENTO}/applyEdits`, { adds: [{attributes: attrs}] });
-  } catch(e) { auditError("AUDIT_SYSTEM", e, { tipo }); }
+  } catch(e) { console.error("[AUDIT_SYSTEM] Error al guardar evento:", e); }
 }
 
 async function writeAuditHistory(tipoObj, objGid, campo, valAnt, valNuevo, motivo) {
@@ -226,7 +235,7 @@ async function writeAuditHistory(tipoObj, objGid, campo, valAnt, valNuevo, motiv
   try {
     const attrs = { GlobalID: generateGUID(), TipoObjeto: tipoObj, ObjetoID: "0", ObjetoGlobalID: objGid || "", CampoModificado: campo || "", ValorAnterior: valAnt ? String(valAnt).substring(0, 1000) : "", ValorNuevo: valNuevo ? String(valNuevo).substring(0, 1000) : "", PersonaID: currentUser.pid, FechaCambio: Date.now(), MotivoCambio: motivo || "", OrigenCambio: "APP_REPORTE" };
     await postForm(`${URL_AUD_HISTORIAL}/applyEdits`, { adds: [{attributes: attrs}] });
-  } catch(e) { auditError("AUDIT_SYSTEM", e, { tipoObj }); }
+  } catch(e) { console.error("[AUDIT_SYSTEM] Error al guardar historial:", e); }
 }
 
 // --- Autenticación OTP y Roles V4 ---
