@@ -11,7 +11,8 @@
                     Corrección UX 2: Delegación robusta y activación sin dependencia de histórico.
                     Corrección UX 3: Rediseño y alineación estética de tarjetas de ubicación.
                     Capa Mensajería UX Global e Inline.
-                    + Capa de Validaciones Previas Centralizadas (Corregidas).
+                    Capa de Validaciones Previas Centralizadas (Corregidas).
+                    + Auditoría de Errores Técnicos y Funcionales Fortalecida.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -71,6 +72,49 @@ let activeRowId = null;
 let viewOnlyMode = false;
 let map, view, graphicsLayer, webMercatorUtils, sketchVM, jurisdiccionLayerView;
 
+// --- CAPA DE AUDITORÍA DE ERRORES GLOBAL (NUEVA) ---
+async function auditError(context, error, extra = {}) {
+    if (context === "AUDIT_SYSTEM") return; // Bypass absoluto para evitar recursión.
+    
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    const detail = `[${context}] ERR: ${errorMsg}`.substring(0, 255);
+    const functionalContext = JSON.stringify(extra).substring(0, 255);
+    
+    console.error(`[AUDIT ERROR] ${context}:`, error, extra);
+    
+    try {
+        const attrs = {
+            GlobalID: generateGUID(),
+            TipoEvento: `ERR_${context}`.substring(0, 50),
+            Entidad: "APP_REPORTE",
+            ObjetoGlobalID: currentUser ? currentUser.gid : "",
+            Resultado: "ERROR",
+            DetalleEvento: `CTX: ${functionalContext} | ${detail}`.substring(0, 255),
+            PersonaID: currentUser ? currentUser.pid : "NO_AUTH",
+            FechaEvento: Date.now()
+        };
+        
+        const form = new URLSearchParams();
+        form.append("f", "json");
+        form.append("adds", JSON.stringify([{attributes: attrs}]));
+        
+        // Uso directo de API Fetch para evadir postForm (y sus throws)
+        await fetch(`${URL_AUD_EVENTO}/applyEdits`, { method: "POST", body: form });
+    } catch(e) {
+        console.error("[AUDIT ERROR] Falló el registro de auditoría en la tabla. Silenciando error local.", e);
+    }
+}
+
+// Captura Global no controlada
+window.onerror = function (msg, url, lineNo, columnNo, error) {
+    auditError("GLOBAL_WINDOW", error || msg, { lineNo, columnNo });
+    return false;
+};
+
+window.onunhandledrejection = function (event) {
+    auditError("UNHANDLED_PROMISE", event.reason || "Rechazo de promesa sin razón");
+};
+
 // --- Helpers UX ---
 function showGlobalMessage(text, type = "info") {
     const el = document.getElementById("status");
@@ -82,37 +126,40 @@ function showGlobalMessage(text, type = "info") {
         setTimeout(() => { if (el.textContent === text) el.style.display = "none"; }, 5000);
     }
 }
-function clearGlobalMessage() {
-    const el = document.getElementById("status");
-    if (el) el.style.display = "none";
-}
-function showRowMessage(rowId, text, type = "info") {
-    const container = document.getElementById(`msg-container-${rowId}`);
-    if (!container) return;
-    container.innerHTML = `<div class="msg-inline msg--${type}">${text}</div>`;
-}
-function clearRowMessage(rowId) {
-    const container = document.getElementById(`msg-container-${rowId}`);
-    if (container) container.innerHTML = "";
-}
-function showNarrativeMessage(text, type = "info") {
-    const el = document.getElementById("msg-narrativa");
-    if (!el) return;
-    el.className = `msg-inline msg--${type}`;
-    el.textContent = text;
-    el.style.display = "flex";
-}
-function clearNarrativeMessage() {
-    const el = document.getElementById("msg-narrativa");
-    if (el) el.style.display = "none";
-}
-
+function clearGlobalMessage() { const el = document.getElementById("status"); if (el) el.style.display = "none"; }
+function showRowMessage(rowId, text, type = "info") { const container = document.getElementById(`msg-container-${rowId}`); if (container) container.innerHTML = `<div class="msg-inline msg--${type}">${text}</div>`; }
+function clearRowMessage(rowId) { const container = document.getElementById(`msg-container-${rowId}`); if (container) container.innerHTML = ""; }
+function showNarrativeMessage(text, type = "info") { const el = document.getElementById("msg-narrativa"); if (!el) return; el.className = `msg-inline msg--${type}`; el.textContent = text; el.style.display = "flex"; }
+function clearNarrativeMessage() { const el = document.getElementById("msg-narrativa"); if (el) el.style.display = "none"; }
 function setStatus(msg, type="info"){ showGlobalMessage(msg, type); }
 function escapeHtml(s){ return (s??"").toString().replaceAll("<","&lt;").replaceAll(">","&gt;"); }
 function toYesNo(v){ const s=(v||"").toString().toLowerCase(); return (s==="si"||s==="sí"||s==="true")?true:(s==="no"||s==="false"?false:null); }
-async function fetchJson(url, params){ const u=new URL(url); Object.entries(params||{}).forEach(([k,v])=>u.searchParams.set(k,v)); const r=await fetch(u, {method:"GET"}); if(!r.ok) throw new Error(`HTTP ${r.status}`); return await r.json(); }
-async function postForm(url, formObj){ const form=new URLSearchParams(); Object.entries(formObj).forEach(([k,v])=>{ if(v!=null) form.append(k,typeof v==="string"?v:JSON.stringify(v)); }); const r=await fetch(url, {method:"POST", body:form}); return await r.json(); }
 function generateGUID() { return '{' + crypto.randomUUID().toUpperCase() + '}'; }
+
+// --- Funciones Base con Try/Catch de Auditoría ---
+async function fetchJson(url, params){ 
+    try {
+        const u=new URL(url); Object.entries(params||{}).forEach(([k,v])=>u.searchParams.set(k,v)); 
+        const r=await fetch(u, {method:"GET"}); 
+        if(!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`); 
+        return await r.json(); 
+    } catch(e) {
+        auditError("FETCH_JSON", e, { url: url.substring(0, 150) });
+        throw e;
+    }
+}
+
+async function postForm(url, formObj){ 
+    try {
+        const form=new URLSearchParams(); Object.entries(formObj).forEach(([k,v])=>{ if(v!=null) form.append(k,typeof v==="string"?v:JSON.stringify(v)); }); 
+        const r=await fetch(url, {method:"POST", body:form}); 
+        if(!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`); 
+        return await r.json(); 
+    } catch(e) {
+        auditError("POST_FORM", e, { url: url.substring(0, 150) });
+        throw e;
+    }
+}
 
 // --- Lógica de Estado Individual V4 ---
 function normalizeState(st) {
@@ -138,91 +185,40 @@ function isTaskReadonly(rowId) {
 function renderCombo(containerId, data, placeholder, onChange) {
     const container = document.getElementById(containerId);
     if(!container) return;
-    
-    container.innerHTML = `
-      <div class="combo-wrap">
-        <input type="text" class="combo-input" placeholder="${placeholder}" autocomplete="off" />
-        <input type="hidden" class="combo-value" />
-        <span class="combo-clear" title="Limpiar">×</span>
-        <div class="combo-list"></div>
-      </div>
-    `;
-    
-    const input = container.querySelector(".combo-input");
-    const hidden = container.querySelector(".combo-value");
-    const list = container.querySelector(".combo-list");
-    const clear = container.querySelector(".combo-clear");
+    container.innerHTML = `<div class="combo-wrap"><input type="text" class="combo-input" placeholder="${placeholder}" autocomplete="off" /><input type="hidden" class="combo-value" /><span class="combo-clear" title="Limpiar">×</span><div class="combo-list"></div></div>`;
+    const input = container.querySelector(".combo-input"), hidden = container.querySelector(".combo-value"), list = container.querySelector(".combo-list"), clear = container.querySelector(".combo-clear");
 
     const renderList = (filter = "") => {
-        const f = filter.toLowerCase();
-        const filtered = data.filter(d => d.label.toLowerCase().includes(f));
-        if(!filtered.length) {
-            list.innerHTML = `<div class="combo-option combo-empty">Sin resultados</div>`;
-            return;
-        }
+        const f = filter.toLowerCase(); const filtered = data.filter(d => d.label.toLowerCase().includes(f));
+        if(!filtered.length) { list.innerHTML = `<div class="combo-option combo-empty">Sin resultados</div>`; return; }
         list.innerHTML = filtered.map(d => `<div class="combo-option" data-val="${d.value}">${escapeHtml(d.label)}</div>`).join("");
     };
 
     input.addEventListener("focus", () => { renderList(input.value); list.style.display = "block"; });
-    input.addEventListener("input", (e) => { 
-        renderList(e.target.value); 
-        list.style.display = "block"; 
-        clear.style.display = input.value ? "block" : "none"; 
-    });
-
-    document.addEventListener("click", (e) => {
-        if(!container.contains(e.target)) {
-            list.style.display = "none";
-            if(!hidden.value) { input.value = ""; clear.style.display = "none"; } 
-        }
-    });
-
-    list.addEventListener("click", (e) => {
-        if(e.target.classList.contains("combo-option") && !e.target.classList.contains("combo-empty")) {
-            const val = e.target.getAttribute("data-val");
-            const txt = e.target.textContent;
-            input.value = txt;
-            hidden.value = val;
-            list.style.display = "none";
-            clear.style.display = "block";
-            if(onChange) onChange(val);
-        }
-    });
-
-    clear.addEventListener("click", () => {
-        input.value = "";
-        hidden.value = "";
-        clear.style.display = "none";
-        if(onChange) onChange("");
-        input.focus();
-    });
+    input.addEventListener("input", (e) => { renderList(e.target.value); list.style.display = "block"; clear.style.display = input.value ? "block" : "none"; });
+    document.addEventListener("click", (e) => { if(!container.contains(e.target)) { list.style.display = "none"; if(!hidden.value) { input.value = ""; clear.style.display = "none"; } } });
+    list.addEventListener("click", (e) => { if(e.target.classList.contains("combo-option") && !e.target.classList.contains("combo-empty")) { const val = e.target.getAttribute("data-val"); input.value = e.target.textContent; hidden.value = val; list.style.display = "none"; clear.style.display = "block"; if(onChange) onChange(val); } });
+    clear.addEventListener("click", () => { input.value = ""; hidden.value = ""; clear.style.display = "none"; if(onChange) onChange(""); input.focus(); });
 }
 
 function setComboValue(containerId, value, label) {
-    const container = document.getElementById(containerId);
-    if(!container) return;
-    const input = container.querySelector(".combo-input");
-    const hidden = container.querySelector(".combo-value");
-    const clear = container.querySelector(".combo-clear");
-    if(input) input.value = label || "";
-    if(hidden) hidden.value = value || "";
-    if(clear) clear.style.display = value ? "block" : "none";
+    const container = document.getElementById(containerId); if(!container) return;
+    const input = container.querySelector(".combo-input"), hidden = container.querySelector(".combo-value"), clear = container.querySelector(".combo-clear");
+    if(input) input.value = label || ""; if(hidden) hidden.value = value || ""; if(clear) clear.style.display = value ? "block" : "none";
 }
 
 function getActividadId() { const h = document.querySelector("#combo-actividad .combo-value"); return h ? h.value : ""; }
 function getPeriodo() { return elPeriodo.value || "T4"; }
 
-function initCombosFijos() {
-    renderCombo("combo-actividad", [], "Cargando...");
-}
+function initCombosFijos() { renderCombo("combo-actividad", [], "Cargando..."); }
 
-// --- Funciones de Auditoría ---
+// --- Funciones de Auditoría Histórica ---
 async function writeAuditEvent(tipo, entidad, objGid, resultado, detalle) {
   if (!currentUser) return;
   try {
     const attrs = { GlobalID: generateGUID(), TipoEvento: tipo, Entidad: entidad, ObjetoGlobalID: objGid || "", Resultado: resultado, DetalleEvento: detalle ? detalle.substring(0, 255) : "", PersonaID: currentUser.pid, FechaEvento: Date.now() };
     await postForm(`${URL_AUD_EVENTO}/applyEdits`, { adds: [{attributes: attrs}] });
-  } catch(e) { console.warn("Auditoría Evento falló (silenciado):", e); }
+  } catch(e) { auditError("AUDIT_SYSTEM", e, { tipo }); }
 }
 
 async function writeAuditHistory(tipoObj, objGid, campo, valAnt, valNuevo, motivo) {
@@ -230,7 +226,7 @@ async function writeAuditHistory(tipoObj, objGid, campo, valAnt, valNuevo, motiv
   try {
     const attrs = { GlobalID: generateGUID(), TipoObjeto: tipoObj, ObjetoID: "0", ObjetoGlobalID: objGid || "", CampoModificado: campo || "", ValorAnterior: valAnt ? String(valAnt).substring(0, 1000) : "", ValorNuevo: valNuevo ? String(valNuevo).substring(0, 1000) : "", PersonaID: currentUser.pid, FechaCambio: Date.now(), MotivoCambio: motivo || "", OrigenCambio: "APP_REPORTE" };
     await postForm(`${URL_AUD_HISTORIAL}/applyEdits`, { adds: [{attributes: attrs}] });
-  } catch(e) { console.warn("Auditoría Historial falló (silenciado):", e); }
+  } catch(e) { auditError("AUDIT_SYSTEM", e, { tipoObj }); }
 }
 
 // --- Autenticación OTP y Roles V4 ---
@@ -241,7 +237,10 @@ document.getElementById("btn-solicitar-codigo").addEventListener("click", async 
     const res = await fetch(URL_WEBHOOK_POWERAUTOMATE, { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({cedula, correo}) });
     if(res.status === 200 || res.status === 202) { document.getElementById("login-step-1").classList.remove("active"); document.getElementById("login-step-2").classList.add("active"); }
     else throw new Error("Credenciales inválidas o error de conexión.");
-  } catch(e) { document.getElementById("login-msg-1").textContent = e.message; }
+  } catch(e) { 
+      document.getElementById("login-msg-1").textContent = e.message; 
+      auditError("OTP_SOLICITAR", e, { correo });
+  }
 });
 
 document.getElementById("btn-validar-codigo").addEventListener("click", async () => {
@@ -249,14 +248,13 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
   document.getElementById("login-msg-2").textContent = "Validando acceso...";
   try {
     const qOtp = await fetchJson(`${URL_OTP}/query`, { f:"json", where:`Correo='${correo}' AND CodigoHash='${codigo}' AND Usado='NO'`, outFields:"*" });
-    if(!qOtp.features.length) throw new Error("Código incorrecto.");
+    if(!qOtp.features.length) throw new Error("Código incorrecto o expirado.");
     const otp = qOtp.features[0].attributes;
     
     const qPers = await fetchJson(`${URL_PERSONA}/query`, { f:"json", where:`GlobalID='${otp.PersonaGlobalID}' AND Activo='SI'`, outFields:"Nombre,PersonaID" });
     if(!qPers.features.length) throw new Error("Usuario inactivo o no encontrado en el sistema.");
     const pid = qPers.features[0].attributes.PersonaID;
 
-    // Validación de Roles
     const resR = await fetchJson(`${URL_ROL}/query`, { f: "json", where: `(PersonaID='${otp.PersonaGlobalID}' OR PersonaID='${pid}') AND Activo='SI'`, outFields: "RolID", returnGeometry: false });
     const roles = (resR.features || []).map(f => String(f.attributes.RolID).trim().toUpperCase());
     
@@ -269,7 +267,6 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
     await postForm(`${URL_OTP}/applyEdits`, { f:"json", updates: [{attributes: {OBJECTID: otp.OBJECTID, Usado: "SI"}}] });
     await writeAuditEvent("OTP_VALIDATE", "APP_REPORTE", currentUser.gid, "OK", "Ingreso exitoso a módulo operativo V4");
     
-    // Cargar SEG_Alcance para este usuario
     const qAlcance = await fetchJson(`${URL_ALCANCE}/query`, { f:"json", where:`(PersonaID='${currentUser.gid}' OR PersonaID='${currentUser.pid}') AND Activo='SI'`, outFields:"ObjetoGlobalID" });
     currentUser.alcances = qAlcance.features.map(f => f.attributes.ObjetoGlobalID).filter(Boolean);
     currentUser.hasGlobalScope = qAlcance.features.some(f => !f.attributes.ObjetoGlobalID);
@@ -285,146 +282,135 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
     initCombosFijos(); 
     await loadAsignaciones(); 
     await loadActividades();
-  } catch(e) { document.getElementById("login-msg-2").textContent = e.message; }
+  } catch(e) { 
+      document.getElementById("login-msg-2").textContent = e.message; 
+      auditError("OTP_VALIDAR", e, { correo });
+  }
 });
 
 // --- Filtros SEG_Asignacion Híbrido + SEG_Alcance V4 ---
 async function loadAsignaciones() {
   if(!currentUser) return;
-  if(currentUser.roles.includes("SUPERADMIN")) {
-      asignacionesActivas = []; 
-      return;
-  }
+  if(currentUser.roles.includes("SUPERADMIN")) { asignacionesActivas = []; return; }
 
-  const vig = elVigencia.value;
-  const qAsig = await fetchJson(`${URL_ASIGNACION}/query`, { 
-      f: "json", where: `PersonaGlobalID='${currentUser.gid}' AND Vigencia=${vig} AND Activo='SI'`, 
-      outFields: "GlobalID,TipoAsignacion,ActividadGlobalID,TareaGlobalID,HeredaHijos,Activo,Vigencia" 
-  });
-  
-  let asigActividades = [], asigTareas = [];
-
-  (qAsig.features || []).forEach(f => {
-      const a = f.attributes;
-      const tipo = (a.TipoAsignacion || "").toUpperCase(), hereda = (a.HeredaHijos || "").toUpperCase();
-      const actGid = a.ActividadGlobalID, tarGid = a.TareaGlobalID;
-
-      if (tipo === "ACTIVIDAD") {
-          if (hereda === "SI" && actGid) asigActividades.push(actGid);
-          else console.warn(`[SEG_Asignacion] Ignorado: Registro inconsistente. GlobalID: ${a.GlobalID}`);
-      } else if (tipo === "TAREA") {
-          if (tarGid) {
-              asigTareas.push(tarGid);
-              if (hereda === "SI") console.warn(`[SEG_Asignacion] Herencia ignorada para asignación puntual. TareaGlobalID: ${tarGid}`);
-          } else console.warn(`[SEG_Asignacion] Ignorado: TAREA sin TareaGlobalID. GlobalID: ${a.GlobalID}`);
-      } else {
-          if (tarGid) asigTareas.push(tarGid);
-          else if (actGid && hereda === "SI") asigActividades.push(actGid); 
-          else console.warn(`[SEG_Asignacion] Ignorado: Registro legado no interpretable. GlobalID: ${a.GlobalID}`);
-      }
-  });
-
-  asigActividades = [...new Set(asigActividades)]; asigTareas = [...new Set(asigTareas)];
-
-  let qJerarquiaFeatures = []; const collectedTaskGuids = new Set();
-
-  if (asigActividades.length > 0) {
-      let subDeActividades = [];
-      for (let i = 0; i < asigActividades.length; i += 200) {
-          const chunk = asigActividades.slice(i, i + 200).map(g => `'${g}'`).join(",");
-          const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
-          if(qS.features) subDeActividades.push(...qS.features);
-      }
+  try {
+      const vig = elVigencia.value;
+      const qAsig = await fetchJson(`${URL_ASIGNACION}/query`, { 
+          f: "json", where: `PersonaGlobalID='${currentUser.gid}' AND Vigencia=${vig} AND Activo='SI'`, 
+          outFields: "GlobalID,TipoAsignacion,ActividadGlobalID,TareaGlobalID,HeredaHijos,Activo,Vigencia" 
+      });
       
-      const subGuids = subDeActividades.map(f => f.attributes.GlobalID);
-      if (subGuids.length > 0) {
-          for (let i = 0; i < subGuids.length; i += 200) {
-              const chunk = subGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
-              const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
-              if(qT.features) {
-                  const mapSubToAct = new Map(); subDeActividades.forEach(s => mapSubToAct.set(s.attributes.GlobalID, s.attributes.ActividadGlobalID));
-                  qT.features.forEach(t => {
-                      t.attributes.ActividadGlobalID = mapSubToAct.get(t.attributes.SubActividadGlobalID);
-                      t.attributes.OrigenConsolidado = 'ACTIVIDAD'; qJerarquiaFeatures.push(t); collectedTaskGuids.add(t.attributes.GlobalID);
-                  });
+      let asigActividades = [], asigTareas = [];
+
+      (qAsig.features || []).forEach(f => {
+          const a = f.attributes;
+          const tipo = (a.TipoAsignacion || "").toUpperCase(), hereda = (a.HeredaHijos || "").toUpperCase();
+          const actGid = a.ActividadGlobalID, tarGid = a.TareaGlobalID;
+
+          if (tipo === "ACTIVIDAD") { if (hereda === "SI" && actGid) asigActividades.push(actGid); } 
+          else if (tipo === "TAREA") { if (tarGid) asigTareas.push(tarGid); } 
+          else { if (tarGid) asigTareas.push(tarGid); else if (actGid && hereda === "SI") asigActividades.push(actGid); }
+      });
+
+      asigActividades = [...new Set(asigActividades)]; asigTareas = [...new Set(asigTareas)];
+      let qJerarquiaFeatures = []; const collectedTaskGuids = new Set();
+
+      if (asigActividades.length > 0) {
+          let subDeActividades = [];
+          for (let i = 0; i < asigActividades.length; i += 200) {
+              const chunk = asigActividades.slice(i, i + 200).map(g => `'${g}'`).join(",");
+              const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
+              if(qS.features) subDeActividades.push(...qS.features);
+          }
+          const subGuids = subDeActividades.map(f => f.attributes.GlobalID);
+          if (subGuids.length > 0) {
+              for (let i = 0; i < subGuids.length; i += 200) {
+                  const chunk = subGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
+                  const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
+                  if(qT.features) {
+                      const mapSubToAct = new Map(); subDeActividades.forEach(s => mapSubToAct.set(s.attributes.GlobalID, s.attributes.ActividadGlobalID));
+                      qT.features.forEach(t => { t.attributes.ActividadGlobalID = mapSubToAct.get(t.attributes.SubActividadGlobalID); t.attributes.OrigenConsolidado = 'ACTIVIDAD'; qJerarquiaFeatures.push(t); collectedTaskGuids.add(t.attributes.GlobalID); });
+                  }
               }
           }
       }
-  }
 
-  if (asigTareas.length > 0) {
-      let tareasPuntuales = [];
-      for (let i = 0; i < asigTareas.length; i += 200) {
-          const chunk = asigTareas.slice(i, i + 200).map(g => `'${g}'`).join(",");
-          const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
-          if(qT.features) tareasPuntuales.push(...qT.features);
-      }
-      
-      const validSubIds = [...new Set(tareasPuntuales.map(t => t.attributes.SubActividadGlobalID).filter(Boolean))];
-      const subMap = new Map();
-      if (validSubIds.length > 0) {
-          for (let i = 0; i < validSubIds.length; i += 200) {
-              const chunk = validSubIds.slice(i, i + 200).map(g => `'${g}'`).join(",");
-              const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
-              if(qS.features) qS.features.forEach(f => subMap.set(f.attributes.GlobalID, f.attributes.ActividadGlobalID));
+      if (asigTareas.length > 0) {
+          let tareasPuntuales = [];
+          for (let i = 0; i < asigTareas.length; i += 200) {
+              const chunk = asigTareas.slice(i, i + 200).map(g => `'${g}'`).join(",");
+              const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
+              if(qT.features) tareasPuntuales.push(...qT.features);
           }
+          const validSubIds = [...new Set(tareasPuntuales.map(t => t.attributes.SubActividadGlobalID).filter(Boolean))];
+          const subMap = new Map();
+          if (validSubIds.length > 0) {
+              for (let i = 0; i < validSubIds.length; i += 200) {
+                  const chunk = validSubIds.slice(i, i + 200).map(g => `'${g}'`).join(",");
+                  const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
+                  if(qS.features) qS.features.forEach(f => subMap.set(f.attributes.GlobalID, f.attributes.ActividadGlobalID));
+              }
+          }
+          tareasPuntuales.forEach(t => {
+              t.attributes.ActividadGlobalID = subMap.get(t.attributes.SubActividadGlobalID);
+              if (!collectedTaskGuids.has(t.attributes.GlobalID)) { t.attributes.OrigenConsolidado = 'TAREA'; qJerarquiaFeatures.push(t); collectedTaskGuids.add(t.attributes.GlobalID); }
+          });
       }
 
-      tareasPuntuales.forEach(t => {
-          t.attributes.ActividadGlobalID = subMap.get(t.attributes.SubActividadGlobalID);
-          if (!collectedTaskGuids.has(t.attributes.GlobalID)) {
-              t.attributes.OrigenConsolidado = 'TAREA'; qJerarquiaFeatures.push(t); collectedTaskGuids.add(t.attributes.GlobalID);
-          }
+      const tarMap = new Map(), subMap = new Map(), originMap = new Map(); const validTaskGuids = [];
+      qJerarquiaFeatures.forEach(f => {
+          const tGuid = f.attributes.GlobalID, sGuid = f.attributes.SubActividadGlobalID, aGuid = f.attributes.ActividadGlobalID, oGuid = f.attributes.OrigenConsolidado;
+          validTaskGuids.push(tGuid); tarMap.set(tGuid, sGuid); originMap.set(tGuid, oGuid); if(sGuid) subMap.set(sGuid, aGuid);
       });
+
+      let finalTasks = validTaskGuids;
+      if (!currentUser.hasGlobalScope && currentUser.alcances.length > 0) {
+          finalTasks = validTaskGuids.filter(tGuid => {
+              const sGuid = tarMap.get(tGuid), aGuid = sGuid ? subMap.get(sGuid) : null;
+              return currentUser.alcances.includes(tGuid) || (sGuid && currentUser.alcances.includes(sGuid)) || (aGuid && currentUser.alcances.includes(aGuid));
+          });
+      } else if (!currentUser.hasGlobalScope && currentUser.alcances.length === 0) finalTasks = []; 
+
+      asignacionesActivas = finalTasks.map(tGuid => ({ TareaGlobalID: tGuid, SubActividadGlobalID: tarMap.get(tGuid), ActividadGlobalID: tarMap.get(tGuid) ? subMap.get(tarMap.get(tGuid)) : null, TipoOrigenAsignacion: originMap.get(tGuid) }));
+  } catch (e) {
+      auditError("LOAD_ASIGNACIONES", e, { vigencia: elVigencia.value });
+      setStatus("Error al consultar asignaciones operativas en la plataforma.", "error");
   }
-
-  const tarMap = new Map(), subMap = new Map(), originMap = new Map(); const validTaskGuids = [];
-  qJerarquiaFeatures.forEach(f => {
-      const tGuid = f.attributes.GlobalID, sGuid = f.attributes.SubActividadGlobalID, aGuid = f.attributes.ActividadGlobalID, oGuid = f.attributes.OrigenConsolidado;
-      validTaskGuids.push(tGuid); tarMap.set(tGuid, sGuid); originMap.set(tGuid, oGuid); if(sGuid) subMap.set(sGuid, aGuid);
-  });
-
-  let finalTasks = validTaskGuids;
-  if (!currentUser.hasGlobalScope && currentUser.alcances.length > 0) {
-      finalTasks = validTaskGuids.filter(tGuid => {
-          const sGuid = tarMap.get(tGuid), aGuid = sGuid ? subMap.get(sGuid) : null;
-          return currentUser.alcances.includes(tGuid) || (sGuid && currentUser.alcances.includes(sGuid)) || (aGuid && currentUser.alcances.includes(aGuid));
-      });
-  } else if (!currentUser.hasGlobalScope && currentUser.alcances.length === 0) finalTasks = []; 
-
-  asignacionesActivas = finalTasks.map(tGuid => ({ TareaGlobalID: tGuid, SubActividadGlobalID: tarMap.get(tGuid), ActividadGlobalID: tarMap.get(tGuid) ? subMap.get(tarMap.get(tGuid)) : null, TipoOrigenAsignacion: originMap.get(tGuid) }));
 }
 
 async function loadActividades() {
   if(!currentUser) return;
-  const vig = elVigencia.value;
-  let data = [];
+  try {
+      const vig = elVigencia.value;
+      let data = [];
 
-  if (currentUser.roles.includes("SUPERADMIN")) {
-      const qAct = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
-      if(qAct.features && qAct.features.length > 0) data = qAct.features.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
-  } else {
-      const actGuids = [...new Set(asignacionesActivas.map(a => a.ActividadGlobalID).filter(Boolean))];
-      if(actGuids.length > 0) { 
-          let qActFeatures = [];
-          for (let i = 0; i < actGuids.length; i += 200) {
-              const chunk = actGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
-              const qA = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk}) AND Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
-              if(qA.features) qActFeatures.push(...qA.features);
+      if (currentUser.roles.includes("SUPERADMIN")) {
+          const qAct = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
+          if(qAct.features && qAct.features.length > 0) data = qAct.features.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
+      } else {
+          const actGuids = [...new Set(asignacionesActivas.map(a => a.ActividadGlobalID).filter(Boolean))];
+          if(actGuids.length > 0) { 
+              let qActFeatures = [];
+              for (let i = 0; i < actGuids.length; i += 200) {
+                  const chunk = actGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
+                  const qA = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk}) AND Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
+                  if(qA.features) qActFeatures.push(...qA.features);
+              }
+              data = qActFeatures.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
           }
-          data = qActFeatures.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
       }
-  }
 
-  renderCombo("combo-actividad", data, data.length ? "— Selecciona o busca —" : `Sin actividades operativas en ${vig}`, async (val) => {
-      if(!val) { 
-          elIndicadores.innerHTML = ""; actContextPanel.style.display = "none"; document.getElementById("lbl-responsable").textContent = "Responsable: —"; return; 
-      }
-      document.getElementById("lbl-responsable").textContent = `Responsable: ${currentUser.nombre}`;
-      await loadSubactividadesYTareas(val);
-  });
-  
-  if(!data.length) elIndicadores.innerHTML = ""; 
+      renderCombo("combo-actividad", data, data.length ? "— Selecciona o busca —" : `Sin actividades operativas en ${vig}`, async (val) => {
+          if(!val) { elIndicadores.innerHTML = ""; actContextPanel.style.display = "none"; document.getElementById("lbl-responsable").textContent = "Responsable: —"; return; }
+          document.getElementById("lbl-responsable").textContent = `Responsable: ${currentUser.nombre}`;
+          await loadSubactividadesYTareas(val);
+      });
+      
+      if(!data.length) elIndicadores.innerHTML = ""; 
+  } catch (e) {
+      auditError("LOAD_ACTIVIDADES", e, { vigencia: elVigencia.value });
+      setStatus("Ocurrió un error al cargar el catálogo de actividades.", "error");
+  }
 }
 
 async function loadSubactividadesYTareas(actividadGlobalId) {
@@ -434,74 +420,80 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
   viewOnlyMode = false;
   setStatus("Cargando estructura, contexto de planeación y reportes...");
 
-  const vig = elVigencia.value;
-  const subQ = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}'`, outFields:"*" });
-  cacheSubactividades = (subQ.features||[]).map(f=>f.attributes);
-  
-  const tareasAsignadas = asignacionesActivas.filter(a => a.ActividadGlobalID === actividadGlobalId).map(a => a.TareaGlobalID);
-  const inListSub = cacheSubactividades.map(s => `'${s.GlobalID}'`).join(",");
-  
-  if(inListSub) {
-    const tareaQ = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub})`, outFields:"*" });
-    let allTasks = (tareaQ.features||[]).map(f=>f.attributes);
-    if (!currentUser.roles.includes("SUPERADMIN")) allTasks = allTasks.filter(t => tareasAsignadas.includes(t.GlobalID));
-    cacheTareas = allTasks;
-  }
-
   try {
-      const qPlanAct = await fetchJson(`${URL_PLAN_ACT}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}' AND Vigencia=${vig}`, outFields:"*" });
-      if(qPlanAct.features.length) planActCtx = qPlanAct.features[0].attributes;
-      const qBiAct = await fetchJson(`${URL_BI_ACT}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}' AND Vigencia=${vig}`, outFields:"*" });
-      if(qBiAct.features.length) biActCtx = qBiAct.features[0].attributes;
-
+      const vig = elVigencia.value;
+      const subQ = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}'`, outFields:"*" });
+      cacheSubactividades = (subQ.features||[]).map(f=>f.attributes);
+      
+      const tareasAsignadas = asignacionesActivas.filter(a => a.ActividadGlobalID === actividadGlobalId).map(a => a.TareaGlobalID);
+      const inListSub = cacheSubactividades.map(s => `'${s.GlobalID}'`).join(",");
+      
       if(inListSub) {
-          const qPlanSub = await fetchJson(`${URL_PLAN_SUB}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub}) AND Vigencia=${vig}`, outFields:"*" });
-          qPlanSub.features.forEach(f => planSubCtx.set(f.attributes.SubActividadGlobalID, f.attributes));
-          const qBiSub = await fetchJson(`${URL_BI_SUB}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub}) AND Vigencia=${vig}`, outFields:"*" });
-          qBiSub.features.forEach(f => biSubCtx.set(f.attributes.SubActividadGlobalID, f.attributes));
+        const tareaQ = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub})`, outFields:"*" });
+        let allTasks = (tareaQ.features||[]).map(f=>f.attributes);
+        if (!currentUser.roles.includes("SUPERADMIN")) allTasks = allTasks.filter(t => tareasAsignadas.includes(t.GlobalID));
+        cacheTareas = allTasks;
       }
 
-      const inListTar = cacheTareas.map(t => `'${t.GlobalID}'`).join(",");
-      if(inListTar) {
-          const qPlanTar = await fetchJson(`${URL_PLAN_TAR}/query`, { f:"json", where:`TareaGlobalID IN (${inListTar}) AND Vigencia=${vig}`, outFields:"*" });
-          qPlanTar.features.forEach(f => planTarCtx.set(f.attributes.TareaGlobalID, f.attributes));
-          const qBiTar = await fetchJson(`${URL_BI_TAR}/query`, { f:"json", where:`TareaGlobalID IN (${inListTar}) AND Vigencia=${vig}`, outFields:"*" });
-          qBiTar.features.forEach(f => biTarCtx.set(f.attributes.TareaGlobalID, f.attributes));
+      try {
+          const qPlanAct = await fetchJson(`${URL_PLAN_ACT}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}' AND Vigencia=${vig}`, outFields:"*" });
+          if(qPlanAct.features.length) planActCtx = qPlanAct.features[0].attributes;
+          const qBiAct = await fetchJson(`${URL_BI_ACT}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}' AND Vigencia=${vig}`, outFields:"*" });
+          if(qBiAct.features.length) biActCtx = qBiAct.features[0].attributes;
+
+          if(inListSub) {
+              const qPlanSub = await fetchJson(`${URL_PLAN_SUB}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub}) AND Vigencia=${vig}`, outFields:"*" });
+              qPlanSub.features.forEach(f => planSubCtx.set(f.attributes.SubActividadGlobalID, f.attributes));
+              const qBiSub = await fetchJson(`${URL_BI_SUB}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub}) AND Vigencia=${vig}`, outFields:"*" });
+              qBiSub.features.forEach(f => biSubCtx.set(f.attributes.SubActividadGlobalID, f.attributes));
+          }
+
+          const inListTar = cacheTareas.map(t => `'${t.GlobalID}'`).join(",");
+          if(inListTar) {
+              const qPlanTar = await fetchJson(`${URL_PLAN_TAR}/query`, { f:"json", where:`TareaGlobalID IN (${inListTar}) AND Vigencia=${vig}`, outFields:"*" });
+              qPlanTar.features.forEach(f => planTarCtx.set(f.attributes.TareaGlobalID, f.attributes));
+              const qBiTar = await fetchJson(`${URL_BI_TAR}/query`, { f:"json", where:`TareaGlobalID IN (${inListTar}) AND Vigencia=${vig}`, outFields:"*" });
+              qBiTar.features.forEach(f => biTarCtx.set(f.attributes.TareaGlobalID, f.attributes));
+          }
+      } catch (e) { 
+          console.warn("Contexto PLAN/BI incompleto o no disponible.", e); 
+          auditError("LOAD_CONTEXTO_PLAN_BI", e, { actividadGlobalId });
       }
-  } catch (e) { console.warn("Contexto PLAN/BI incompleto o no disponible.", e); }
 
-  if (planActCtx) {
-      actContextPanel.style.display = "block";
-      const aplicaAct = String(planActCtx.Aplica || "SI").toUpperCase() !== "NO";
-      actContextPanel.innerHTML = `
-          <div style="margin-bottom: 8px;"><strong>Contexto de Planeación (${vig})</strong> ${!aplicaAct ? '<span class="status-badge status-badge--devuelto" style="margin-left:10px;">NO APLICA EN LA VIGENCIA</span>' : ''}</div>
-          <div style="display:flex; gap: 10px; flex-wrap: wrap;">
-              <span class="ctx-badge">Indicador: ${planActCtx.IndicadorID ?? 'N/A'}</span>
-              <span class="ctx-badge">Línea Base: ${planActCtx.LineaBase ?? 'N/A'}</span>
-              <span class="ctx-badge">Meta Prog.: ${planActCtx.MetaProgramada ?? 'N/A'}</span>
-              <span class="ctx-badge">Unidad: ${planActCtx.UnidadMedida ?? 'N/A'}</span>
-              <span class="ctx-badge" style="background:#dcfce7; color:#166534;">Avance Acum. Calculado: ${biActCtx?.AvanceAcumulado ?? 0}%</span>
-          </div>
-      `;
-  } else actContextPanel.style.display = "none"; 
+      if (planActCtx) {
+          actContextPanel.style.display = "block";
+          const aplicaAct = String(planActCtx.Aplica || "SI").toUpperCase() !== "NO";
+          actContextPanel.innerHTML = `
+              <div style="margin-bottom: 8px;"><strong>Contexto de Planeación (${vig})</strong> ${!aplicaAct ? '<span class="status-badge status-badge--devuelto" style="margin-left:10px;">NO APLICA EN LA VIGENCIA</span>' : ''}</div>
+              <div style="display:flex; gap: 10px; flex-wrap: wrap;">
+                  <span class="ctx-badge">Indicador: ${planActCtx.IndicadorID ?? 'N/A'}</span>
+                  <span class="ctx-badge">Línea Base: ${planActCtx.LineaBase ?? 'N/A'}</span>
+                  <span class="ctx-badge">Meta Prog.: ${planActCtx.MetaProgramada ?? 'N/A'}</span>
+                  <span class="ctx-badge">Unidad: ${planActCtx.UnidadMedida ?? 'N/A'}</span>
+                  <span class="ctx-badge" style="background:#dcfce7; color:#166534;">Avance Acum. Calculado: ${biActCtx?.AvanceAcumulado ?? 0}%</span>
+              </div>
+          `;
+      } else actContextPanel.style.display = "none"; 
 
-  // 1. Renderiza interfaz de Tareas operativas de forma inmediata.
-  elIndicadores.innerHTML = cacheSubactividades.map(sa => subActividadCardHtml(sa)).join("");
+      elIndicadores.innerHTML = cacheSubactividades.map(sa => subActividadCardHtml(sa)).join("");
 
-  // Mensajería UX para tareas que no aplican
-  document.querySelectorAll(".row.is-not-applicable").forEach(rowEl => {
-      showRowMessage(rowEl.getAttribute("data-row-id"), "Esta tarea no aplica para la vigencia actual.", "info");
-  });
+      document.querySelectorAll(".row.is-not-applicable").forEach(rowEl => {
+          showRowMessage(rowEl.getAttribute("data-row-id"), "Esta tarea no aplica para la vigencia actual.", "info");
+      });
 
-  // 2. Desacople: La interfaz de activación ya es interactiva a partir de aquí gracias a la Delegación Global.
-  try {
-      await loadExistingData(actividadGlobalId); 
-      evaluateHistoricalMode();
-      setStatus("Formulario operativo cargado.", "success");
-  } catch (err) {
-      console.warn("Histórico no disponible o vacío:", err);
-      evaluateHistoricalMode();
-      setStatus("Se cargó la estructura operativa, pero no se pudo recuperar parte del histórico. Puedes continuar capturando.", "info");
+      try {
+          await loadExistingData(actividadGlobalId); 
+          evaluateHistoricalMode();
+          setStatus("Formulario operativo cargado.", "success");
+      } catch (err) {
+          console.warn("Histórico no disponible o vacío:", err);
+          auditError("LOAD_EXISTING_DATA", err, { actividadGlobalId });
+          evaluateHistoricalMode();
+          setStatus("Estructura operativa cargada, pero hubo un error recuperando datos históricos.", "warning");
+      }
+  } catch (e) {
+      auditError("LOAD_ESTRUCTURA_TAREAS", e, { actividadGlobalId });
+      setStatus("Error grave al cargar la configuración de tareas. Comuníquese con soporte.", "error");
   }
 }
 
@@ -516,17 +508,13 @@ elIndicadores.addEventListener("click", (e) => {
 
 function activateTaskRow(rowEl) {
     const rowId = rowEl.getAttribute("data-row-id");
-    
     if (isTaskReadonly(rowId)) return setStatus("Esta tarea está bloqueada o no aplica.", "error");
-    
     document.querySelectorAll(".row").forEach(r => r.classList.remove("row--active"));
     rowEl.classList.add("row--active");
     activeRowId = rowId;
-    
     const codTarea = rowEl.querySelector("label").textContent.replace("Tarea ", "").trim();
     const nomTarea = rowEl.querySelector(".mono").textContent.trim();
     document.getElementById("pill-active").textContent = `Tarea activa para georreferenciar: ${codTarea} - ${nomTarea.substring(0, 20)}...`;
-    
     rowEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
     setStatus("Tarea seleccionada para ubicar puntos en el mapa.", "success");
 }
@@ -613,7 +601,6 @@ async function loadExistingData(actGid) {
       if (locList) locList.innerHTML = "";
   });
   
-  // 1. Narrativa
   const qNar = await fetchJson(`${URL_NARRATIVA}/query`, { f:"json", where:`ActividadGlobalID='${actGid}' AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
   if(qNar.features.length) {
     existingNarrativa = qNar.features[0].attributes;
@@ -628,7 +615,6 @@ async function loadExistingData(actGid) {
     document.getElementById("container-motivo-narrativa").style.display = "none";
   }
 
-  // 2. Avances
   const tGuids = cacheTareas.map(t=>`'${t.GlobalID}'`).join(",");
   if(tGuids) {
     const qAv = await fetchJson(`${URL_AVANCE_TAREA}/query`, { f:"json", where:`TareaGlobalID IN (${tGuids}) AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
@@ -647,7 +633,6 @@ async function loadExistingData(actGid) {
     });
   }
 
-  // 3. Ubicaciones
   if(avGuids.length) {
     const qUb = await fetchJson(`${URL_TAREA_UBICACION}/query`, { f:"json", where:`AvanceTareaGlobalID IN (${avGuids.join(",")})`, outFields:"*", returnGeometry:true, outSR:"4326" });
     qUb.features.forEach(f => {
@@ -666,7 +651,6 @@ async function loadExistingData(actGid) {
     });
   }
 
-  // 4. Workflow
   const allObjGuids = avGuids.concat(existingNarrativa ? [`'${existingNarrativa.GlobalID}'`] : []);
   if(allObjGuids.length > 0) {
     const qWf = await fetchJson(`${URL_WF_SOLICITUD}/query`, { 
@@ -779,11 +763,7 @@ function appendLocationUI(rowId, ptId, lon, lat, desc="", mun="", dane="") {
   
   div.querySelector(".btn-loc-del").addEventListener("click", () => deleteLocation(rowId, ptId));
   
-  // Retiene el borde indicador visual si el municipio es Fuera de CAR inicialmente
-  if (mun === "Fuera de CAR") {
-      div.querySelector(".loc-item__header").style.borderBottom = "1px solid red";
-  }
-
+  if (mun === "Fuera de CAR") div.querySelector(".loc-item__header").style.borderBottom = "1px solid red";
   listEl.appendChild(div);
 }
 
@@ -792,41 +772,46 @@ function initMap(){
   return new Promise((resolve, reject) => {
     require([ "esri/Map", "esri/views/MapView", "esri/layers/GraphicsLayer", "esri/layers/FeatureLayer", "esri/Graphic", "esri/widgets/Sketch/SketchViewModel", "esri/geometry/support/webMercatorUtils", "esri/widgets/Search", "esri/widgets/BasemapGallery", "esri/widgets/Expand"
     ], (Map, MapView, GraphicsLayer, FeatureLayer, Graphic, SketchViewModel, _webMercatorUtils, Search, BasemapGallery, Expand) => {
-      webMercatorUtils = _webMercatorUtils; map = new Map({ basemap: "osm" });
-      const jurisdiccionLayer = new FeatureLayer({ url: `${CAR_SERVICE_URL}/${CAR_JUR_LAYER_ID}`, title: "Municipios CAR", opacity: 0.15, outFields: ["*"] });
-      map.add(jurisdiccionLayer); graphicsLayer = new GraphicsLayer({ title: "Puntos" }); map.add(graphicsLayer);
-      view = new MapView({ container: "map", map, center: [-74.2, 4.7], zoom: 8, popup: { dockEnabled: true, dockOptions: { position: "top-right", breakpoint: false } } });
-      view.ui.add(new Search({ view: view }), "top-right");
-      view.ui.add(new Expand({ view: view, content: new BasemapGallery({ view: view, container: document.createElement("div") }), expandIcon: "basemap" }), "top-left");
-      
-      view.whenLayerView(jurisdiccionLayer).then((layerView) => { jurisdiccionLayerView = layerView; });
-      view.when(() => view.resize()); // Forzar render flex seguro
-      
-      sketchVM = new SketchViewModel({ view, layer: graphicsLayer, updateOnGraphicClick: false });
+      try {
+          webMercatorUtils = _webMercatorUtils; map = new Map({ basemap: "osm" });
+          const jurisdiccionLayer = new FeatureLayer({ url: `${CAR_SERVICE_URL}/${CAR_JUR_LAYER_ID}`, title: "Municipios CAR", opacity: 0.15, outFields: ["*"] });
+          map.add(jurisdiccionLayer); graphicsLayer = new GraphicsLayer({ title: "Puntos" }); map.add(graphicsLayer);
+          view = new MapView({ container: "map", map, center: [-74.2, 4.7], zoom: 8, popup: { dockEnabled: true, dockOptions: { position: "top-right", breakpoint: false } } });
+          view.ui.add(new Search({ view: view }), "top-right");
+          view.ui.add(new Expand({ view: view, content: new BasemapGallery({ view: view, container: document.createElement("div") }), expandIcon: "basemap" }), "top-left");
+          
+          view.whenLayerView(jurisdiccionLayer).then((layerView) => { jurisdiccionLayerView = layerView; });
+          view.when(() => view.resize()); 
+          
+          sketchVM = new SketchViewModel({ view, layer: graphicsLayer, updateOnGraphicClick: false });
 
-      sketchVM.on("update", async (evt) => {
-        if(evt.state !== "complete") return;
-        const g = evt.graphics?.[0]; if(!g || !g.attributes?.rowId || !g.attributes?.ptId) return;
-        
-        if(isTaskReadonly(g.attributes.rowId)) return setStatus("Edición de punto denegada. Tarea bloqueada.", "error");
+          sketchVM.on("update", async (evt) => {
+            if(evt.state !== "complete") return;
+            const g = evt.graphics?.[0]; if(!g || !g.attributes?.rowId || !g.attributes?.ptId) return;
+            if(isTaskReadonly(g.attributes.rowId)) return setStatus("Edición de punto denegada. Tarea bloqueada.", "error");
 
-        const geo = getGeographicLocation(g.geometry); const rId = g.attributes.rowId; const pId = g.attributes.ptId;
-        const locs = rowLocations.get(rId) || []; const locObj = locs.find(l => l.ptId === pId);
-        if(locObj){ locObj.lon = geo.longitude; locObj.lat = geo.latitude; const el = document.getElementById(`loc-${pId}`); if(el) el.querySelector('.loc-coords').textContent = `${geo.latitude.toFixed(5)}, ${geo.longitude.toFixed(5)}`; }
-        await updateMunicipioFromCAR(rId, pId, g.geometry);
-      });
+            const geo = getGeographicLocation(g.geometry); const rId = g.attributes.rowId; const pId = g.attributes.ptId;
+            const locs = rowLocations.get(rId) || []; const locObj = locs.find(l => l.ptId === pId);
+            if(locObj){ locObj.lon = geo.longitude; locObj.lat = geo.latitude; const el = document.getElementById(`loc-${pId}`); if(el) el.querySelector('.loc-coords').textContent = `${geo.latitude.toFixed(5)}, ${geo.longitude.toFixed(5)}`; }
+            await updateMunicipioFromCAR(rId, pId, g.geometry);
+          });
 
-      view.on("click", async (evt) => {
-        if(!activeRowId) return setStatus("Activa un registro en el panel para georreferenciar.", "error"); 
-        if (isTaskReadonly(activeRowId)) return setStatus("La tarea activa está bloqueada. No puedes añadir puntos.", "error");
+          view.on("click", async (evt) => {
+            if(!activeRowId) return setStatus("Activa un registro en el panel para georreferenciar.", "error"); 
+            if (isTaskReadonly(activeRowId)) return setStatus("La tarea activa está bloqueada. No puedes añadir puntos.", "error");
 
-        const geo = getGeographicLocation(evt.mapPoint); const ptId = crypto.randomUUID(); const locs = rowLocations.get(activeRowId) || [];
-        locs.push({ ptId, lon: geo.longitude, lat: geo.latitude, mun: "", dane: "", desc: "" }); rowLocations.set(activeRowId, locs);
-        addGraphicForPoint(activeRowId, ptId, geo.longitude, geo.latitude, Graphic);
-        appendLocationUI(activeRowId, ptId, geo.longitude, geo.latitude);
-        await updateMunicipioFromCAR(activeRowId, ptId, evt.mapPoint);
-      });
-      resolve(true);
+            const geo = getGeographicLocation(evt.mapPoint); const ptId = crypto.randomUUID(); const locs = rowLocations.get(activeRowId) || [];
+            locs.push({ ptId, lon: geo.longitude, lat: geo.latitude, mun: "", dane: "", desc: "" }); rowLocations.set(activeRowId, locs);
+            addGraphicForPoint(activeRowId, ptId, geo.longitude, geo.latitude, Graphic);
+            appendLocationUI(activeRowId, ptId, geo.longitude, geo.latitude);
+            await updateMunicipioFromCAR(activeRowId, ptId, evt.mapPoint);
+          });
+          resolve(true);
+      } catch (e) {
+          auditError("INIT_MAP", e);
+          setStatus("Error crítico al inicializar el visor geográfico.", "error");
+          reject(e);
+      }
     });
   });
 }
@@ -864,14 +849,18 @@ async function updateMunicipioFromCAR(rowId, ptId, mapPoint){
     const locs = rowLocations.get(rowId) || []; const locObj = locs.find(l => l.ptId === ptId);
     if(locObj) { locObj.mun = mun; locObj.dane = dane; }
     view.popup.close();
-  }catch(e){ console.error(e); }finally{ document.body.style.cursor = 'default'; }
+  }catch(e){ 
+      console.error(e); 
+      auditError("MAPA_INTERSECT", e, { rowId, ptId });
+      setStatus("Error de comunicación al verificar la jurisdicción en el mapa.", "error");
+  }finally{ document.body.style.cursor = 'default'; }
 }
 
 // --- VALIDACIONES PREVIAS CENTRALIZADAS ---
 function validateSelection() {
     let errors = [];
     if (!elVigencia.value) errors.push("Vigencia");
-    if (!elPeriodo.value) errors.push("Periodo"); // Corrección 1: Validación real sin default
+    if (!elPeriodo.value) errors.push("Periodo");
     if (!getActividadId()) errors.push("Actividad");
     return errors;
 }
@@ -892,7 +881,6 @@ function validateTaskRows(isSubmit) {
         clearRowMessage(rowId);
         rowEl.classList.remove("row--error");
 
-        // Sincronizar descripciones de ubicaciones desde el DOM
         locs.forEach(loc => {
             const domLoc = document.getElementById(`loc-${loc.ptId}`);
             if (domLoc) loc.desc = domLoc.querySelector(".loc-desc").value;
@@ -903,12 +891,10 @@ function validateTaskRows(isSubmit) {
 
         let rowErrors = [];
 
-        // Corrección 3: Validación siempre ejecutada para números
         if (val !== "" && val !== undefined && isNaN(Number(val))) {
             rowErrors.push("El Valor Reportado debe ser numérico.");
         }
 
-        // Corrección 3: Validaciones estrictas solo al enviar a revisión
         if (isSubmit) {
             const exist = existingAvances.get(tareaGid);
             if (exist && exist.EstadoRegistro === "Devuelto") {
@@ -946,8 +932,6 @@ function validateNarrative(isSubmit) {
     const motivoN = document.getElementById("txt-motivo-narrativa")?.value || "";
 
     if (!document.getElementById("txt-reporte-narrativo")?.disabled) {
-        
-        // Corrección 2: Validar todos los campos narrativos requeridos al enviar
         if (isSubmit) {
             if (txt1.trim() === "" || txt2.trim() === "" || txt3.trim() === "") {
                 errors.push("Los campos Reporte Narrativo, Descripción de logros y Principales logros son obligatorios al enviar.");
@@ -1032,7 +1016,8 @@ async function processSave(isSubmit) {
     evaluateHistoricalMode();
   } catch(e) { 
       console.error(e); 
-      setStatus(e.message, "error"); 
+      setStatus(e.message || "Fallo en la preparación de datos.", "error"); 
+      auditError(isSubmit ? "SUBMIT_REVISION" : "SAVE_BORRADOR", e, { isSubmit });
   } finally { 
       btnGuardar.disabled = false; btnEnviar.disabled = false; 
   }
@@ -1148,10 +1133,15 @@ function collectDraft(isSubmit) {
 }
 
 async function executeSave(draft) {
-  if(draft.adds.length || draft.updates.length) await postForm(`${URL_AVANCE_TAREA}/applyEdits`, { f: "json", adds: draft.adds, updates: draft.updates });
-  if(draft.ubicAdds.length || draft.ubicUpdates.length || deletedLocations.length) await postForm(`${URL_TAREA_UBICACION}/applyEdits`, { f:"json", adds: draft.ubicAdds, updates: draft.ubicUpdates, deletes: deletedLocations });
-  if(draft.narrAdds.length || draft.narrUpdates.length) await postForm(`${URL_NARRATIVA}/applyEdits`, { f:"json", adds: draft.narrAdds, updates: draft.narrUpdates });
-  if(draft.wfAdds.length || draft.wfUpdates.length) await postForm(`${URL_WF_SOLICITUD}/applyEdits`, { f:"json", adds: draft.wfAdds, updates: draft.wfUpdates });
+  try {
+    if(draft.adds.length || draft.updates.length) await postForm(`${URL_AVANCE_TAREA}/applyEdits`, { f: "json", adds: draft.adds, updates: draft.updates });
+    if(draft.ubicAdds.length || draft.ubicUpdates.length || deletedLocations.length) await postForm(`${URL_TAREA_UBICACION}/applyEdits`, { f:"json", adds: draft.ubicAdds, updates: draft.ubicUpdates, deletes: deletedLocations });
+    if(draft.narrAdds.length || draft.narrUpdates.length) await postForm(`${URL_NARRATIVA}/applyEdits`, { f:"json", adds: draft.narrAdds, updates: draft.narrUpdates });
+    if(draft.wfAdds.length || draft.wfUpdates.length) await postForm(`${URL_WF_SOLICITUD}/applyEdits`, { f:"json", adds: draft.wfAdds, updates: draft.wfUpdates });
+  } catch(e) {
+    auditError("APPLY_EDITS_API", e, { draftStats: { a: draft.adds.length, u: draft.updates.length } });
+    throw new Error("Falla en la sincronización de datos con el servidor principal.");
+  }
 }
 
 // --- Limpieza UI ---
