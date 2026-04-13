@@ -11,7 +11,7 @@
                     Corrección UX 2: Delegación robusta y activación sin dependencia de histórico.
                     Corrección UX 3: Rediseño y alineación estética de tarjetas de ubicación.
                     Capa Mensajería UX Global e Inline.
-                    + Capa de Validaciones Previas Centralizadas.
+                    + Capa de Validaciones Previas Centralizadas (Corregidas).
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -871,7 +871,7 @@ async function updateMunicipioFromCAR(rowId, ptId, mapPoint){
 function validateSelection() {
     let errors = [];
     if (!elVigencia.value) errors.push("Vigencia");
-    if (!getPeriodo()) errors.push("Periodo");
+    if (!elPeriodo.value) errors.push("Periodo"); // Corrección 1: Validación real sin default
     if (!getActividadId()) errors.push("Actividad");
     return errors;
 }
@@ -892,33 +892,37 @@ function validateTaskRows(isSubmit) {
         clearRowMessage(rowId);
         rowEl.classList.remove("row--error");
 
+        // Sincronizar descripciones de ubicaciones desde el DOM
+        locs.forEach(loc => {
+            const domLoc = document.getElementById(`loc-${loc.ptId}`);
+            if (domLoc) loc.desc = domLoc.querySelector(".loc-desc").value;
+        });
+
         let hasData = (val !== "" && val !== undefined) || (obs && obs.trim() !== "") || (evi && evi.trim() !== "") || locs.length > 0;
         if (!hasData) return;
 
         let rowErrors = [];
 
-        // 1. Validación de número
+        // Corrección 3: Validación siempre ejecutada para números
         if (val !== "" && val !== undefined && isNaN(Number(val))) {
             rowErrors.push("El Valor Reportado debe ser numérico.");
         }
 
-        // 2. Validación de Estado Devuelto
-        const exist = existingAvances.get(tareaGid);
-        if (exist && exist.EstadoRegistro === "Devuelto") {
-            if (!motivo || motivo.trim() === "") {
-                rowErrors.push("Falta el motivo de ajuste para la tarea devuelta.");
+        // Corrección 3: Validaciones estrictas solo al enviar a revisión
+        if (isSubmit) {
+            const exist = existingAvances.get(tareaGid);
+            if (exist && exist.EstadoRegistro === "Devuelto") {
+                if (!motivo || motivo.trim() === "") {
+                    rowErrors.push("Falta el motivo de ajuste para la tarea devuelta.");
+                }
             }
-        }
 
-        // 3. Validación de límites CAR
-        locs.forEach(loc => {
-            const domLoc = document.getElementById(`loc-${loc.ptId}`);
-            if (domLoc) loc.desc = domLoc.querySelector(".loc-desc").value;
-            
-            if (loc.mun === "Fuera de CAR" || !loc.mun) {
-                rowErrors.push("Ubicación fuera de jurisdicción CAR.");
-            }
-        });
+            locs.forEach(loc => {
+                if (loc.mun === "Fuera de CAR" || !loc.mun) {
+                    rowErrors.push("Ubicación fuera de jurisdicción CAR.");
+                }
+            });
+        }
 
         if (rowErrors.length > 0) {
             showRowMessage(rowId, rowErrors.join(" "), "error");
@@ -941,22 +945,19 @@ function validateNarrative(isSubmit) {
     const txt3 = document.getElementById("txt-logros-principales")?.value || "";
     const motivoN = document.getElementById("txt-motivo-narrativa")?.value || "";
 
-    const hasNarrativeData = txt1.trim() !== "" || txt2.trim() !== "" || txt3.trim() !== "";
-
     if (!document.getElementById("txt-reporte-narrativo")?.disabled) {
         
-        // 1. Validación de Estado Devuelto
-        if (existingNarrativa && existingNarrativa.EstadoRegistro === "Devuelto" && hasNarrativeData) {
-            if (motivoN.trim() === "") {
-                errors.push("Falta justificar el motivo de ajuste para la narrativa devuelta.");
+        // Corrección 2: Validar todos los campos narrativos requeridos al enviar
+        if (isSubmit) {
+            if (txt1.trim() === "" || txt2.trim() === "" || txt3.trim() === "") {
+                errors.push("Los campos Reporte Narrativo, Descripción de logros y Principales logros son obligatorios al enviar.");
             }
-        }
 
-        // 2. Validación al enviar
-        if (isSubmit && hasNarrativeData) {
-             if (txt1.trim() === "") {
-                 errors.push("El campo Reporte Narrativo es obligatorio al enviar.");
-             }
+            if (existingNarrativa && existingNarrativa.EstadoRegistro === "Devuelto") {
+                if (motivoN.trim() === "") {
+                    errors.push("Falta justificar el motivo de ajuste para la narrativa devuelta.");
+                }
+            }
         }
     }
 
@@ -1008,7 +1009,6 @@ btnEnviar.addEventListener("click", () => processSave(true));
 async function processSave(isSubmit) {
   if (viewOnlyMode) return setStatus("Modo lectura: no se permiten cambios.", "error");
 
-  // Orquestación de validación previa
   const isValid = isSubmit ? validateBeforeSubmit() : validateBeforeSave();
   if (!isValid) return; 
 
