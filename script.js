@@ -148,8 +148,8 @@ async function fetchJson(url, params){
         if(!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`); 
         return await r.json(); 
     } catch(e) {
-        // Exclusión de auto-auditoría para las propias tablas de error
-        if (!url.includes("AUD_EventoSistema") && !url.includes("AUD_HistorialCambio")) {
+        // Exclusión usando las constantes reales
+        if (!url.includes(URL_AUD_EVENTO) && !url.includes(URL_AUD_HISTORIAL)) {
             auditError("FETCH_JSON", e, { url: url.substring(0, 150) });
         }
         throw e;
@@ -163,7 +163,8 @@ async function postForm(url, formObj){
         if(!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`); 
         return await r.json(); 
     } catch(e) {
-        if (!url.includes("AUD_EventoSistema") && !url.includes("AUD_HistorialCambio")) {
+        // Exclusión usando las constantes reales
+        if (!url.includes(URL_AUD_EVENTO) && !url.includes(URL_AUD_HISTORIAL)) {
             auditError("POST_FORM", e, { url: url.substring(0, 150) });
         }
         throw e;
@@ -1149,7 +1150,11 @@ async function executeSave(draft) {
     if(draft.wfAdds.length || draft.wfUpdates.length) await postForm(`${URL_WF_SOLICITUD}/applyEdits`, { f:"json", adds: draft.wfAdds, updates: draft.wfUpdates });
   } catch(e) {
     auditError("APPLY_EDITS_API", e, { draftStats: { a: draft.adds.length, u: draft.updates.length } });
-    throw new Error("Falla en la sincronización de datos con el servidor principal.");
+    
+    // Se marca explícitamente el nuevo error como auditado para evitar la duplicidad al re-lanzarlo
+    const customErr = new Error("Falla en la sincronización de datos con el servidor principal.");
+    customErr._audited = true; 
+    throw customErr;
   }
 }
 
