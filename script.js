@@ -22,7 +22,8 @@
                     + Estabilización Network POST (Fix: URI Too Long) y Contexto OAP 2026.
                     + INYECCIÓN UI DE PESOS Y METAS DE PLANEACIÓN (ACT, SUB, TAR).
                     + CORRECCIÓN NORMALIZACIÓN GUID PARA CRUCE DE PESOS.
-                    + ESTRATEGIA CLIENT-SIDE FILTERING PARA PLAN_SUB Y PLAN_TAR.
+                    + ESTRATEGIA CLIENT-SIDE FILTERING Y PAGINACIÓN PARA PLAN_SUB Y PLAN_TAR.
+                    + CORRECCIÓN CRÍTICA DE AISLAMIENTO PLAN/BI Y PROTECCIÓN ARRAY/JSON.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -78,7 +79,7 @@ elPeriodo.value = OPERATIVE_PERIODO;
 let currentUser = null; 
 let asignacionesActivas = []; 
 let cacheSubactividades = [], cacheTareas = [];
-let cacheActividadesPesos = new Map(); 
+let cacheActividadesPesos = new Map(); // Cache local de Pesos de CFG_Actividad
 let planActCtx = null, biActCtx = null;
 let planSubCtx = new Map(), biSubCtx = new Map();
 let planTarCtx = new Map(), biTarCtx = new Map();
@@ -292,9 +293,11 @@ async function fetchJson(url, params){
     try {
         const form = new URLSearchParams();
         Object.entries(params||{}).forEach(([k,v])=>{ if(v!=null) form.append(k,v); }); 
-        const r=await fetch(url, {method:"POST", body:form}); 
+        const r = await fetch(url, {method:"POST", body:form}); 
         if(!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`); 
-        return await r.json(); 
+        const data = await r.json();
+        if(data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+        return data; 
     } catch(e) {
         if (!url.includes(URL_AUD_EVENTO) && !url.includes(URL_AUD_HISTORIAL)) {
             auditError("FETCH_JSON", e, { url: url.substring(0, 150) });
@@ -303,12 +306,45 @@ async function fetchJson(url, params){
     }
 }
 
+// --- HELPER DE PAGINACIÓN POST ---
+async function fetchAllByWhere(url, where, outFields = "*") {
+    let allFeatures = [];
+    let offset = 0;
+    const limit = 2000;
+    let hasMore = true;
+
+    while (hasMore) {
+        const params = {
+            f: "json",
+            where: where,
+            outFields: outFields,
+            returnGeometry: false,
+            resultOffset: offset,
+            resultRecordCount: limit
+        };
+        const response = await fetchJson(`${url}/query`, params);
+        const features = response.features || [];
+        if (features.length > 0) {
+            allFeatures.push(...features);
+            offset += limit;
+            if (features.length < limit || response.exceededTransferLimit === false) {
+                hasMore = false;
+            }
+        } else {
+            hasMore = false;
+        }
+    }
+    return allFeatures;
+}
+
 async function postForm(url, formObj){ 
     try {
         const form=new URLSearchParams(); Object.entries(formObj).forEach(([k,v])=>{ if(v!=null) form.append(k,typeof v==="string"?v:JSON.stringify(v)); }); 
         const r=await fetch(url, {method:"POST", body:form}); 
         if(!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`); 
-        return await r.json(); 
+        const data = await r.json();
+        if(data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+        return data; 
     } catch(e) {
         if (!url.includes(URL_AUD_EVENTO) && !url.includes(URL_AUD_HISTORIAL)) {
             auditError("POST_FORM", e, { url: url.substring(0, 150) });
@@ -404,11 +440,11 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
   document.getElementById("login-msg-2").textContent = "Validando acceso...";
   try {
     const qOtp = await fetchJson(`${URL_OTP}/query`, { f:"json", where:`Correo='${correo}' AND CodigoHash='${codigo}' AND Usado='NO'`, outFields:"*" });
-    if(!qOtp.features.length) throw new Error("Código incorrecto o expirado.");
+    if(!qOtp.features || !qOtp.features.length) throw new Error("Código incorrecto o expirado.");
     const otp = qOtp.features[0].attributes;
     
     const qPers = await fetchJson(`${URL_PERSONA}/query`, { f:"json", where:`GlobalID='${otp.PersonaGlobalID}' AND Activo='SI'`, outFields:"Nombre,PersonaID" });
-    if(!qPers.features.length) throw new Error("Usuario inactivo o no encontrado en el sistema.");
+    if(!qPers.features || !qPers.features.length) throw new Error("Usuario inactivo o no encontrado en el sistema.");
     const pid = qPers.features[0].attributes.PersonaID;
 
     const resR = await fetchJson(`${URL_ROL}/query`, { f: "json", where: `(PersonaID='${otp.PersonaGlobalID}' OR PersonaID='${pid}') AND Activo='SI'`, outFields: "RolID", returnGeometry: false });
@@ -424,8 +460,8 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
     await writeAuditEvent("OTP_VALIDATE", "APP_REPORTE", currentUser.gid, "OK", "Ingreso exitoso a módulo operativo V4");
     
     const qAlcance = await fetchJson(`${URL_ALCANCE}/query`, { f:"json", where:`(PersonaID='${currentUser.gid}' OR PersonaID='${currentUser.pid}') AND Activo='SI'`, outFields:"ObjetoGlobalID" });
-    currentUser.alcances = qAlcance.features.map(f => f.attributes.ObjetoGlobalID).filter(Boolean);
-    currentUser.hasGlobalScope = qAlcance.features.some(f => !f.attributes.ObjetoGlobalID);
+    currentUser.alcances = (qAlcance.features || []).map(f => f.attributes.ObjetoGlobalID).filter(Boolean);
+    currentUser.hasGlobalScope = (qAlcance.features || []).some(f => !f.attributes.ObjetoGlobalID);
 
     document.getElementById("login-overlay").style.display = "none";
     document.getElementById("pill-user").style.display = "block";
@@ -480,14 +516,14 @@ async function loadAsignaciones() {
           for (let i = 0; i < asigActividades.length; i += 50) {
               const chunk = asigActividades.slice(i, i + 50).map(g => `'${g}'`).join(",");
               const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
-              if(qS.features) subDeActividades.push(...qS.features);
+              if(qS && Array.isArray(qS.features)) subDeActividades.push(...qS.features);
           }
           const subGuids = subDeActividades.map(f => f.attributes.GlobalID);
           if (subGuids.length > 0) {
               for (let i = 0; i < subGuids.length; i += 50) {
                   const chunk = subGuids.slice(i, i + 50).map(g => `'${g}'`).join(",");
                   const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
-                  if(qT.features) {
+                  if(qT && Array.isArray(qT.features)) {
                       const mapSubToAct = new Map(); subDeActividades.forEach(s => mapSubToAct.set(s.attributes.GlobalID, s.attributes.ActividadGlobalID));
                       qT.features.forEach(t => { t.attributes.ActividadGlobalID = mapSubToAct.get(t.attributes.SubActividadGlobalID); t.attributes.OrigenConsolidado = 'ACTIVIDAD'; qJerarquiaFeatures.push(t); collectedTaskGuids.add(t.attributes.GlobalID); });
                   }
@@ -500,7 +536,7 @@ async function loadAsignaciones() {
           for (let i = 0; i < asigTareas.length; i += 50) {
               const chunk = asigTareas.slice(i, i + 50).map(g => `'${g}'`).join(",");
               const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
-              if(qT.features) tareasPuntuales.push(...qT.features);
+              if(qT && Array.isArray(qT.features)) tareasPuntuales.push(...qT.features);
           }
           const validSubIds = [...new Set(tareasPuntuales.map(t => t.attributes.SubActividadGlobalID).filter(Boolean))];
           const subMap = new Map();
@@ -508,7 +544,7 @@ async function loadAsignaciones() {
               for (let i = 0; i < validSubIds.length; i += 50) {
                   const chunk = validSubIds.slice(i, i + 50).map(g => `'${g}'`).join(",");
                   const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
-                  if(qS.features) qS.features.forEach(f => subMap.set(f.attributes.GlobalID, f.attributes.ActividadGlobalID));
+                  if(qS && Array.isArray(qS.features)) qS.features.forEach(f => subMap.set(f.attributes.GlobalID, f.attributes.ActividadGlobalID));
               }
           }
           tareasPuntuales.forEach(t => {
@@ -547,7 +583,7 @@ async function loadActividades() {
 
       if (currentUser.roles.includes("SUPERADMIN")) {
           const qAct = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad,Peso", orderByFields:"ActividadID ASC" });
-          if(qAct.features && qAct.features.length > 0) {
+          if(qAct && Array.isArray(qAct.features) && qAct.features.length > 0) {
               qAct.features.forEach(f => cacheActividadesPesos.set(normalizeGuidKey(f.attributes.GlobalID), f.attributes.Peso || 0));
               data = qAct.features.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
           }
@@ -558,7 +594,7 @@ async function loadActividades() {
               for (let i = 0; i < actGuids.length; i += 50) {
                   const chunk = actGuids.slice(i, i + 50).map(g => `'${g}'`).join(",");
                   const qA = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk}) AND Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad,Peso", orderByFields:"ActividadID ASC" });
-                  if(qA.features) qActFeatures.push(...qA.features);
+                  if(qA && Array.isArray(qA.features)) qActFeatures.push(...qA.features);
               }
               qActFeatures.forEach(f => cacheActividadesPesos.set(normalizeGuidKey(f.attributes.GlobalID), f.attributes.Peso || 0));
               data = qActFeatures.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
@@ -592,20 +628,20 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
       const pesoActDisplay = pesoActRaw !== undefined ? `${pesoActRaw}%` : "N/D";
 
       const subQ = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}'`, outFields:"*" });
-      cacheSubactividades = (subQ.features||[]).map(f=>f.attributes);
+      cacheSubactividades = (subQ && Array.isArray(subQ.features) ? subQ.features : []).map(f=>f.attributes);
       
       const tareasAsignadas = asignacionesActivas.filter(a => a.ActividadGlobalID === actividadGlobalId).map(a => a.TareaGlobalID);
       const inListSub = cacheSubactividades.map(s => `'${s.GlobalID}'`).join(",");
       
       if(inListSub) {
         const tareaQ = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub})`, outFields:"*" });
-        let allTasks = (tareaQ.features||[]).map(f=>f.attributes);
+        let allTasks = (tareaQ && Array.isArray(tareaQ.features) ? tareaQ.features : []).map(f=>f.attributes);
         if (!currentUser.roles.includes("SUPERADMIN")) allTasks = allTasks.filter(t => tareasAsignadas.includes(t.GlobalID));
         cacheTareas = allTasks;
       }
 
+      // --- BLOQUE 1: CARGA DE PLAN (INDEPENDIENTE) ---
       try {
-          // Métricas Diagnóstico
           diagSubsVis = cacheSubactividades.length;
           diagSubsLoad = 0; diagSubsMatch = 0;
           diagTarsVis = cacheTareas.length;
@@ -615,15 +651,11 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
           const visibleTarKeys = new Set(cacheTareas.map(t => normalizeGuidKey(t.GlobalID)));
 
           const qPlanAct = await fetchJson(`${URL_PLAN_ACT}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}' AND Vigencia=${vig}`, outFields:"*" });
-          if(qPlanAct.features.length) planActCtx = qPlanAct.features[0].attributes;
+          if(qPlanAct && Array.isArray(qPlanAct.features) && qPlanAct.features.length) planActCtx = qPlanAct.features[0].attributes;
           
-          const qBiAct = await fetchJson(`${URL_BI_ACT}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}' AND Vigencia=${vig}`, outFields:"*" });
-          if(qBiAct.features.length) biActCtx = qBiAct.features[0].attributes;
-
-          // --- PLAN_SUB (Filtrado en Cliente) ---
-          const qPlanSub = await fetchJson(`${URL_PLAN_SUB}/query`, { f:"json", where:`Vigencia=${vig}`, outFields:"*" });
-          diagSubsLoad = (qPlanSub.features || []).length;
-          (qPlanSub.features || []).forEach(f => {
+          const planSubFeatures = await fetchAllByWhere(URL_PLAN_SUB, `Vigencia=${vig}`);
+          diagSubsLoad = planSubFeatures.length;
+          planSubFeatures.forEach(f => {
               const subKey = normalizeGuidKey(f.attributes.SubActividadGlobalID);
               if (visibleSubKeys.has(subKey)) {
                   planSubCtx.set(subKey, f.attributes);
@@ -631,32 +663,45 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
               }
           });
 
-          // --- PLAN_TAR (Filtrado en Cliente) ---
-          const qPlanTar = await fetchJson(`${URL_PLAN_TAR}/query`, { f:"json", where:`Vigencia=${vig}`, outFields:"*" });
-          diagTarsLoad = (qPlanTar.features || []).length;
-          (qPlanTar.features || []).forEach(f => {
+          const planTarFeatures = await fetchAllByWhere(URL_PLAN_TAR, `Vigencia=${vig}`);
+          diagTarsLoad = planTarFeatures.length;
+          planTarFeatures.forEach(f => {
               const tarKey = normalizeGuidKey(f.attributes.TareaGlobalID);
               if (visibleTarKeys.has(tarKey)) {
                   planTarCtx.set(tarKey, f.attributes);
                   diagTarsMatch++;
               }
           });
+      } catch (e) { 
+          console.warn("Contexto PLAN incompleto o no disponible.", e); 
+          auditError("LOAD_CONTEXTO_PLAN", e, { actividadGlobalId });
+      }
+
+      // --- BLOQUE 2: CARGA DE BI (INDEPENDIENTE Y CORREGIDO) ---
+      try {
+          const qBiAct = await fetchJson(`${URL_BI_ACT}/query`, { f:"json", where:`GlobalID_Nivel='${actividadGlobalId}' AND Vigencia=${vig}`, outFields:"*" });
+          if(qBiAct && Array.isArray(qBiAct.features) && qBiAct.features.length) biActCtx = qBiAct.features[0].attributes;
 
           if(inListSub) {
               const qBiSub = await fetchJson(`${URL_BI_SUB}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub}) AND Vigencia=${vig}`, outFields:"*" });
-              qBiSub.features.forEach(f => biSubCtx.set(f.attributes.SubActividadGlobalID, f.attributes));
+              if(qBiSub && Array.isArray(qBiSub.features) && qBiSub.features.length) {
+                  qBiSub.features.forEach(f => biSubCtx.set(f.attributes.SubActividadGlobalID, f.attributes));
+              }
           }
 
           const inListTar = cacheTareas.map(t => `'${t.GlobalID}'`).join(",");
           if(inListTar) {
               const qBiTar = await fetchJson(`${URL_BI_TAR}/query`, { f:"json", where:`TareaGlobalID IN (${inListTar}) AND Vigencia=${vig}`, outFields:"*" });
-              qBiTar.features.forEach(f => biTarCtx.set(f.attributes.TareaGlobalID, f.attributes));
+              if(qBiTar && Array.isArray(qBiTar.features) && qBiTar.features.length) {
+                  qBiTar.features.forEach(f => biTarCtx.set(f.attributes.TareaGlobalID, f.attributes));
+              }
           }
-      } catch (e) { 
-          console.warn("Contexto PLAN/BI incompleto o no disponible.", e); 
-          auditError("LOAD_CONTEXTO_PLAN_BI", e, { actividadGlobalId });
+      } catch (e) {
+          console.warn("Contexto BI incompleto o no disponible.", e); 
+          auditError("LOAD_CONTEXTO_BI", e, { actividadGlobalId });
       }
 
+      // --- INJERTO 1: PESO ACTIVIDAD ---
       if (planActCtx) {
           actContextPanel.style.display = "block";
           const aplicaAct = String(planActCtx.Aplica || "SI").toUpperCase() !== "NO";
@@ -853,7 +898,7 @@ async function loadExistingData(actGid) {
   
   const qNar = await fetchJson(`${URL_NARRATIVA}/query`, { f:"json", where:`ActividadGlobalID='${actGid}' AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
   
-  if(qNar && qNar.features && qNar.features.length) {
+  if(qNar && Array.isArray(qNar.features) && qNar.features.length) {
     existingNarrativa = qNar.features[0].attributes;
     existingNarrativa.EstadoRegistro = normalizeState(existingNarrativa.EstadoRegistro);
     document.getElementById("txt-reporte-narrativo").value = existingNarrativa.TextoNarrativo || "";
@@ -868,7 +913,7 @@ async function loadExistingData(actGid) {
       for (let i = 0; i < cacheTareas.length; i += chunkSize) {
           const chunk = cacheTareas.slice(i, i + chunkSize).map(t => `'${t.GlobalID}'`).join(",");
           const qAv = await fetchJson(`${URL_AVANCE_TAREA}/query`, { f:"json", where:`TareaGlobalID IN (${chunk}) AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
-          if (qAv && qAv.features) allAvancesFeatures.push(...qAv.features);
+          if (qAv && Array.isArray(qAv.features)) allAvancesFeatures.push(...qAv.features);
       }
 
       allAvancesFeatures.forEach(f => {
@@ -891,7 +936,7 @@ async function loadExistingData(actGid) {
       for (let i = 0; i < avGuids.length; i += chunkSize) {
           const chunk = avGuids.slice(i, i + chunkSize).join(",");
           const qUb = await fetchJson(`${URL_TAREA_UBICACION}/query`, { f:"json", where:`AvanceTareaGlobalID IN (${chunk})`, outFields:"*", returnGeometry:true, outSR:"4326" });
-          if(qUb && qUb.features) {
+          if(qUb && Array.isArray(qUb.features)) {
               qUb.features.forEach(f => {
                 const u = f.attributes, geo = f.geometry;
                 const tareaGid = [...existingAvances.entries()].find(([k,v]) => v.GlobalID === u.AvanceTareaGlobalID)?.[0];
@@ -918,7 +963,7 @@ async function loadExistingData(actGid) {
           const qWf = await fetchJson(`${URL_WF_SOLICITUD}/query`, { 
             f:"json", where:`ObjetoGlobalID IN (${chunk}) AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"OBJECTID,GlobalID,ObjetoGlobalID,Version" 
           });
-          if(qWf && qWf.features) qWf.features.forEach(f => existingWFSolicitudes.set(f.attributes.ObjetoGlobalID, f.attributes));
+          if(qWf && Array.isArray(qWf.features)) qWf.features.forEach(f => existingWFSolicitudes.set(f.attributes.ObjetoGlobalID, f.attributes));
       }
   }
 
