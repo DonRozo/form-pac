@@ -13,7 +13,8 @@
                     Capa Mensajería UX Global e Inline.
                     Capa de Validaciones Previas Centralizadas.
                     Auditoría de Errores Técnicos y Funcionales.
-                    + Panel de Soporte Técnico y Diagnóstico UAT (Ajustado).
+                    Panel de Soporte Técnico y Diagnóstico UAT.
+                    + Manejo Limpio Primer Cargue y Paginación en loadExistingData.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -581,10 +582,21 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
           evaluateHistoricalMode();
           setStatus("Formulario operativo cargado.", "success");
       } catch (err) {
-          console.warn("Histórico no disponible o vacío:", err);
-          auditError("LOAD_EXISTING_DATA", err, { actividadGlobalId });
+          // Si no hay data es el primer cargue, limpiamos UI silenciosamente.
+          clearMapGraphics();
+          document.querySelectorAll(".row").forEach(rowEl => {
+              rowEl.querySelector(".row-valor").value = "";
+              rowEl.querySelector(".row-obs").value = "";
+              rowEl.querySelector(".row-evi").value = "";
+          });
+          ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales"].forEach(id => { 
+             const el = document.getElementById(id); if (el) { el.value = ""; el.disabled = false; } 
+          });
+          document.getElementById("narrativa-badge-container").innerHTML = "";
+          document.getElementById("container-motivo-narrativa").style.display = "none";
+          
           evaluateHistoricalMode();
-          setStatus("Estructura operativa cargada, pero hubo un error recuperando datos históricos.", "warning");
+          setStatus("No existen reportes previos para esta actividad y periodo. (Primer Cargue)", "info");
       }
   } catch (e) {
       auditError("LOAD_ESTRUCTURA_TAREAS", e, { actividadGlobalId });
@@ -679,7 +691,7 @@ function subActividadCardHtml(sa){
           </div>`;
 }
 
-// --- LECTURA BIDIRECCIONAL V4 ---
+// --- LECTURA BIDIRECCIONAL V4 (CON PAGINACIÓN) ---
 async function loadExistingData(actGid) {
   const vig = elVigencia.value, per = getPeriodo();
   const avGuids = [];
@@ -696,62 +708,100 @@ async function loadExistingData(actGid) {
       if (locList) locList.innerHTML = "";
   });
   
-  const qNar = await fetchJson(`${URL_NARRATIVA}/query`, { f:"json", where:`ActividadGlobalID='${actGid}' AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
-  if(qNar.features.length) {
+  let qNar;
+  try {
+      qNar = await fetchJson(`${URL_NARRATIVA}/query`, { f:"json", where:`ActividadGlobalID='${actGid}' AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
+  } catch(e) {
+      throw new Error("No se pudo contactar el servidor para leer la narrativa.");
+  }
+
+  if(qNar && qNar.features && qNar.features.length) {
     existingNarrativa = qNar.features[0].attributes;
     existingNarrativa.EstadoRegistro = normalizeState(existingNarrativa.EstadoRegistro);
     document.getElementById("txt-reporte-narrativo").value = existingNarrativa.TextoNarrativo || "";
     document.getElementById("txt-logros-descripcion").value = existingNarrativa.DescripcionLogrosAlcanzados || "";
     document.getElementById("txt-logros-principales").value = existingNarrativa.PrincipalesLogros || "";
     applyReadonlyStateNarrativa(existingNarrativa.EstadoRegistro);
-  } else {
-    ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales"].forEach(id => { document.getElementById(id).value = ""; document.getElementById(id).disabled = false; });
-    document.getElementById("narrativa-badge-container").innerHTML = "";
-    document.getElementById("container-motivo-narrativa").style.display = "none";
   }
 
-  const tGuids = cacheTareas.map(t=>`'${t.GlobalID}'`).join(",");
-  if(tGuids) {
-    const qAv = await fetchJson(`${URL_AVANCE_TAREA}/query`, { f:"json", where:`TareaGlobalID IN (${tGuids}) AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
-    qAv.features.forEach(f => {
-      const a = f.attributes;
-      a.EstadoRegistro = normalizeState(a.EstadoRegistro);
-      existingAvances.set(a.TareaGlobalID, a);
-      avGuids.push(`'${a.GlobalID}'`);
-      const rowEl = document.querySelector(`.row[data-tarea-gid="${a.TareaGlobalID}"]`);
-      if(rowEl) {
-        rowEl.querySelector(".row-valor").value = a.ValorReportado ?? "";
-        rowEl.querySelector(".row-obs").value = a.Observaciones || "";
-        rowEl.querySelector(".row-evi").value = a.EvidenciaURL || "";
-        applyReadonlyStateTask(rowEl, a.EstadoRegistro);
+  if(cacheTareas.length > 0) {
+      const chunkSize = 50; 
+      let allAvancesFeatures = [];
+      let fetchError = false;
+
+      for (let i = 0; i < cacheTareas.length; i += chunkSize) {
+          const chunk = cacheTareas.slice(i, i + chunkSize).map(t => `'${t.GlobalID}'`).join(",");
+          try {
+              const qAv = await fetchJson(`${URL_AVANCE_TAREA}/query`, { f:"json", where:`TareaGlobalID IN (${chunk}) AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
+              if (qAv && qAv.features) allAvancesFeatures.push(...qAv.features);
+          } catch(e) {
+              fetchError = true;
+              console.warn("Falla en chunk de consulta:", e);
+          }
       }
-    });
+
+      if (fetchError && allAvancesFeatures.length === 0 && (!qNar || !qNar.features || qNar.features.length === 0)) {
+          throw new Error("Error técnico al recuperar histórico o datos vacíos."); 
+      }
+
+      allAvancesFeatures.forEach(f => {
+        const a = f.attributes;
+        a.EstadoRegistro = normalizeState(a.EstadoRegistro);
+        existingAvances.set(a.TareaGlobalID, a);
+        avGuids.push(`'${a.GlobalID}'`);
+        const rowEl = document.querySelector(`.row[data-tarea-gid="${a.TareaGlobalID}"]`);
+        if(rowEl) {
+          rowEl.querySelector(".row-valor").value = a.ValorReportado ?? "";
+          rowEl.querySelector(".row-obs").value = a.Observaciones || "";
+          rowEl.querySelector(".row-evi").value = a.EvidenciaURL || "";
+          applyReadonlyStateTask(rowEl, a.EstadoRegistro);
+        }
+      });
   }
 
-  if(avGuids.length) {
-    const qUb = await fetchJson(`${URL_TAREA_UBICACION}/query`, { f:"json", where:`AvanceTareaGlobalID IN (${avGuids.join(",")})`, outFields:"*", returnGeometry:true, outSR:"4326" });
-    qUb.features.forEach(f => {
-      const u = f.attributes, geo = f.geometry;
-      const tareaGid = [...existingAvances.entries()].find(([k,v]) => v.GlobalID === u.AvanceTareaGlobalID)?.[0];
-      const rowEl = document.querySelector(`.row[data-tarea-gid="${tareaGid}"]`);
-      if(rowEl) {
-        const rowId = rowEl.getAttribute("data-row-id");
-        const ptId = u.OBJECTID; 
-        const locs = rowLocations.get(rowId) || [];
-        locs.push({ ptId, isExisting: true, lon: geo.x, lat: geo.y, mun: u.MunicipioNombre, dane: u.CodigoDANE, desc: u.DescripcionSitio });
-        rowLocations.set(rowId, locs);
-        if(typeof esri !== 'undefined') { require(["esri/Graphic"], (Graphic) => { addGraphicForPoint(rowId, ptId, geo.x, geo.y, Graphic); }); }
-        appendLocationUI(rowId, ptId, geo.x, geo.y, u.DescripcionSitio, u.MunicipioNombre, u.CodigoDANE);
-      }
-    });
+  // Si no hay ni avances ni narrativa tras un request exitoso, asumimos primer cargue.
+  if (avGuids.length === 0 && !existingNarrativa) {
+      throw new Error("EMPTY_DATA"); // Error controlado para atrapar en la capa superior
+  }
+
+  if(avGuids.length > 0) {
+    const chunkSize = 50;
+    for (let i = 0; i < avGuids.length; i += chunkSize) {
+        const chunk = avGuids.slice(i, i + chunkSize).join(",");
+        try {
+            const qUb = await fetchJson(`${URL_TAREA_UBICACION}/query`, { f:"json", where:`AvanceTareaGlobalID IN (${chunk})`, outFields:"*", returnGeometry:true, outSR:"4326" });
+            if(qUb && qUb.features) {
+                qUb.features.forEach(f => {
+                  const u = f.attributes, geo = f.geometry;
+                  const tareaGid = [...existingAvances.entries()].find(([k,v]) => v.GlobalID === u.AvanceTareaGlobalID)?.[0];
+                  const rowEl = document.querySelector(`.row[data-tarea-gid="${tareaGid}"]`);
+                  if(rowEl) {
+                    const rowId = rowEl.getAttribute("data-row-id");
+                    const ptId = u.OBJECTID; 
+                    const locs = rowLocations.get(rowId) || [];
+                    locs.push({ ptId, isExisting: true, lon: geo.x, lat: geo.y, mun: u.MunicipioNombre, dane: u.CodigoDANE, desc: u.DescripcionSitio });
+                    rowLocations.set(rowId, locs);
+                    if(typeof esri !== 'undefined') { require(["esri/Graphic"], (Graphic) => { addGraphicForPoint(rowId, ptId, geo.x, geo.y, Graphic); }); }
+                    appendLocationUI(rowId, ptId, geo.x, geo.y, u.DescripcionSitio, u.MunicipioNombre, u.CodigoDANE);
+                  }
+                });
+            }
+        } catch(e) { console.warn("Falla en chunk de ubicaciones", e); }
+    }
   }
 
   const allObjGuids = avGuids.concat(existingNarrativa ? [`'${existingNarrativa.GlobalID}'`] : []);
   if(allObjGuids.length > 0) {
-    const qWf = await fetchJson(`${URL_WF_SOLICITUD}/query`, { 
-      f:"json", where:`ObjetoGlobalID IN (${allObjGuids.join(",")}) AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"OBJECTID,GlobalID,ObjetoGlobalID,Version" 
-    });
-    qWf.features.forEach(f => existingWFSolicitudes.set(f.attributes.ObjetoGlobalID, f.attributes));
+    const chunkSize = 50;
+    for (let i = 0; i < allObjGuids.length; i += chunkSize) {
+        const chunk = allObjGuids.slice(i, i + chunkSize).join(",");
+        try {
+            const qWf = await fetchJson(`${URL_WF_SOLICITUD}/query`, { 
+              f:"json", where:`ObjetoGlobalID IN (${chunk}) AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"OBJECTID,GlobalID,ObjetoGlobalID,Version" 
+            });
+            if(qWf && qWf.features) qWf.features.forEach(f => existingWFSolicitudes.set(f.attributes.ObjetoGlobalID, f.attributes));
+        } catch(e) { console.warn("Falla en chunk de Workflow", e); }
+    }
   }
 }
 
