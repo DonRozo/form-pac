@@ -18,6 +18,7 @@
                     + Contexto Histórico y Reglas Temporales de Solo Lectura OAP.
                     + Validación Funcional por TipoValorAvance (Numérico / Porcentaje).
                     + Validación Funcional por MetaProgramada.
+                    + Modal Proxy de Confirmación Pre-Envío.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -1236,7 +1237,76 @@ function validateBeforeSubmit() {
 
 // --- GUARDAR Y ENVIAR V4 ---
 btnGuardar.addEventListener("click", () => processSave(false));
-btnEnviar.addEventListener("click", () => processSave(true));
+btnEnviar.addEventListener("click", () => openSubmitPreview());
+
+function openSubmitPreview() {
+    if (viewOnlyMode) return setStatus("Modo lectura: no se permiten cambios.", "error");
+
+    const validation = validateBeforeSubmit();
+    if (!validation.valid) return; 
+
+    const vig = elVigencia.value;
+    const per = getPeriodo();
+    const actInput = document.querySelector("#combo-actividad .combo-input");
+    const actName = actInput ? actInput.value || "Desconocida" : "Desconocida";
+
+    let tareasFilled = 0;
+    let locsCount = 0;
+
+    document.querySelectorAll(".row").forEach(rowEl => {
+        if (rowEl.classList.contains("is-readonly") || rowEl.classList.contains("is-not-applicable")) return;
+        const rowId = rowEl.getAttribute("data-row-id");
+        const val = rowEl.querySelector(".row-valor")?.value;
+        const obs = rowEl.querySelector(".row-obs")?.value;
+        const evi = rowEl.querySelector(".row-evi")?.value;
+        const locs = rowLocations.get(rowId) || [];
+
+        let hasData = (val !== "" && val !== undefined) || (obs && obs.trim() !== "") || (evi && evi.trim() !== "") || locs.length > 0;
+        if (hasData) {
+            tareasFilled++;
+            locsCount += locs.length;
+        }
+    });
+
+    const txt1 = document.getElementById("txt-reporte-narrativo")?.value.trim() !== "" ? "Sí" : "No";
+    const txt2 = document.getElementById("txt-logros-descripcion")?.value.trim() !== "" ? "Sí" : "No";
+    const txt3 = document.getElementById("txt-logros-principales")?.value.trim() !== "" ? "Sí" : "No";
+
+    const summaryHtml = `
+        <div class="summary-item"><strong>Vigencia / Periodo:</strong> <span>${vig} - ${per}</span></div>
+        <div class="summary-item"><strong>Actividad:</strong> <span style="max-width:60%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(actName)}">${escapeHtml(actName)}</span></div>
+        <div class="summary-item"><strong>Tareas con datos:</strong> <span>${tareasFilled}</span></div>
+        <div class="summary-item"><strong>Ubicaciones registradas:</strong> <span>${locsCount}</span></div>
+        <div class="summary-item"><strong>Estado esperado:</strong> <span class="status-badge status-badge--enviado" style="margin:0;">Enviado</span></div>
+        <div style="margin-top:8px; font-weight:bold; font-size:12px; color:var(--muted); text-transform:uppercase;">Resumen de Narrativa</div>
+        <div class="summary-item"><strong>Reporte Narrativo:</strong> <span>${txt1}</span></div>
+        <div class="summary-item"><strong>Descripción de logros:</strong> <span>${txt2}</span></div>
+        <div class="summary-item"><strong>Principales logros:</strong> <span>${txt3}</span></div>
+    `;
+
+    document.getElementById("modal-summary-content").innerHTML = summaryHtml;
+
+    const warningsEl = document.getElementById("modal-warnings");
+    if (validation.warnings > 0) {
+        warningsEl.innerHTML = `⚠️ Se detectaron ${validation.warnings} advertencia(s) no bloqueante(s). El envío procede bajo su responsabilidad.`;
+        warningsEl.style.display = "flex";
+    } else {
+        warningsEl.style.display = "none";
+    }
+
+    document.getElementById("submit-modal").style.display = "flex";
+}
+
+function closeSubmitModal() {
+    document.getElementById("submit-modal").style.display = "none";
+}
+
+document.getElementById("btn-close-submit")?.addEventListener("click", closeSubmitModal);
+document.getElementById("btn-cancel-submit")?.addEventListener("click", closeSubmitModal);
+document.getElementById("btn-confirm-submit")?.addEventListener("click", () => {
+    closeSubmitModal();
+    processSave(true);
+});
 
 async function processSave(isSubmit) {
   if (viewOnlyMode) return setStatus("Modo lectura: no se permiten cambios.", "error");
