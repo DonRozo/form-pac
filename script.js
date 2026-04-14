@@ -21,6 +21,7 @@
                     + Modal Proxy de Confirmación Pre-Envío.
                     + Estabilización Network POST (Fix: URI Too Long) y Contexto OAP 2026.
                     + INYECCIÓN UI DE PESOS Y METAS DE PLANEACIÓN (ACT, SUB, TAR).
+                    + CORRECCIÓN NORMALIZACIÓN GUID PARA CRUCE DE PESOS.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -119,7 +120,7 @@ function getTipoValorAvanceByTarea(tareaGid) {
 
 // Helper para Validación PLAN_TareaVigencia.MetaProgramada
 function getMetaProgramadaByTarea(tareaGid) {
-    const pTar = planTarCtx.get(tareaGid);
+    const pTar = planTarCtx.get(normalizeGuidKey(tareaGid));
     if (!pTar || pTar.MetaProgramada === null || pTar.MetaProgramada === undefined || String(pTar.MetaProgramada).trim() === '') return null;
     const meta = Number(pTar.MetaProgramada);
     return isNaN(meta) ? null : meta;
@@ -270,6 +271,11 @@ function setStatus(msg, type="info"){ showGlobalMessage(msg, type); }
 function escapeHtml(s){ return (s??"").toString().replaceAll("<","&lt;").replaceAll(">","&gt;"); }
 function toYesNo(v){ const s=(v||"").toString().toLowerCase(); return (s==="si"||s==="sí"||s==="true")?true:(s==="no"||s==="false"?false:null); }
 function generateGUID() { return '{' + crypto.randomUUID().toUpperCase() + '}'; }
+
+// --- NUEVO HELPER: NORMALIZADOR DE GUID PARA CRUCES CFG Y PLAN ---
+function normalizeGuidKey(v) { 
+  return String(v || "").replace(/[{}]/g, "").trim().toLowerCase(); 
+}
 
 // --- Funciones Base (Técnicas) ---
 async function fetchJson(url, params){ 
@@ -532,7 +538,7 @@ async function loadActividades() {
       if (currentUser.roles.includes("SUPERADMIN")) {
           const qAct = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad,Peso", orderByFields:"ActividadID ASC" });
           if(qAct.features && qAct.features.length > 0) {
-              qAct.features.forEach(f => cacheActividadesPesos.set(f.attributes.GlobalID, f.attributes.Peso || 0));
+              qAct.features.forEach(f => cacheActividadesPesos.set(normalizeGuidKey(f.attributes.GlobalID), f.attributes.Peso || 0));
               data = qAct.features.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
           }
       } else {
@@ -544,7 +550,7 @@ async function loadActividades() {
                   const qA = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk}) AND Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad,Peso", orderByFields:"ActividadID ASC" });
                   if(qA.features) qActFeatures.push(...qA.features);
               }
-              qActFeatures.forEach(f => cacheActividadesPesos.set(f.attributes.GlobalID, f.attributes.Peso || 0));
+              qActFeatures.forEach(f => cacheActividadesPesos.set(normalizeGuidKey(f.attributes.GlobalID), f.attributes.Peso || 0));
               data = qActFeatures.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
           }
       }
@@ -572,7 +578,8 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
 
   try {
       const vig = elVigencia.value;
-      const pesoActValue = cacheActividadesPesos.get(actividadGlobalId) || 0;
+      const pesoActRaw = cacheActividadesPesos.get(normalizeGuidKey(actividadGlobalId));
+      const pesoActDisplay = pesoActRaw !== undefined ? `${pesoActRaw}%` : "N/D";
 
       const subQ = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}'`, outFields:"*" });
       cacheSubactividades = (subQ.features||[]).map(f=>f.attributes);
@@ -595,7 +602,7 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
 
           if(inListSub) {
               const qPlanSub = await fetchJson(`${URL_PLAN_SUB}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub}) AND Vigencia=${vig}`, outFields:"*" });
-              qPlanSub.features.forEach(f => planSubCtx.set(f.attributes.SubActividadGlobalID, f.attributes));
+              qPlanSub.features.forEach(f => planSubCtx.set(normalizeGuidKey(f.attributes.SubActividadGlobalID), f.attributes));
               const qBiSub = await fetchJson(`${URL_BI_SUB}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub}) AND Vigencia=${vig}`, outFields:"*" });
               qBiSub.features.forEach(f => biSubCtx.set(f.attributes.SubActividadGlobalID, f.attributes));
           }
@@ -603,7 +610,7 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
           const inListTar = cacheTareas.map(t => `'${t.GlobalID}'`).join(",");
           if(inListTar) {
               const qPlanTar = await fetchJson(`${URL_PLAN_TAR}/query`, { f:"json", where:`TareaGlobalID IN (${inListTar}) AND Vigencia=${vig}`, outFields:"*" });
-              qPlanTar.features.forEach(f => planTarCtx.set(f.attributes.TareaGlobalID, f.attributes));
+              qPlanTar.features.forEach(f => planTarCtx.set(normalizeGuidKey(f.attributes.TareaGlobalID), f.attributes));
               const qBiTar = await fetchJson(`${URL_BI_TAR}/query`, { f:"json", where:`TareaGlobalID IN (${inListTar}) AND Vigencia=${vig}`, outFields:"*" });
               qBiTar.features.forEach(f => biTarCtx.set(f.attributes.TareaGlobalID, f.attributes));
           }
@@ -619,7 +626,7 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
           actContextPanel.innerHTML = `
               <div style="margin-bottom: 8px;"><strong>Contexto de Planeación (${vig})</strong> ${!aplicaAct ? '<span class="status-badge status-badge--devuelto" style="margin-left:10px;">NO APLICA EN LA VIGENCIA</span>' : ''}</div>
               <div style="display:flex; gap: 10px; flex-wrap: wrap;">
-                  <span class="ctx-badge ctx-badge--tech">Peso Act: ${pesoActValue}%</span>
+                  <span class="ctx-badge ctx-badge--tech">Peso Act: ${pesoActDisplay}</span>
                   <span class="ctx-badge">Indicador: ${planActCtx.IndicadorID ?? 'N/A'}</span>
                   <span class="ctx-badge">Línea Base: ${planActCtx.LineaBase ?? 'N/A'}</span>
                   <span class="ctx-badge">Meta Prog.: ${planActCtx.MetaProgramada ?? 'N/A'}</span>
@@ -716,13 +723,13 @@ function tareaRowHtml(t){
   const rowId = crypto.randomUUID(), gid = t.GlobalID, cod = t.CodigoTarea, nom = t.NombreTarea, geo = toYesNo(t.EsGeorreferenciable);
   rowLocations.set(rowId, []);
   
-  const pTar = planTarCtx.get(gid);
+  const pTar = planTarCtx.get(normalizeGuidKey(gid));
   const aplica = !(pTar && String(pTar.Aplica).toUpperCase() === 'NO');
   const classNotApp = !aplica ? 'is-not-applicable is-readonly' : '';
   const bTar = biTarCtx.get(gid);
 
   // --- INJERTO 3: PESO Y META TAREA ---
-  const peso = pTar ? (pTar.PesoTarea ?? 0) : 0;
+  const peso = pTar && pTar.PesoTarea != null ? `${pTar.PesoTarea}%` : "N/D";
   const meta = pTar && pTar.MetaProgramada != null ? pTar.MetaProgramada : null;
 
   return `
@@ -732,7 +739,7 @@ function tareaRowHtml(t){
         <div style="display:flex; justify-content:space-between; align-items:flex-start;">
           <label style="margin-bottom:0;">Tarea ${cod}</label>
           <div style="display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end;">
-            <span class="ctx-badge ctx-badge--tech" style="margin:0;">Peso Tarea: ${peso}%</span>
+            <span class="ctx-badge ctx-badge--tech" style="margin:0;">Peso Tarea: ${peso}</span>
             ${meta !== null ? `<span class="ctx-badge ctx-badge--tech" style="margin:0;">Meta: ${meta}</span>` : ''}
           </div>
         </div>
@@ -762,7 +769,7 @@ function tareaRowHtml(t){
 function subActividadCardHtml(sa){
   const rows = cacheTareas.filter(t => t.SubActividadGlobalID === sa.GlobalID);
   if(!rows.length) return "";
-  const pSub = planSubCtx.get(sa.GlobalID);
+  const pSub = planSubCtx.get(normalizeGuidKey(sa.GlobalID));
   const aplicaSub = !(pSub && String(pSub.Aplica).toUpperCase() === 'NO');
 
   const bSub = biSubCtx.get(sa.GlobalID);
@@ -775,14 +782,14 @@ function subActividadCardHtml(sa){
   }
 
   // --- INJERTO 2: PESO Y META SUBACTIVIDAD ---
-  const peso = pSub ? (pSub.PesoSubActividad ?? 0) : 0;
+  const peso = pSub && pSub.PesoSubActividad != null ? `${pSub.PesoSubActividad}%` : "N/D";
   const meta = pSub && pSub.MetaProgramada != null ? pSub.MetaProgramada : null;
   
   return `<div class="card ${!aplicaSub ? 'is-not-applicable' : ''}">
             <div class="card__top" style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
                 <p class="card__title" style="margin-right:auto;">${sa.CodigoSubActividad} - ${sa.NombreSubActividad}</p>
                 <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
-                    <span class="ctx-badge ctx-badge--tech" style="margin:0;">Peso Sub: ${peso}%</span>
+                    <span class="ctx-badge ctx-badge--tech" style="margin:0;">Peso Sub: ${peso}</span>
                     ${meta !== null ? `<span class="ctx-badge ctx-badge--tech" style="margin:0;">Meta Sub: ${meta}</span>` : ''}
                     ${!aplicaSub ? '<span class="ctx-badge" style="background:#fee2e2; color:#991b1b; font-size:11px; margin:0;">SUBACTIVIDAD NO APLICA</span>' : ''}
                     ${biHtml}
