@@ -20,6 +20,7 @@
                     + Validación Funcional por MetaProgramada.
                     + Modal Proxy de Confirmación Pre-Envío.
                     + Estabilización Network POST (Fix: URI Too Long) y Contexto OAP 2026.
+                    + INYECCIÓN UI DE PESOS Y METAS DE PLANEACIÓN (ACT, SUB, TAR).
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -75,6 +76,7 @@ elPeriodo.value = OPERATIVE_PERIODO;
 let currentUser = null; 
 let asignacionesActivas = []; 
 let cacheSubactividades = [], cacheTareas = [];
+let cacheActividadesPesos = new Map(); // Cache local de Pesos de CFG_Actividad
 let planActCtx = null, biActCtx = null;
 let planSubCtx = new Map(), biSubCtx = new Map();
 let planTarCtx = new Map(), biTarCtx = new Map();
@@ -525,19 +527,24 @@ async function loadActividades() {
   try {
       const vig = elVigencia.value;
       let data = [];
+      cacheActividadesPesos.clear();
 
       if (currentUser.roles.includes("SUPERADMIN")) {
-          const qAct = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
-          if(qAct.features && qAct.features.length > 0) data = qAct.features.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
+          const qAct = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad,Peso", orderByFields:"ActividadID ASC" });
+          if(qAct.features && qAct.features.length > 0) {
+              qAct.features.forEach(f => cacheActividadesPesos.set(f.attributes.GlobalID, f.attributes.Peso || 0));
+              data = qAct.features.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
+          }
       } else {
           const actGuids = [...new Set(asignacionesActivas.map(a => a.ActividadGlobalID).filter(Boolean))];
           if(actGuids.length > 0) { 
               let qActFeatures = [];
               for (let i = 0; i < actGuids.length; i += 50) {
                   const chunk = actGuids.slice(i, i + 50).map(g => `'${g}'`).join(",");
-                  const qA = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk}) AND Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
+                  const qA = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk}) AND Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad,Peso", orderByFields:"ActividadID ASC" });
                   if(qA.features) qActFeatures.push(...qA.features);
               }
+              qActFeatures.forEach(f => cacheActividadesPesos.set(f.attributes.GlobalID, f.attributes.Peso || 0));
               data = qActFeatures.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
           }
       }
@@ -565,6 +572,8 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
 
   try {
       const vig = elVigencia.value;
+      const pesoActValue = cacheActividadesPesos.get(actividadGlobalId) || 0;
+
       const subQ = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}'`, outFields:"*" });
       cacheSubactividades = (subQ.features||[]).map(f=>f.attributes);
       
@@ -603,12 +612,14 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
           auditError("LOAD_CONTEXTO_PLAN_BI", e, { actividadGlobalId });
       }
 
+      // --- INJERTO 1: PESO ACTIVIDAD ---
       if (planActCtx) {
           actContextPanel.style.display = "block";
           const aplicaAct = String(planActCtx.Aplica || "SI").toUpperCase() !== "NO";
           actContextPanel.innerHTML = `
               <div style="margin-bottom: 8px;"><strong>Contexto de Planeación (${vig})</strong> ${!aplicaAct ? '<span class="status-badge status-badge--devuelto" style="margin-left:10px;">NO APLICA EN LA VIGENCIA</span>' : ''}</div>
               <div style="display:flex; gap: 10px; flex-wrap: wrap;">
+                  <span class="ctx-badge ctx-badge--tech">Peso Act: ${pesoActValue}%</span>
                   <span class="ctx-badge">Indicador: ${planActCtx.IndicadorID ?? 'N/A'}</span>
                   <span class="ctx-badge">Línea Base: ${planActCtx.LineaBase ?? 'N/A'}</span>
                   <span class="ctx-badge">Meta Prog.: ${planActCtx.MetaProgramada ?? 'N/A'}</span>
@@ -710,12 +721,22 @@ function tareaRowHtml(t){
   const classNotApp = !aplica ? 'is-not-applicable is-readonly' : '';
   const bTar = biTarCtx.get(gid);
 
+  // --- INJERTO 3: PESO Y META TAREA ---
+  const peso = pTar ? (pTar.PesoTarea ?? 0) : 0;
+  const meta = pTar && pTar.MetaProgramada != null ? pTar.MetaProgramada : null;
+
   return `
   <div class="row ${classNotApp}" data-row-id="${rowId}" data-tarea-gid="${gid}" data-geo="${geo?"1":"0"}">
     <div class="row__left">
       <div class="field" style="padding:0; grid-column: 1 / span 2;">
-        <label>Tarea ${cod}</label>
-        <div class="mono" style="font-size:12px; margin-bottom:6px;">${nom}</div>
+        <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+          <label style="margin-bottom:0;">Tarea ${cod}</label>
+          <div style="display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end;">
+            <span class="ctx-badge ctx-badge--tech" style="margin:0;">Peso Tarea: ${peso}%</span>
+            ${meta !== null ? `<span class="ctx-badge ctx-badge--tech" style="margin:0;">Meta: ${meta}</span>` : ''}
+          </div>
+        </div>
+        <div class="mono" style="font-size:12px; margin-bottom:6px; margin-top:4px;">${nom}</div>
         <div id="badge-container-${rowId}">
            ${!aplica ? '<span class="status-badge status-badge--devuelto" style="background:#fee2e2;color:#991b1b;">NO APLICA</span>' : ''}
         </div>
@@ -748,16 +769,22 @@ function subActividadCardHtml(sa){
   let biHtml = "";
   if (aplicaSub && bSub) {
       const av = bSub.AvanceAcumulado ?? bSub.AvanceAcumuladoVigencia ?? 0;
-      biHtml += `<span class="ctx-badge" style="background:#dcfce7; color:#166534; font-size:11px;">Avance Acum: ${av}%</span>`;
-      if (bSub.EstadoFlujo) biHtml += `<span class="ctx-badge" style="background:#e0f2fe; color:#1e40af; font-size:11px;">Estado: ${bSub.EstadoFlujo}</span>`;
-      if (bSub.SemaforoGestion) biHtml += `<span class="ctx-badge" style="background:#fef9c3; color:#854d0e; font-size:11px;">Semáforo: ${bSub.SemaforoGestion}</span>`;
+      biHtml += `<span class="ctx-badge" style="background:#dcfce7; color:#166534; font-size:11px; margin:0;">Avance Acum: ${av}%</span>`;
+      if (bSub.EstadoFlujo) biHtml += `<span class="ctx-badge" style="background:#e0f2fe; color:#1e40af; font-size:11px; margin:0;">Estado: ${bSub.EstadoFlujo}</span>`;
+      if (bSub.SemaforoGestion) biHtml += `<span class="ctx-badge" style="background:#fef9c3; color:#854d0e; font-size:11px; margin:0;">Semáforo: ${bSub.SemaforoGestion}</span>`;
   }
+
+  // --- INJERTO 2: PESO Y META SUBACTIVIDAD ---
+  const peso = pSub ? (pSub.PesoSubActividad ?? 0) : 0;
+  const meta = pSub && pSub.MetaProgramada != null ? pSub.MetaProgramada : null;
   
   return `<div class="card ${!aplicaSub ? 'is-not-applicable' : ''}">
             <div class="card__top" style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
                 <p class="card__title" style="margin-right:auto;">${sa.CodigoSubActividad} - ${sa.NombreSubActividad}</p>
-                <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                    ${!aplicaSub ? '<span class="ctx-badge" style="background:#fee2e2; color:#991b1b; font-size:11px;">SUBACTIVIDAD NO APLICA</span>' : ''}
+                <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                    <span class="ctx-badge ctx-badge--tech" style="margin:0;">Peso Sub: ${peso}%</span>
+                    ${meta !== null ? `<span class="ctx-badge ctx-badge--tech" style="margin:0;">Meta Sub: ${meta}</span>` : ''}
+                    ${!aplicaSub ? '<span class="ctx-badge" style="background:#fee2e2; color:#991b1b; font-size:11px; margin:0;">SUBACTIVIDAD NO APLICA</span>' : ''}
                     ${biHtml}
                 </div>
             </div>
@@ -1334,7 +1361,6 @@ async function processSave(isSubmit) {
     let successMsg = isSubmit ? "Reporte enviado a revisión." : "Borrador guardado exitosamente.";
     let msgType = "success";
     
-    // Inyección de mensaje contextual combinado por Warnings
     if (!isSubmit && validation.warnings > 0) {
         successMsg = `Se guardó el borrador, pero revise las advertencias de los valores reportados (${validation.warnings} advertencias).`;
         msgType = "warning";

@@ -167,9 +167,10 @@ input:focus, select:focus, textarea:focus{ border-color: rgba(23,151,209,0.55); 
 .hier-tag { background: #e2e8f0; color: #475569; font-weight: bold; font-size: 10px; padding: 2px 6px; border-radius: 4px; min-width: 70px; text-align: center; z-index:1; }
 .hier-text { font-weight: 500; color: var(--text); }
 
-/* CONTEXTO V4 (PLAN / BI) */
+/* CONTEXTO V4 (PLAN / BI / PESOS) */
 .ctx-panel { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; margin-bottom: 16px; }
 .ctx-badge { display: inline-block; padding: 4px 8px; border-radius: 6px; background: #e2e8f0; color: #334155; font-weight: bold; margin-right: 6px; margin-bottom: 4px; }
+.ctx-badge--tech { background: #f1f5f9; color: var(--primary-2); border: 1px solid #cbd5e1; font-family: monospace; font-size: 11px; }
 
 /* TRAZABILIDAD */
 .traz-list { display: flex; flex-direction: column; gap: 8px; border-left: 2px solid #e2e8f0; margin-left: 10px; padding-left: 16px; }
