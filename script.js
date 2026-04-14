@@ -12,7 +12,8 @@
                     Corrección UX 3: Rediseño y alineación estética de tarjetas de ubicación.
                     Capa Mensajería UX Global e Inline.
                     Capa de Validaciones Previas Centralizadas.
-                    + Auditoría de Errores Técnicos y Funcionales (Sin Duplicidad).
+                    Auditoría de Errores Técnicos y Funcionales.
+                    + Panel de Soporte Técnico y Diagnóstico UAT.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -72,9 +73,75 @@ let activeRowId = null;
 let viewOnlyMode = false;
 let map, view, graphicsLayer, webMercatorUtils, sketchVM, jurisdiccionLayerView;
 
+let lastCapturedError = null;
+let lastGlobalMsg = null;
+
+// --- PANEL DE SOPORTE (SUPERADMIN) ---
+function refreshSupportPanel() {
+    if (!currentUser || !currentUser.roles.includes("SUPERADMIN")) return;
+    
+    document.getElementById("panel-soporte").style.display = "block";
+    
+    const nodes = document.querySelectorAll(".row").length;
+    const locked = document.querySelectorAll(".row.is-readonly:not(.is-not-applicable)").length;
+    const notApp = document.querySelectorAll(".row.is-not-applicable").length;
+    const actGid = getActividadId() || "Ninguna";
+    
+    document.getElementById("sup-user").textContent = currentUser.nombre;
+    document.getElementById("sup-roles").textContent = currentUser.roles.join(", ");
+    document.getElementById("sup-act-gid").textContent = actGid;
+    document.getElementById("sup-vp").textContent = `${elVigencia.value} / ${getPeriodo()}`;
+    document.getElementById("sup-nodes").textContent = nodes;
+    document.getElementById("sup-locked").textContent = `${locked} / ${notApp}`;
+    document.getElementById("sup-msg").textContent = lastGlobalMsg || "Ninguno";
+    
+    const errEl = document.getElementById("sup-err");
+    if (lastCapturedError) {
+        errEl.textContent = typeof lastCapturedError === 'object' ? JSON.stringify(lastCapturedError) : String(lastCapturedError);
+        errEl.style.display = "block";
+    } else {
+        errEl.textContent = "Ninguno";
+    }
+}
+
+document.getElementById("btn-toggle-soporte").addEventListener("click", () => {
+    const body = document.getElementById("support-body");
+    const icon = document.getElementById("support-toggle-icon");
+    if (body.style.display === "none") {
+        body.style.display = "block";
+        icon.textContent = "▲";
+        refreshSupportPanel();
+    } else {
+        body.style.display = "none";
+        icon.textContent = "▼";
+    }
+});
+
+document.getElementById("btn-copy-diagnostico").addEventListener("click", () => {
+    const actGid = getActividadId();
+    const data = `
+DATA-PAC V4 | DIAGNÓSTICO UAT
+-----------------------------
+Usuario: ${currentUser?.nombre}
+Roles: ${currentUser?.roles.join(", ")}
+Contexto: ${elVigencia.value} | ${getPeriodo()} | Act: ${actGid}
+Tareas UI: ${document.querySelectorAll(".row").length} (Bloq: ${document.querySelectorAll(".row.is-readonly:not(.is-not-applicable)").length}, NA: ${document.querySelectorAll(".row.is-not-applicable").length})
+Último Mensaje: ${lastGlobalMsg}
+Último Error: ${typeof lastCapturedError === 'object' ? JSON.stringify(lastCapturedError) : String(lastCapturedError)}
+`.trim();
+    navigator.clipboard.writeText(data).then(() => {
+        const btn = document.getElementById("btn-copy-diagnostico");
+        const prev = btn.textContent;
+        btn.textContent = "¡Copiado!";
+        setTimeout(() => btn.textContent = prev, 2000);
+    });
+});
+
 // --- CAPA DE AUDITORÍA DE ERRORES GLOBAL ---
 async function auditError(context, error, extra = {}) {
-    // REGLA: Evita doble auditoría del mismo objeto de error
+    lastCapturedError = { context, error: error instanceof Error ? error.message : String(error), extra };
+    refreshSupportPanel();
+
     if (error && typeof error === 'object' && error._audited) return; 
     
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -120,6 +187,9 @@ window.onunhandledrejection = function (event) {
 
 // --- Helpers UX ---
 function showGlobalMessage(text, type = "info") {
+    lastGlobalMsg = `[${type.toUpperCase()}] ${text}`;
+    refreshSupportPanel();
+
     const el = document.getElementById("status");
     if (!el) return;
     el.className = `status-global msg--${type}`;
@@ -148,7 +218,6 @@ async function fetchJson(url, params){
         if(!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`); 
         return await r.json(); 
     } catch(e) {
-        // Exclusión usando las constantes reales
         if (!url.includes(URL_AUD_EVENTO) && !url.includes(URL_AUD_HISTORIAL)) {
             auditError("FETCH_JSON", e, { url: url.substring(0, 150) });
         }
@@ -163,7 +232,6 @@ async function postForm(url, formObj){
         if(!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`); 
         return await r.json(); 
     } catch(e) {
-        // Exclusión usando las constantes reales
         if (!url.includes(URL_AUD_EVENTO) && !url.includes(URL_AUD_HISTORIAL)) {
             auditError("POST_FORM", e, { url: url.substring(0, 150) });
         }
@@ -285,8 +353,12 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
     document.getElementById("pill-user").style.display = "block";
     document.getElementById("pill-user").textContent = `Usuario: ${currentUser.nombre}`;
     
-    if (currentUser.roles.includes("SUPERADMIN")) document.getElementById("pill-superadmin").style.display = "block";
-    else document.getElementById("pill-superadmin").style.display = "none";
+    if (currentUser.roles.includes("SUPERADMIN")) {
+        document.getElementById("pill-superadmin").style.display = "block";
+        refreshSupportPanel();
+    } else {
+        document.getElementById("pill-superadmin").style.display = "none";
+    }
     
     await initMap(); 
     initCombosFijos(); 
@@ -411,9 +483,10 @@ async function loadActividades() {
       }
 
       renderCombo("combo-actividad", data, data.length ? "— Selecciona o busca —" : `Sin actividades operativas en ${vig}`, async (val) => {
-          if(!val) { elIndicadores.innerHTML = ""; actContextPanel.style.display = "none"; document.getElementById("lbl-responsable").textContent = "Responsable: —"; return; }
+          if(!val) { elIndicadores.innerHTML = ""; actContextPanel.style.display = "none"; document.getElementById("lbl-responsable").textContent = "Responsable: —"; refreshSupportPanel(); return; }
           document.getElementById("lbl-responsable").textContent = `Responsable: ${currentUser.nombre}`;
           await loadSubactividadesYTareas(val);
+          refreshSupportPanel();
       });
       
       if(!data.length) elIndicadores.innerHTML = ""; 
@@ -1150,8 +1223,6 @@ async function executeSave(draft) {
     if(draft.wfAdds.length || draft.wfUpdates.length) await postForm(`${URL_WF_SOLICITUD}/applyEdits`, { f:"json", adds: draft.wfAdds, updates: draft.wfUpdates });
   } catch(e) {
     auditError("APPLY_EDITS_API", e, { draftStats: { a: draft.adds.length, u: draft.updates.length } });
-    
-    // Se marca explícitamente el nuevo error como auditado para evitar la duplicidad al re-lanzarlo
     const customErr = new Error("Falla en la sincronización de datos con el servidor principal.");
     customErr._audited = true; 
     throw customErr;
@@ -1170,6 +1241,7 @@ function clearForm(){
     const locList = r.querySelector(".loc-list"); if(locList) locList.innerHTML = "";
     r.classList.remove("row--error");
   });
+  refreshSupportPanel();
 }
 btnLimpiar.addEventListener("click", () => { clearForm(); setStatus("Vista limpiada.", "info"); });
 
@@ -1215,5 +1287,8 @@ elVigencia.addEventListener("change", async () => {
 // Evento de Cambio de Periodo nativo
 elPeriodo.addEventListener("change", async () => {
     const actGid = getActividadId();
-    if (actGid) await loadSubactividadesYTareas(actGid);
+    if (actGid) {
+        await loadSubactividadesYTareas(actGid);
+        refreshSupportPanel();
+    }
 });

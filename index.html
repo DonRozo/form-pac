@@ -120,6 +120,36 @@
           <textarea id="txt-logros-principales" rows="3" placeholder="Lista breve de principales logros (viñetas o texto)..."></textarea>
         </div>
 
+        <div id="panel-soporte" class="support-panel" style="display:none;">
+            <div class="support-panel__header" id="btn-toggle-soporte">
+                <span>🛠️ Panel de Diagnóstico Técnico</span>
+                <span id="support-toggle-icon">▼</span>
+            </div>
+            <div class="support-panel__body" id="support-body" style="display:none;">
+                <div class="support-grid">
+                    <div class="support-kv"><span>Usuario:</span> <span id="sup-user">—</span></div>
+                    <div class="support-kv"><span>Roles:</span> <span id="sup-roles">—</span></div>
+                    <div class="support-kv"><span>Actividad GID:</span> <span id="sup-act-gid" class="mono" style="font-size:10px;">—</span></div>
+                    <div class="support-kv"><span>Vigencia/Per:</span> <span id="sup-vp">—</span></div>
+                    <div class="support-kv"><span>Nodos Render:</span> <span id="sup-nodes">—</span></div>
+                    <div class="support-kv"><span>Bloqueadas/NA:</span> <span id="sup-locked">—</span></div>
+                </div>
+                <div style="margin-top: 8px; border-top: 1px dashed #cbd5e1; padding-top: 8px;">
+                    <div class="support-kv" style="flex-direction:column; align-items:flex-start;">
+                        <span>Último Mensaje Global:</span>
+                        <div id="sup-msg" style="color:#0f172a; font-weight:600; font-size:11px;">—</div>
+                    </div>
+                    <div class="support-kv" style="flex-direction:column; align-items:flex-start; margin-top:4px;">
+                        <span style="color:#b91c1c;">Último Error Técnico:</span>
+                        <div id="sup-err" class="mono" style="color:#991b1b; font-size:10px; background:#fef2f2; padding:4px; border-radius:4px; width:100%; word-break:break-all;">Ninguno</div>
+                    </div>
+                </div>
+                <div style="margin-top: 10px; text-align:right;">
+                    <button class="btn btn--ghost" id="btn-copy-diagnostico" style="font-size:10px; padding:4px 8px;">Copiar Diagnóstico</button>
+                </div>
+            </div>
+        </div>
+
         <div class="actions">
           <button class="btn btn--ghost" id="btn-guardar">Guardar Borrador</button>
           <button class="btn btn--primary" id="btn-enviar">Enviar a Revisión</button>
