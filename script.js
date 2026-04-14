@@ -13,7 +13,7 @@
                     Capa Mensajería UX Global e Inline.
                     Capa de Validaciones Previas Centralizadas.
                     Auditoría de Errores Técnicos y Funcionales.
-                    + Panel de Soporte Técnico y Diagnóstico UAT.
+                    + Panel de Soporte Técnico y Diagnóstico UAT (Ajustado).
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -85,14 +85,19 @@ function refreshSupportPanel() {
     const nodes = document.querySelectorAll(".row").length;
     const locked = document.querySelectorAll(".row.is-readonly:not(.is-not-applicable)").length;
     const notApp = document.querySelectorAll(".row.is-not-applicable").length;
+    
+    const comboInput = document.querySelector("#combo-actividad .combo-input");
+    const actName = comboInput ? (comboInput.value || "Ninguna") : "Ninguna";
     const actGid = getActividadId() || "Ninguna";
     
     document.getElementById("sup-user").textContent = currentUser.nombre;
     document.getElementById("sup-roles").textContent = currentUser.roles.join(", ");
+    document.getElementById("sup-act-name").textContent = actName;
     document.getElementById("sup-act-gid").textContent = actGid;
     document.getElementById("sup-vp").textContent = `${elVigencia.value} / ${getPeriodo()}`;
     document.getElementById("sup-nodes").textContent = nodes;
-    document.getElementById("sup-locked").textContent = `${locked} / ${notApp}`;
+    document.getElementById("sup-locked").textContent = locked;
+    document.getElementById("sup-na").textContent = notApp;
     document.getElementById("sup-msg").textContent = lastGlobalMsg || "Ninguno";
     
     const errEl = document.getElementById("sup-err");
@@ -119,15 +124,22 @@ document.getElementById("btn-toggle-soporte").addEventListener("click", () => {
 
 document.getElementById("btn-copy-diagnostico").addEventListener("click", () => {
     const actGid = getActividadId();
+    const comboInput = document.querySelector("#combo-actividad .combo-input");
+    const actName = comboInput ? (comboInput.value || "Ninguna") : "Ninguna";
+    
     const data = `
 DATA-PAC V4 | DIAGNÓSTICO UAT
 -----------------------------
 Usuario: ${currentUser?.nombre}
 Roles: ${currentUser?.roles.join(", ")}
-Contexto: ${elVigencia.value} | ${getPeriodo()} | Act: ${actGid}
-Tareas UI: ${document.querySelectorAll(".row").length} (Bloq: ${document.querySelectorAll(".row.is-readonly:not(.is-not-applicable)").length}, NA: ${document.querySelectorAll(".row.is-not-applicable").length})
-Último Mensaje: ${lastGlobalMsg}
-Último Error: ${typeof lastCapturedError === 'object' ? JSON.stringify(lastCapturedError) : String(lastCapturedError)}
+Contexto: ${elVigencia.value} | ${getPeriodo()}
+Actividad Seleccionada: ${actName}
+Actividad GID: ${actGid}
+Total Tareas UI (Renderizadas): ${document.querySelectorAll(".row").length}
+Tareas Bloqueadas: ${document.querySelectorAll(".row.is-readonly:not(.is-not-applicable)").length}
+Tareas No Aplicables: ${document.querySelectorAll(".row.is-not-applicable").length}
+Último Mensaje Global: ${lastGlobalMsg}
+Último Error Técnico: ${typeof lastCapturedError === 'object' ? JSON.stringify(lastCapturedError) : String(lastCapturedError)}
 `.trim();
     navigator.clipboard.writeText(data).then(() => {
         const btn = document.getElementById("btn-copy-diagnostico");

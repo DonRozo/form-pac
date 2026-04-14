@@ -120,7 +120,15 @@
           <textarea id="txt-logros-principales" rows="3" placeholder="Lista breve de principales logros (viñetas o texto)..."></textarea>
         </div>
 
-        <div id="panel-soporte" class="support-panel" style="display:none;">
+        <div class="actions">
+          <button class="btn btn--ghost" id="btn-guardar">Guardar Borrador</button>
+          <button class="btn btn--primary" id="btn-enviar">Enviar a Revisión</button>
+          <button class="btn btn--danger" id="btn-limpiar">Limpiar Vista</button>
+        </div>
+        
+        <div id="status" class="status-global" role="status" aria-live="polite"></div>
+
+        <div id="panel-soporte" class="support-panel" style="display:none; margin-bottom: 24px;">
             <div class="support-panel__header" id="btn-toggle-soporte">
                 <span>🛠️ Panel de Diagnóstico Técnico</span>
                 <span id="support-toggle-icon">▼</span>
@@ -129,10 +137,12 @@
                 <div class="support-grid">
                     <div class="support-kv"><span>Usuario:</span> <span id="sup-user">—</span></div>
                     <div class="support-kv"><span>Roles:</span> <span id="sup-roles">—</span></div>
+                    <div class="support-kv"><span>Actividad Sel:</span> <span id="sup-act-name">—</span></div>
                     <div class="support-kv"><span>Actividad GID:</span> <span id="sup-act-gid" class="mono" style="font-size:10px;">—</span></div>
                     <div class="support-kv"><span>Vigencia/Per:</span> <span id="sup-vp">—</span></div>
-                    <div class="support-kv"><span>Nodos Render:</span> <span id="sup-nodes">—</span></div>
-                    <div class="support-kv"><span>Bloqueadas/NA:</span> <span id="sup-locked">—</span></div>
+                    <div class="support-kv"><span>Total Tareas (Render):</span> <span id="sup-nodes">—</span></div>
+                    <div class="support-kv"><span>Tareas Bloqueadas:</span> <span id="sup-locked">—</span></div>
+                    <div class="support-kv"><span>Tareas No Aplica:</span> <span id="sup-na">—</span></div>
                 </div>
                 <div style="margin-top: 8px; border-top: 1px dashed #cbd5e1; padding-top: 8px;">
                     <div class="support-kv" style="flex-direction:column; align-items:flex-start;">
@@ -150,13 +160,6 @@
             </div>
         </div>
 
-        <div class="actions">
-          <button class="btn btn--ghost" id="btn-guardar">Guardar Borrador</button>
-          <button class="btn btn--primary" id="btn-enviar">Enviar a Revisión</button>
-          <button class="btn btn--danger" id="btn-limpiar">Limpiar Vista</button>
-        </div>
-        
-        <div id="status" class="status-global" role="status" aria-live="polite"></div>
       </section>
 
       <section class="panel panel--map" aria-label="Mapa">
