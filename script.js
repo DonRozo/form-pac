@@ -14,7 +14,8 @@
                     Capa de Validaciones Previas Centralizadas.
                     Auditoría de Errores Técnicos y Funcionales.
                     Panel de Soporte Técnico y Diagnóstico UAT.
-                    + Manejo Limpio Primer Cargue, Retorno Estructurado y Paginación (Corregido).
+                    + Manejo Limpio Primer Cargue, Retorno Estructurado y Paginación.
+                    + Contexto Histórico y Reglas Temporales de Solo Lectura OAP.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -52,13 +53,22 @@ const F_NAR = { fkAct: "ActividadGlobalID", vig: "Vigencia", per: "Periodo", txt
 const F_UBI = { fkAvance: "AvanceTareaGlobalID", dane: "CodigoDANE", mun: "MunicipioNombre", desc: "DescripcionSitio", fec: "FechaRegistro" };
 const F_WF = { solId: "SolicitudID", tipo: "TipoObjeto", objId: "ObjetoID", objGid: "ObjetoGlobalID", vig: "Vigencia", per: "Periodo", persId: "PersonaSolicitaID", fec: "FechaSolicitud", est: "EstadoActual" };
 
+// --- REGLAS DE NEGOCIO TEMPORALES (DEFINIDAS POR OAP) ---
+// Estos valores determinan el "Hoy" operativo, independientemente de la fecha del computador.
+const OPERATIVE_VIGENCIA = 2026; // TODO: OAP debe actualizar esto al cambiar la vigencia operativa
+const OPERATIVE_PERIODO = 'T1';  // TODO: OAP debe actualizar esto al cambiar el periodo operativo
+
 // DOM
 const elVigencia = document.getElementById("sel-vigencia"), elPeriodo = document.getElementById("sel-periodo"), elIndicadores = document.getElementById("indicadores");
 const btnGuardar = document.getElementById("btn-guardar"), btnEnviar = document.getElementById("btn-enviar"), btnLimpiar = document.getElementById("btn-limpiar"), btnRefresh = document.getElementById("btn-refresh");
 const elStatus = document.getElementById("status"), pillActive = document.getElementById("pill-active");
 const elModo = document.getElementById("pill-modo"), actContextPanel = document.getElementById("actividad-context");
 
-// Estado
+// Inicializar selectores de UI con el Contexto Operativo
+elVigencia.value = OPERATIVE_VIGENCIA;
+elPeriodo.value = OPERATIVE_PERIODO;
+
+// Estado Global
 let currentUser = null; 
 let asignacionesActivas = []; 
 let cacheSubactividades = [], cacheTareas = [];
@@ -76,6 +86,23 @@ let map, view, graphicsLayer, webMercatorUtils, sketchVM, jurisdiccionLayerView;
 
 let lastCapturedError = null;
 let lastGlobalMsg = null;
+
+function getTemporalScore(v, p) {
+    return parseInt(v) * 10 + parseInt(String(p).replace('T', ''));
+}
+
+function evaluateHistoricalSelection(selectedVigencia, selectedPeriodo) {
+    const v = parseInt(selectedVigencia);
+    const selScore = getTemporalScore(v, selectedPeriodo);
+    const currScore = getTemporalScore(OPERATIVE_VIGENCIA, OPERATIVE_PERIODO);
+
+    let isFuture = v > OPERATIVE_VIGENCIA || selScore > currScore;
+    let isPastVigencia = v < OPERATIVE_VIGENCIA;
+    let isPastQuarter = v === OPERATIVE_VIGENCIA && selScore < currScore;
+    let isCurrent = selScore === currScore;
+
+    return { isFuture, isPastVigencia, isPastQuarter, isCurrent, v, p: selectedPeriodo };
+}
 
 // --- PANEL DE SOPORTE (SUPERADMIN) ---
 function refreshSupportPanel() {
@@ -299,7 +326,7 @@ function setComboValue(containerId, value, label) {
 }
 
 function getActividadId() { const h = document.querySelector("#combo-actividad .combo-value"); return h ? h.value : ""; }
-function getPeriodo() { return elPeriodo.value || "T4"; }
+function getPeriodo() { return elPeriodo.value || OPERATIVE_PERIODO; }
 
 function initCombosFijos() { renderCombo("combo-actividad", [], "Cargando..."); }
 
@@ -579,6 +606,7 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
 
       try {
           const res = await loadExistingData(actividadGlobalId); 
+          const histCtx = evaluateHistoricalSelection(elVigencia.value, getPeriodo());
           
           if (res && res.status === "empty") {
               clearMapGraphics();
@@ -596,16 +624,32 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
               document.getElementById("narrativa-badge-container").innerHTML = "";
               document.getElementById("container-motivo-narrativa").style.display = "none";
               
-              evaluateHistoricalMode();
-              setStatus("No existen reportes previos para esta actividad y periodo. (Primer Cargue)", "info");
+              if (histCtx.isFuture) {
+                  evaluateHistoricalMode(true);
+                  setStatus("La vigencia seleccionada no está habilitada para reporte.", "error");
+              } else if (histCtx.isPastVigencia) {
+                  evaluateHistoricalMode(true);
+                  setStatus("No existen reportes previos para la combinación seleccionada.", "info");
+              } else {
+                  evaluateHistoricalMode(false);
+                  setStatus("No existen reportes previos para esta actividad y periodo. (Primer Cargue)", "info");
+              }
           } else {
-              evaluateHistoricalMode();
-              setStatus("Formulario operativo cargado.", "success");
+              if (histCtx.isFuture) {
+                  evaluateHistoricalMode(true);
+                  setStatus("La vigencia seleccionada no está habilitada para reporte.", "error");
+              } else if (histCtx.isPastVigencia || histCtx.isPastQuarter) {
+                  evaluateHistoricalMode(histCtx.isPastVigencia); 
+                  setStatus(`Está visualizando un trimestre ya reportado: ${histCtx.p} ${histCtx.v}. Verifique si desea continuar o cambie a ${OPERATIVE_PERIODO} ${OPERATIVE_VIGENCIA}.`, "warning");
+              } else {
+                  evaluateHistoricalMode(false);
+                  setStatus("Formulario operativo cargado.", "success");
+              }
           }
       } catch (err) {
           console.warn("Error técnico al cargar históricos:", err);
           auditError("LOAD_EXISTING_DATA", err, { actividadGlobalId });
-          evaluateHistoricalMode();
+          evaluateHistoricalMode(false);
           setStatus("Error técnico al recuperar datos históricos. Comuníquese con soporte.", "error");
       }
   } catch (e) {
@@ -832,7 +876,7 @@ function applyReadonlyStateNarrativa(estado) {
   ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales", "txt-motivo-narrativa"].forEach(id => { document.getElementById(id).disabled = isReadonly; });
 }
 
-function evaluateHistoricalMode() {
+function evaluateHistoricalMode(forceReadOnly = false) {
     let allLocked = true;
     let hasData = false;
 
@@ -847,8 +891,13 @@ function evaluateHistoricalMode() {
         hasData = true;
         if (!["Enviado", "EnRevision", "Aprobado", "Publicado"].includes(existingNarrativa.EstadoRegistro)) allLocked = false;
     }
+    
+    const histCtx = evaluateHistoricalSelection(elVigencia.value, getPeriodo());
+    if (histCtx.isPastVigencia || histCtx.isFuture || forceReadOnly) {
+        allLocked = true;
+    }
 
-    if (hasData && allLocked) {
+    if ((hasData && allLocked) || forceReadOnly || histCtx.isPastVigencia || histCtx.isFuture) {
         viewOnlyMode = true;
         elModo.style.display = "flex";
         elModo.textContent = "Modo: Histórico (Solo Lectura)";
@@ -856,6 +905,20 @@ function evaluateHistoricalMode() {
         elModo.style.color = "#991b1b";
         btnGuardar.style.display = "none";
         btnEnviar.style.display = "none";
+        
+        // Bloqueo estricto de inputs de UI por modo forzado
+        document.querySelectorAll(".row").forEach(rowEl => {
+             if (!rowEl.classList.contains("is-not-applicable")) {
+                 rowEl.classList.add("is-readonly");
+                 rowEl.querySelectorAll("input").forEach(i => i.disabled = true);
+                 const btnAct = rowEl.querySelector(".btn-activar"); if(btnAct) btnAct.style.display = "none";
+                 rowEl.querySelectorAll(".btn-loc-del").forEach(b => b.style.display = "none");
+                 rowEl.querySelectorAll(".loc-item__actions").forEach(a => a.style.display = "none");
+             }
+        });
+        ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales", "txt-motivo-narrativa"].forEach(id => { 
+             const el = document.getElementById(id); if(el) el.disabled = true; 
+        });
     } else {
         viewOnlyMode = false;
         elModo.style.display = "flex";
