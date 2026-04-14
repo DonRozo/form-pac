@@ -19,6 +19,7 @@
                     + Validación Funcional por TipoValorAvance (Numérico / Porcentaje).
                     + Validación Funcional por MetaProgramada.
                     + Modal Proxy de Confirmación Pre-Envío.
+                    + Estabilización Network POST (Fix: URI Too Long) y Contexto OAP 2026.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -57,8 +58,8 @@ const F_UBI = { fkAvance: "AvanceTareaGlobalID", dane: "CodigoDANE", mun: "Munic
 const F_WF = { solId: "SolicitudID", tipo: "TipoObjeto", objId: "ObjetoID", objGid: "ObjetoGlobalID", vig: "Vigencia", per: "Periodo", persId: "PersonaSolicitaID", fec: "FechaSolicitud", est: "EstadoActual" };
 
 // --- REGLAS DE NEGOCIO TEMPORALES (DEFINIDAS POR OAP) ---
-const OPERATIVE_VIGENCIA = 2026; // TODO: OAP debe actualizar esto al cambiar la vigencia operativa
-const OPERATIVE_PERIODO = 'T1';  // TODO: OAP debe actualizar esto al cambiar el periodo operativo
+const OPERATIVE_VIGENCIA = 2026; 
+const OPERATIVE_PERIODO = 'T1';  
 
 // DOM
 const elVigencia = document.getElementById("sel-vigencia"), elPeriodo = document.getElementById("sel-periodo"), elIndicadores = document.getElementById("indicadores");
@@ -271,8 +272,9 @@ function generateGUID() { return '{' + crypto.randomUUID().toUpperCase() + '}'; 
 // --- Funciones Base (Técnicas) ---
 async function fetchJson(url, params){ 
     try {
-        const u=new URL(url); Object.entries(params||{}).forEach(([k,v])=>u.searchParams.set(k,v)); 
-        const r=await fetch(u, {method:"GET"}); 
+        const form = new URLSearchParams();
+        Object.entries(params||{}).forEach(([k,v])=>{ if(v!=null) form.append(k,v); }); 
+        const r=await fetch(url, {method:"POST", body:form}); 
         if(!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`); 
         return await r.json(); 
     } catch(e) {
@@ -457,15 +459,15 @@ async function loadAsignaciones() {
 
       if (asigActividades.length > 0) {
           let subDeActividades = [];
-          for (let i = 0; i < asigActividades.length; i += 200) {
-              const chunk = asigActividades.slice(i, i + 200).map(g => `'${g}'`).join(",");
+          for (let i = 0; i < asigActividades.length; i += 50) {
+              const chunk = asigActividades.slice(i, i + 50).map(g => `'${g}'`).join(",");
               const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
               if(qS.features) subDeActividades.push(...qS.features);
           }
           const subGuids = subDeActividades.map(f => f.attributes.GlobalID);
           if (subGuids.length > 0) {
-              for (let i = 0; i < subGuids.length; i += 200) {
-                  const chunk = subGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
+              for (let i = 0; i < subGuids.length; i += 50) {
+                  const chunk = subGuids.slice(i, i + 50).map(g => `'${g}'`).join(",");
                   const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
                   if(qT.features) {
                       const mapSubToAct = new Map(); subDeActividades.forEach(s => mapSubToAct.set(s.attributes.GlobalID, s.attributes.ActividadGlobalID));
@@ -477,16 +479,16 @@ async function loadAsignaciones() {
 
       if (asigTareas.length > 0) {
           let tareasPuntuales = [];
-          for (let i = 0; i < asigTareas.length; i += 200) {
-              const chunk = asigTareas.slice(i, i + 200).map(g => `'${g}'`).join(",");
+          for (let i = 0; i < asigTareas.length; i += 50) {
+              const chunk = asigTareas.slice(i, i + 50).map(g => `'${g}'`).join(",");
               const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
               if(qT.features) tareasPuntuales.push(...qT.features);
           }
           const validSubIds = [...new Set(tareasPuntuales.map(t => t.attributes.SubActividadGlobalID).filter(Boolean))];
           const subMap = new Map();
           if (validSubIds.length > 0) {
-              for (let i = 0; i < validSubIds.length; i += 200) {
-                  const chunk = validSubIds.slice(i, i + 200).map(g => `'${g}'`).join(",");
+              for (let i = 0; i < validSubIds.length; i += 50) {
+                  const chunk = validSubIds.slice(i, i + 50).map(g => `'${g}'`).join(",");
                   const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
                   if(qS.features) qS.features.forEach(f => subMap.set(f.attributes.GlobalID, f.attributes.ActividadGlobalID));
               }
@@ -531,8 +533,8 @@ async function loadActividades() {
           const actGuids = [...new Set(asignacionesActivas.map(a => a.ActividadGlobalID).filter(Boolean))];
           if(actGuids.length > 0) { 
               let qActFeatures = [];
-              for (let i = 0; i < actGuids.length; i += 200) {
-                  const chunk = actGuids.slice(i, i + 200).map(g => `'${g}'`).join(",");
+              for (let i = 0; i < actGuids.length; i += 50) {
+                  const chunk = actGuids.slice(i, i + 50).map(g => `'${g}'`).join(",");
                   const qA = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk}) AND Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad", orderByFields:"ActividadID ASC" });
                   if(qA.features) qActFeatures.push(...qA.features);
               }
@@ -793,7 +795,7 @@ async function loadExistingData(actGid) {
 
   let allAvancesFeatures = [];
   if(cacheTareas.length > 0) {
-      const chunkSize = 50; 
+      const chunkSize = 15; 
       for (let i = 0; i < cacheTareas.length; i += chunkSize) {
           const chunk = cacheTareas.slice(i, i + chunkSize).map(t => `'${t.GlobalID}'`).join(",");
           const qAv = await fetchJson(`${URL_AVANCE_TAREA}/query`, { f:"json", where:`TareaGlobalID IN (${chunk}) AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
@@ -816,7 +818,7 @@ async function loadExistingData(actGid) {
   }
 
   if(avGuids.length > 0) {
-      const chunkSize = 50;
+      const chunkSize = 15;
       for (let i = 0; i < avGuids.length; i += chunkSize) {
           const chunk = avGuids.slice(i, i + chunkSize).join(",");
           const qUb = await fetchJson(`${URL_TAREA_UBICACION}/query`, { f:"json", where:`AvanceTareaGlobalID IN (${chunk})`, outFields:"*", returnGeometry:true, outSR:"4326" });
@@ -841,7 +843,7 @@ async function loadExistingData(actGid) {
 
   const allObjGuids = avGuids.concat(existingNarrativa ? [`'${existingNarrativa.GlobalID}'`] : []);
   if(allObjGuids.length > 0) {
-      const chunkSize = 50;
+      const chunkSize = 15;
       for (let i = 0; i < allObjGuids.length; i += chunkSize) {
           const chunk = allObjGuids.slice(i, i + chunkSize).join(",");
           const qWf = await fetchJson(`${URL_WF_SOLICITUD}/query`, { 
