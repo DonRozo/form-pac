@@ -57,8 +57,8 @@ const F_UBI = { fkAvance: "AvanceTareaGlobalID", dane: "CodigoDANE", mun: "Munic
 const F_WF = { solId: "SolicitudID", tipo: "TipoObjeto", objId: "ObjetoID", objGid: "ObjetoGlobalID", vig: "Vigencia", per: "Periodo", persId: "PersonaSolicitaID", fec: "FechaSolicitud", est: "EstadoActual" };
 
 // --- REGLAS DE NEGOCIO TEMPORALES (DEFINIDAS POR OAP) ---
-const OPERATIVE_VIGENCIA = 2024; // TODO: OAP debe actualizar esto al cambiar la vigencia operativa
-const OPERATIVE_PERIODO = 'T4';  // TODO: OAP debe actualizar esto al cambiar el periodo operativo
+const OPERATIVE_VIGENCIA = 2026; // TODO: OAP debe actualizar esto al cambiar la vigencia operativa
+const OPERATIVE_PERIODO = 'T1';  // TODO: OAP debe actualizar esto al cambiar el periodo operativo
 
 // DOM
 const elVigencia = document.getElementById("sel-vigencia"), elPeriodo = document.getElementById("sel-periodo"), elIndicadores = document.getElementById("indicadores");
