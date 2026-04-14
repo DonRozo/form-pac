@@ -16,6 +16,8 @@
                     Panel de Soporte Técnico y Diagnóstico UAT.
                     + Manejo Limpio Primer Cargue, Retorno Estructurado y Paginación.
                     + Contexto Histórico y Reglas Temporales de Solo Lectura OAP.
+                    + Validación Funcional por TipoValorAvance (Numérico / Porcentaje).
+                    + Validación Funcional por MetaProgramada.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -54,9 +56,8 @@ const F_UBI = { fkAvance: "AvanceTareaGlobalID", dane: "CodigoDANE", mun: "Munic
 const F_WF = { solId: "SolicitudID", tipo: "TipoObjeto", objId: "ObjetoID", objGid: "ObjetoGlobalID", vig: "Vigencia", per: "Periodo", persId: "PersonaSolicitaID", fec: "FechaSolicitud", est: "EstadoActual" };
 
 // --- REGLAS DE NEGOCIO TEMPORALES (DEFINIDAS POR OAP) ---
-// Estos valores determinan el "Hoy" operativo, independientemente de la fecha del computador.
-const OPERATIVE_VIGENCIA = 2026; // TODO: OAP debe actualizar esto al cambiar la vigencia operativa
-const OPERATIVE_PERIODO = 'T1';  // TODO: OAP debe actualizar esto al cambiar el periodo operativo
+const OPERATIVE_VIGENCIA = 2024; // TODO: OAP debe actualizar esto al cambiar la vigencia operativa
+const OPERATIVE_PERIODO = 'T4';  // TODO: OAP debe actualizar esto al cambiar el periodo operativo
 
 // DOM
 const elVigencia = document.getElementById("sel-vigencia"), elPeriodo = document.getElementById("sel-periodo"), elIndicadores = document.getElementById("indicadores");
@@ -102,6 +103,22 @@ function evaluateHistoricalSelection(selectedVigencia, selectedPeriodo) {
     let isCurrent = selScore === currScore;
 
     return { isFuture, isPastVigencia, isPastQuarter, isCurrent, v, p: selectedPeriodo };
+}
+
+// Helper para Validación CFG_Tarea.TipoValorAvance
+function getTipoValorAvanceByTarea(tareaGid) {
+    if (!cacheTareas || cacheTareas.length === 0) return "";
+    const task = cacheTareas.find(t => t.GlobalID === tareaGid);
+    if (!task || !task.TipoValorAvance) return "";
+    return String(task.TipoValorAvance).toUpperCase().trim();
+}
+
+// Helper para Validación PLAN_TareaVigencia.MetaProgramada
+function getMetaProgramadaByTarea(tareaGid) {
+    const pTar = planTarCtx.get(tareaGid);
+    if (!pTar || pTar.MetaProgramada === null || pTar.MetaProgramada === undefined || String(pTar.MetaProgramada).trim() === '') return null;
+    const meta = Number(pTar.MetaProgramada);
+    return isNaN(meta) ? null : meta;
 }
 
 // --- PANEL DE SOPORTE (SUPERADMIN) ---
@@ -833,7 +850,6 @@ async function loadExistingData(actGid) {
       }
   }
 
-  // Retorno estructurado para control limpio de primer cargue vs datos existentes
   if (avGuids.length === 0 && !existingNarrativa) {
       return { status: "empty" };
   }
@@ -906,7 +922,6 @@ function evaluateHistoricalMode(forceReadOnly = false) {
         btnGuardar.style.display = "none";
         btnEnviar.style.display = "none";
         
-        // Bloqueo estricto de inputs de UI por modo forzado
         document.querySelectorAll(".row").forEach(rowEl => {
              if (!rowEl.classList.contains("is-not-applicable")) {
                  rowEl.classList.add("is-readonly");
@@ -1066,6 +1081,7 @@ function validateSelection() {
 
 function validateTaskRows(isSubmit) {
     let errorCount = 0;
+    let warningCount = 0;
     document.querySelectorAll(".row").forEach(rowEl => {
         if (rowEl.classList.contains("is-readonly") || rowEl.classList.contains("is-not-applicable")) return;
         
@@ -1078,7 +1094,7 @@ function validateTaskRows(isSubmit) {
         const locs = rowLocations.get(rowId) || [];
         
         clearRowMessage(rowId);
-        rowEl.classList.remove("row--error");
+        rowEl.classList.remove("row--error", "row--warning");
 
         locs.forEach(loc => {
             const domLoc = document.getElementById(`loc-${loc.ptId}`);
@@ -1089,9 +1105,37 @@ function validateTaskRows(isSubmit) {
         if (!hasData) return;
 
         let rowErrors = [];
+        let rowWarnings = [];
 
-        if (val !== "" && val !== undefined && isNaN(Number(val))) {
-            rowErrors.push("El Valor Reportado debe ser numérico.");
+        if (val !== "" && val !== undefined) {
+            const numVal = Number(val);
+            if (isNaN(numVal)) {
+                rowErrors.push("El Valor Reportado debe ser numérico.");
+            } else {
+                // 1. Validación por TipoValorAvance (Porcentaje)
+                const tipoValor = getTipoValorAvanceByTarea(tareaGid);
+                if (tipoValor.includes("PORCENTAJE") || tipoValor === "%") {
+                    if (numVal < 0) {
+                        rowErrors.push("El porcentaje no puede ser menor a 0.");
+                    } else if (numVal > 100) {
+                        if (isSubmit) {
+                            rowErrors.push("Valor de porcentaje fuera de rango permitido para envío (máx 100).");
+                        } else {
+                            rowWarnings.push("Esta tarea está configurada como porcentaje. El valor no debe superar 100.");
+                        }
+                    }
+                }
+                
+                // 2. Validación por MetaProgramada (PLAN_TareaVigencia)
+                const metaProg = getMetaProgramadaByTarea(tareaGid);
+                if (metaProg !== null && numVal > metaProg) {
+                    if (isSubmit) {
+                        rowErrors.push(`El valor reportado supera la meta programada de la tarea para esta vigencia. Meta programada: ${metaProg}. Valor reportado: ${numVal}.`);
+                    } else {
+                        rowWarnings.push(`El valor reportado supera la meta programada. Meta: ${metaProg}, Reportado: ${numVal}.`);
+                    }
+                }
+            }
         }
 
         if (isSubmit) {
@@ -1109,13 +1153,18 @@ function validateTaskRows(isSubmit) {
             });
         }
 
+        // Impresión visual en UI (se priorizan los errores sobre los warnings)
         if (rowErrors.length > 0) {
             showRowMessage(rowId, rowErrors.join(" "), "error");
             rowEl.classList.add("row--error");
             errorCount++;
+        } else if (rowWarnings.length > 0 && !isSubmit) {
+            showRowMessage(rowId, rowWarnings.join(" "), "warning");
+            rowEl.classList.add("row--warning");
+            warningCount++;
         }
     });
-    return errorCount;
+    return { errors: errorCount, warnings: warningCount };
 }
 
 function validateTaskRowsForSave() { return validateTaskRows(false); }
@@ -1158,15 +1207,15 @@ function validateBeforeSave() {
     let selErrors = validateSelection();
     if (selErrors.length > 0) {
         setStatus("Por favor seleccione: " + selErrors.join(", "), "error");
-        return false;
+        return { valid: false, warnings: 0 };
     }
-    let taskErrors = validateTaskRowsForSave();
+    let taskValidation = validateTaskRowsForSave();
     let narrErrors = validateNarrativeForSave();
-    if (taskErrors > 0 || narrErrors > 0) {
-        setStatus(`Revise las validaciones inline antes de guardar (${taskErrors} tareas con error).`, "error");
-        return false;
+    if (taskValidation.errors > 0 || narrErrors > 0) {
+        setStatus(`Revise las validaciones inline antes de guardar (${taskValidation.errors} tareas con error).`, "error");
+        return { valid: false, warnings: 0 };
     }
-    return true;
+    return { valid: true, warnings: taskValidation.warnings };
 }
 
 function validateBeforeSubmit() {
@@ -1174,15 +1223,15 @@ function validateBeforeSubmit() {
     let selErrors = validateSelection();
     if (selErrors.length > 0) {
         setStatus("Por favor seleccione: " + selErrors.join(", "), "error");
-        return false;
+        return { valid: false, warnings: 0 };
     }
-    let taskErrors = validateTaskRowsForSubmit();
+    let taskValidation = validateTaskRowsForSubmit();
     let narrErrors = validateNarrativeForSubmit();
-    if (taskErrors > 0 || narrErrors > 0) {
-        setStatus(`No se puede enviar a revisión. Corrija los errores indicados (${taskErrors} tareas con error).`, "error");
-        return false;
+    if (taskValidation.errors > 0 || narrErrors > 0) {
+        setStatus(`No se puede enviar a revisión. Corrija los errores indicados (${taskValidation.errors} tareas con error).`, "error");
+        return { valid: false, warnings: 0 };
     }
-    return true;
+    return { valid: true, warnings: 0 };
 }
 
 // --- GUARDAR Y ENVIAR V4 ---
@@ -1192,8 +1241,8 @@ btnEnviar.addEventListener("click", () => processSave(true));
 async function processSave(isSubmit) {
   if (viewOnlyMode) return setStatus("Modo lectura: no se permiten cambios.", "error");
 
-  const isValid = isSubmit ? validateBeforeSubmit() : validateBeforeSave();
-  if (!isValid) return; 
+  const validation = isSubmit ? validateBeforeSubmit() : validateBeforeSave();
+  if (!validation.valid) return; 
 
   try {
     btnGuardar.disabled = true; btnEnviar.disabled = true;
@@ -1210,7 +1259,16 @@ async function processSave(isSubmit) {
     const detailMsg = `Actividad: ${inputAct ? inputAct.value : 'Desconocida'}. Tareas afect: ${draft.adds.length + draft.updates.length}.`;
     await writeAuditEvent(eventType, "APP_REPORTE", draft.actGid, "OK", detailMsg);
 
-    setStatus(isSubmit ? "Reporte enviado a revisión." : "Borrador guardado exitosamente.", "success");
+    let successMsg = isSubmit ? "Reporte enviado a revisión." : "Borrador guardado exitosamente.";
+    let msgType = "success";
+    
+    // Inyección de mensaje contextual combinado por Warnings
+    if (!isSubmit && validation.warnings > 0) {
+        successMsg = `Se guardó el borrador, pero revise las advertencias de los valores reportados (${validation.warnings} advertencias).`;
+        msgType = "warning";
+    }
+
+    setStatus(successMsg, msgType);
     await loadExistingData(getActividadId()); 
     evaluateHistoricalMode();
   } catch(e) { 
@@ -1355,7 +1413,7 @@ function clearForm(){
     r.classList.remove("row--active");
     r.querySelector(".row-valor").value = ""; r.querySelector(".row-obs").value = ""; r.querySelector(".row-evi").value = "";
     const locList = r.querySelector(".loc-list"); if(locList) locList.innerHTML = "";
-    r.classList.remove("row--error");
+    r.classList.remove("row--error", "row--warning");
   });
   refreshSupportPanel();
 }

@@ -103,6 +103,9 @@ input:focus, select:focus, textarea:focus{ border-color: rgba(23,151,209,0.55); 
 .row.is-not-applicable { opacity: 0.7; background: #f8fafc; border-style: dashed; }
 .row.is-readonly { background: #f8fafc; }
 
+/* NUEVA CLASE PARA WARNINGS TEMPORALES V4 */
+.row--warning { border: 2px solid #f59e0b; background: #fffbeb; }
+
 @media (max-width: 800px) {
   .row { flex-direction: column; }
   .row__right { width: 100%; border-left: none; border-top: 1px dashed var(--border); padding-left: 0; margin-left: 0; padding-top: 16px; align-items: stretch; }
