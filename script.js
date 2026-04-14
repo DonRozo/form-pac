@@ -22,6 +22,7 @@
                     + Estabilización Network POST (Fix: URI Too Long) y Contexto OAP 2026.
                     + INYECCIÓN UI DE PESOS Y METAS DE PLANEACIÓN (ACT, SUB, TAR).
                     + CORRECCIÓN NORMALIZACIÓN GUID PARA CRUCE DE PESOS.
+                    + ESTRATEGIA CLIENT-SIDE FILTERING PARA PLAN_SUB Y PLAN_TAR.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -77,7 +78,7 @@ elPeriodo.value = OPERATIVE_PERIODO;
 let currentUser = null; 
 let asignacionesActivas = []; 
 let cacheSubactividades = [], cacheTareas = [];
-let cacheActividadesPesos = new Map(); // Cache local de Pesos de CFG_Actividad
+let cacheActividadesPesos = new Map(); 
 let planActCtx = null, biActCtx = null;
 let planSubCtx = new Map(), biSubCtx = new Map();
 let planTarCtx = new Map(), biTarCtx = new Map();
@@ -92,6 +93,10 @@ let map, view, graphicsLayer, webMercatorUtils, sketchVM, jurisdiccionLayerView;
 
 let lastCapturedError = null;
 let lastGlobalMsg = null;
+
+// Diagnósticos de filtrado
+let diagSubsVis = 0, diagSubsLoad = 0, diagSubsMatch = 0;
+let diagTarsVis = 0, diagTarsLoad = 0, diagTarsMatch = 0;
 
 function getTemporalScore(v, p) {
     return parseInt(v) * 10 + parseInt(String(p).replace('T', ''));
@@ -148,6 +153,9 @@ function refreshSupportPanel() {
     document.getElementById("sup-nodes").textContent = nodes;
     document.getElementById("sup-locked").textContent = locked;
     document.getElementById("sup-na").textContent = notApp;
+    
+    document.getElementById("sup-diag-subs").textContent = `${diagSubsVis} / ${diagSubsLoad} / ${diagSubsMatch}`;
+    document.getElementById("sup-diag-tars").textContent = `${diagTarsVis} / ${diagTarsLoad} / ${diagTarsMatch}`;
     document.getElementById("sup-msg").textContent = lastGlobalMsg || "Ninguno";
     
     const errEl = document.getElementById("sup-err");
@@ -188,6 +196,8 @@ Actividad GID: ${actGid}
 Total Tareas UI (Renderizadas): ${document.querySelectorAll(".row").length}
 Tareas Bloqueadas: ${document.querySelectorAll(".row.is-readonly:not(.is-not-applicable)").length}
 Tareas No Aplicables: ${document.querySelectorAll(".row.is-not-applicable").length}
+Diag. Subs (Vis/Load/Match): ${diagSubsVis} / ${diagSubsLoad} / ${diagSubsMatch}
+Diag. Tars (Vis/Load/Match): ${diagTarsVis} / ${diagTarsLoad} / ${diagTarsMatch}
 Último Mensaje Global: ${lastGlobalMsg}
 Último Error Técnico: ${typeof lastCapturedError === 'object' ? JSON.stringify(lastCapturedError) : String(lastCapturedError)}
 `.trim();
@@ -272,7 +282,7 @@ function escapeHtml(s){ return (s??"").toString().replaceAll("<","&lt;").replace
 function toYesNo(v){ const s=(v||"").toString().toLowerCase(); return (s==="si"||s==="sí"||s==="true")?true:(s==="no"||s==="false"?false:null); }
 function generateGUID() { return '{' + crypto.randomUUID().toUpperCase() + '}'; }
 
-// --- NUEVO HELPER: NORMALIZADOR DE GUID PARA CRUCES CFG Y PLAN ---
+// --- HELPER: NORMALIZADOR DE GUID ---
 function normalizeGuidKey(v) { 
   return String(v || "").replace(/[{}]/g, "").trim().toLowerCase(); 
 }
@@ -595,22 +605,50 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
       }
 
       try {
+          // Métricas Diagnóstico
+          diagSubsVis = cacheSubactividades.length;
+          diagSubsLoad = 0; diagSubsMatch = 0;
+          diagTarsVis = cacheTareas.length;
+          diagTarsLoad = 0; diagTarsMatch = 0;
+
+          const visibleSubKeys = new Set(cacheSubactividades.map(s => normalizeGuidKey(s.GlobalID)));
+          const visibleTarKeys = new Set(cacheTareas.map(t => normalizeGuidKey(t.GlobalID)));
+
           const qPlanAct = await fetchJson(`${URL_PLAN_ACT}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}' AND Vigencia=${vig}`, outFields:"*" });
           if(qPlanAct.features.length) planActCtx = qPlanAct.features[0].attributes;
+          
           const qBiAct = await fetchJson(`${URL_BI_ACT}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}' AND Vigencia=${vig}`, outFields:"*" });
           if(qBiAct.features.length) biActCtx = qBiAct.features[0].attributes;
 
+          // --- PLAN_SUB (Filtrado en Cliente) ---
+          const qPlanSub = await fetchJson(`${URL_PLAN_SUB}/query`, { f:"json", where:`Vigencia=${vig}`, outFields:"*" });
+          diagSubsLoad = (qPlanSub.features || []).length;
+          (qPlanSub.features || []).forEach(f => {
+              const subKey = normalizeGuidKey(f.attributes.SubActividadGlobalID);
+              if (visibleSubKeys.has(subKey)) {
+                  planSubCtx.set(subKey, f.attributes);
+                  diagSubsMatch++;
+              }
+          });
+
+          // --- PLAN_TAR (Filtrado en Cliente) ---
+          const qPlanTar = await fetchJson(`${URL_PLAN_TAR}/query`, { f:"json", where:`Vigencia=${vig}`, outFields:"*" });
+          diagTarsLoad = (qPlanTar.features || []).length;
+          (qPlanTar.features || []).forEach(f => {
+              const tarKey = normalizeGuidKey(f.attributes.TareaGlobalID);
+              if (visibleTarKeys.has(tarKey)) {
+                  planTarCtx.set(tarKey, f.attributes);
+                  diagTarsMatch++;
+              }
+          });
+
           if(inListSub) {
-              const qPlanSub = await fetchJson(`${URL_PLAN_SUB}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub}) AND Vigencia=${vig}`, outFields:"*" });
-              qPlanSub.features.forEach(f => planSubCtx.set(normalizeGuidKey(f.attributes.SubActividadGlobalID), f.attributes));
               const qBiSub = await fetchJson(`${URL_BI_SUB}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub}) AND Vigencia=${vig}`, outFields:"*" });
               qBiSub.features.forEach(f => biSubCtx.set(f.attributes.SubActividadGlobalID, f.attributes));
           }
 
           const inListTar = cacheTareas.map(t => `'${t.GlobalID}'`).join(",");
           if(inListTar) {
-              const qPlanTar = await fetchJson(`${URL_PLAN_TAR}/query`, { f:"json", where:`TareaGlobalID IN (${inListTar}) AND Vigencia=${vig}`, outFields:"*" });
-              qPlanTar.features.forEach(f => planTarCtx.set(normalizeGuidKey(f.attributes.TareaGlobalID), f.attributes));
               const qBiTar = await fetchJson(`${URL_BI_TAR}/query`, { f:"json", where:`TareaGlobalID IN (${inListTar}) AND Vigencia=${vig}`, outFields:"*" });
               qBiTar.features.forEach(f => biTarCtx.set(f.attributes.TareaGlobalID, f.attributes));
           }
@@ -619,7 +657,6 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
           auditError("LOAD_CONTEXTO_PLAN_BI", e, { actividadGlobalId });
       }
 
-      // --- INJERTO 1: PESO ACTIVIDAD ---
       if (planActCtx) {
           actContextPanel.style.display = "block";
           const aplicaAct = String(planActCtx.Aplica || "SI").toUpperCase() !== "NO";
@@ -728,7 +765,6 @@ function tareaRowHtml(t){
   const classNotApp = !aplica ? 'is-not-applicable is-readonly' : '';
   const bTar = biTarCtx.get(gid);
 
-  // --- INJERTO 3: PESO Y META TAREA ---
   const peso = pTar && pTar.PesoTarea != null ? `${pTar.PesoTarea}%` : "N/D";
   const meta = pTar && pTar.MetaProgramada != null ? pTar.MetaProgramada : null;
 
@@ -781,7 +817,6 @@ function subActividadCardHtml(sa){
       if (bSub.SemaforoGestion) biHtml += `<span class="ctx-badge" style="background:#fef9c3; color:#854d0e; font-size:11px; margin:0;">Semáforo: ${bSub.SemaforoGestion}</span>`;
   }
 
-  // --- INJERTO 2: PESO Y META SUBACTIVIDAD ---
   const peso = pSub && pSub.PesoSubActividad != null ? `${pSub.PesoSubActividad}%` : "N/D";
   const meta = pSub && pSub.MetaProgramada != null ? pSub.MetaProgramada : null;
   
