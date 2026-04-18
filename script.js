@@ -70,6 +70,86 @@ const elVigencia = document.getElementById("sel-vigencia"), elPeriodo = document
 const btnGuardar = document.getElementById("btn-guardar"), btnEnviar = document.getElementById("btn-enviar"), btnLimpiar = document.getElementById("btn-limpiar"), btnRefresh = document.getElementById("btn-refresh");
 const elStatus = document.getElementById("status"), pillActive = document.getElementById("pill-active");
 const elModo = document.getElementById("pill-modo"), actContextPanel = document.getElementById("actividad-context");
+const elSubactNav = document.getElementById("subact-nav-bar");
+const elTopSubactSelector = document.getElementById("top-subact-selector");
+
+// UI Variables Drawer Mapa (MOVIDAS AL PRINCIPIO)
+const elMapDrawer = document.getElementById("map-drawer");
+const elMapOverlay = document.getElementById("map-overlay");
+const btnCloseMap = document.getElementById("btn-close-map");
+
+// Drawer Map Helpers
+function openMapDrawer() {
+    if(elMapDrawer) elMapDrawer.classList.add("open");
+    if(elMapOverlay) elMapOverlay.classList.add("open");
+    setTimeout(() => { if (view) view.resize(); }, 450);
+}
+
+function closeMapDrawer() {
+    if(elMapDrawer) elMapDrawer.classList.remove("open");
+    if(elMapOverlay) elMapOverlay.classList.remove("open");
+}
+
+if(btnCloseMap) btnCloseMap.addEventListener("click", closeMapDrawer);
+if(elMapOverlay) elMapOverlay.addEventListener("click", closeMapDrawer);
+window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeMapDrawer();
+});
+
+// Eventos de Navegación por Subactividades
+if(document.getElementById("btn-expand-all")) {
+    document.getElementById("btn-expand-all").addEventListener("click", () => document.querySelectorAll(".card").forEach(c => c.classList.remove("collapsed")));
+    document.getElementById("btn-collapse-all").addEventListener("click", () => document.querySelectorAll(".card").forEach(c => c.classList.add("collapsed")));
+    document.getElementById("btn-go-top").addEventListener("click", () => {
+        const topEl = document.getElementById("panel-header-tareas");
+        if (topEl) topEl.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    document.getElementById("btn-go-bottom").addEventListener("click", () => {
+        const bottomEl = document.getElementById("panel-header-narrativa");
+        if (bottomEl) bottomEl.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+}
+
+// Selector Top de Subactividades
+if(elTopSubactSelector) {
+    elTopSubactSelector.addEventListener("change", (e) => {
+        const targetId = e.target.value;
+        if (!targetId) return;
+        const cardEl = document.getElementById(targetId);
+        if (cardEl) {
+            cardEl.classList.remove("collapsed");
+            cardEl.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+        e.target.value = ""; // Resetear selección
+    });
+}
+
+function populateTopSubactSelector() {
+    if (!elTopSubactSelector) return;
+    const cards = elIndicadores.querySelectorAll(".card");
+    if (cards.length === 0) {
+        elTopSubactSelector.style.display = "none";
+        elTopSubactSelector.innerHTML = '<option value="">Ir a subactividad...</option>';
+        return;
+    }
+    
+    elTopSubactSelector.style.display = "block";
+    let html = '<option value="">Ir a subactividad...</option>';
+    cards.forEach((card, index) => {
+        const cardId = `subact-card-${index}`;
+        card.id = cardId;
+        const titleEl = card.querySelector(".card__title");
+        const titleText = titleEl ? titleEl.textContent : `Subactividad ${index + 1}`;
+        // Limitar longitud del texto
+        const shortTitle = titleText.length > 50 ? titleText.substring(0, 47) + "..." : titleText;
+        html += `<option value="${cardId}">${shortTitle}</option>`;
+    });
+    elTopSubactSelector.innerHTML = html;
+}
+
+window.toggleAccordion = function(cardEl) {
+    if (cardEl) cardEl.classList.toggle('collapsed');
+};
 
 // Inicializar selectores de UI con el Contexto Operativo
 elVigencia.value = OPERATIVE_VIGENCIA;
@@ -719,6 +799,9 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
       } else actContextPanel.style.display = "none"; 
 
       elIndicadores.innerHTML = cacheSubactividades.map(sa => subActividadCardHtml(sa)).join("");
+      if (elSubactNav) elSubactNav.style.display = cacheSubactividades.length ? "flex" : "none";
+      
+      populateTopSubactSelector();
 
       document.querySelectorAll(".row.is-not-applicable").forEach(rowEl => {
           showRowMessage(rowEl.getAttribute("data-row-id"), "Esta tarea no aplica para la vigencia actual.", "info");
@@ -796,8 +879,14 @@ function activateTaskRow(rowEl) {
     const codTarea = rowEl.querySelector("label").textContent.replace("Tarea ", "").trim();
     const nomTarea = rowEl.querySelector(".mono").textContent.trim();
     document.getElementById("pill-active").textContent = `Tarea activa para georreferenciar: ${codTarea} - ${nomTarea.substring(0, 20)}...`;
+    
+    const cardEl = rowEl.closest('.card');
+    if (cardEl && cardEl.classList.contains('collapsed')) cardEl.classList.remove('collapsed');
+    
     rowEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
     setStatus("Tarea seleccionada para ubicar puntos en el mapa.", "success");
+    
+    openMapDrawer(); // INYECCIÓN UX
 }
 
 // --- Render y Estados V4 ---
@@ -865,9 +954,14 @@ function subActividadCardHtml(sa){
   const peso = pSub && pSub.PesoSubActividad != null ? `${pSub.PesoSubActividad}%` : "N/D";
   const meta = pSub && pSub.MetaProgramada != null ? pSub.MetaProgramada : null;
   
-  return `<div class="card ${!aplicaSub ? 'is-not-applicable' : ''}">
-            <div class="card__top" style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-                <p class="card__title" style="margin-right:auto;">${sa.CodigoSubActividad} - ${sa.NombreSubActividad}</p>
+  const isCollapsed = !aplicaSub ? 'collapsed' : '';
+  
+  return `<div class="card ${!aplicaSub ? 'is-not-applicable' : ''} ${isCollapsed}">
+            <div class="card__top accordion-header" style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;" onclick="toggleAccordion(this.closest('.card'))">
+                <div style="display:flex; align-items:center; margin-right:auto;">
+                    <span class="accordion-icon">▼</span>
+                    <p class="card__title" style="margin:0;">${sa.CodigoSubActividad} - ${sa.NombreSubActividad}</p>
+                </div>
                 <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
                     <span class="ctx-badge ctx-badge--tech" style="margin:0;">Peso Sub: ${peso}</span>
                     ${meta !== null ? `<span class="ctx-badge ctx-badge--tech" style="margin:0;">Meta Sub: ${meta}</span>` : ''}
@@ -875,7 +969,7 @@ function subActividadCardHtml(sa){
                     ${biHtml}
                 </div>
             </div>
-            <div class="rows">${rows.map(tareaRowHtml).join("")}</div>
+            <div class="rows accordion-body">${rows.map(tareaRowHtml).join("")}</div>
           </div>`;
 }
 
@@ -1592,6 +1686,8 @@ async function executeSave(draft) {
 function clearForm(){
   clearGlobalMessage();
   clearNarrativeMessage();
+  if (elSubactNav) elSubactNav.style.display = "none";
+  if (elTopSubactSelector) elTopSubactSelector.style.display = "none";
   if(document.getElementById("txt-reporte-narrativo")) document.getElementById("txt-reporte-narrativo").value = ""; if(document.getElementById("txt-logros-descripcion")) document.getElementById("txt-logros-descripcion").value = ""; if(document.getElementById("txt-logros-principales")) document.getElementById("txt-logros-principales").value = "";
   rowLocations.clear(); clearMapGraphics(); activeRowId = null; pillActive.textContent = "Tarea activa para georreferenciar: —";
   document.querySelectorAll(".row").forEach(r => {
@@ -1615,6 +1711,8 @@ btnRefresh.addEventListener("click", async () => {
         document.getElementById("container-motivo-narrativa").style.display = "none";
         elModo.style.display = "none";
         viewOnlyMode = false;
+        if (elSubactNav) elSubactNav.style.display = "none";
+        if (elTopSubactSelector) elTopSubactSelector.style.display = "none";
         
         renderCombo("combo-actividad", [], "Cargando...");
         await loadAsignaciones();
@@ -1636,6 +1734,8 @@ elVigencia.addEventListener("change", async () => {
     document.getElementById("container-motivo-narrativa").style.display = "none";
     elModo.style.display = "none"; 
     viewOnlyMode = false;
+    if (elSubactNav) elSubactNav.style.display = "none";
+    if (elTopSubactSelector) elTopSubactSelector.style.display = "none";
     
     renderCombo("combo-actividad", [], "Cargando...");
     await loadAsignaciones(); 

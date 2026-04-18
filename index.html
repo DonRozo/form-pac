@@ -101,18 +101,28 @@
 
         <div class="divider"></div>
 
-        <div class="panel__header">
+        <div class="panel__header" id="panel-header-tareas">
           <h2>2) Avance por Tareas</h2>
           <p class="muted">Registra o corrige el avance. Los campos y puntos del mapa se bloquearán si el estado es Enviado o superior.</p>
         </div>
 
         <div id="actividad-context" class="ctx-panel" style="display:none; margin: 0 16px 14px 16px;"></div>
 
+        <div id="subact-nav-bar" class="subact-nav" style="display:none;">
+          <select id="top-subact-selector" class="top-selector" style="display:none;">
+            <option value="">Ir a subactividad...</option>
+          </select>
+          <button class="btn btn--ghost btn-sm" id="btn-expand-all">Expandir todo</button>
+          <button class="btn btn--ghost btn-sm" id="btn-collapse-all">Contraer todo</button>
+          <button class="btn btn--ghost btn-sm" id="btn-go-top">Ir al inicio</button>
+          <button class="btn btn--ghost btn-sm" id="btn-go-bottom">Ir al final</button>
+        </div>
+
         <div id="indicadores" class="indicadores"></div>
 
         <div class="divider"></div>
 
-        <div class="panel__header">
+        <div class="panel__header" id="panel-header-narrativa">
           <h2>3) Reporte narrativo (trimestral)</h2>
           <p class="muted">Resumen ejecutivo del trimestre para la actividad seleccionada.</p>
           <div id="narrativa-badge-container"></div>
@@ -182,7 +192,8 @@
 
       </section>
 
-      <section class="panel panel--map" aria-label="Mapa">
+      <div id="map-overlay" class="map-overlay"></div>
+      <section id="map-drawer" class="panel panel--map drawer" aria-label="Mapa">
         <div class="panel__header panel__header--map">
           <div>
             <h2>Georreferenciación de Múltiples Sitios</h2>
@@ -191,6 +202,7 @@
           <div class="maptools">
             <div class="pill" id="pill-active">Tarea activa para georreferenciar: —</div>
             <button class="btn btn--ghost" id="btn-centrar" title="Centrar a Cundinamarca">Centrar</button>
+            <button class="btn btn--ghost btn--close-map" id="btn-close-map" title="Cerrar Mapa">Cerrar</button>
           </div>
         </div>
         <div id="map" class="map"></div>
