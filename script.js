@@ -24,6 +24,8 @@
                     + CORRECCIÓN NORMALIZACIÓN GUID PARA CRUCE DE PESOS.
                     + ESTRATEGIA CLIENT-SIDE FILTERING Y PAGINACIÓN PARA PLAN_SUB Y PLAN_TAR.
                     + CORRECCIÓN CRÍTICA DE AISLAMIENTO PLAN/BI Y PROTECCIÓN ARRAY/JSON.
+                    + FASE 2: REP_ReporteNarrativo como reporte consolidado de actividad.
+                    + Captura de indicador anual, acumulado, porcentaje, ODS, Rezago y Reserva.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
@@ -57,7 +59,7 @@ const URL_BI_TAR = getUrl(35);
 const URL_PLAN_ACT = getUrl(36);
 
 const F_AVA = { fkTarea: "TareaGlobalID", vig: "Vigencia", per: "Periodo", val: "ValorReportado", obs: "Observaciones", evi: "EvidenciaURL", fec: "FechaRegistro", resp: "Responsable", estado: "EstadoRegistro", ver: "Version", fEdic: "FechaUltimaEdicionFuncional", pEdic: "PersonaUltimaEdicionID", motivo: "MotivoAjuste" };
-const F_NAR = { fkAct: "ActividadGlobalID", vig: "Vigencia", per: "Periodo", txt1: "TextoNarrativo", txt2: "DescripcionLogrosAlcanzados", txt3: "PrincipalesLogros", fec: "FechaRegistro", resp: "Responsable", estado: "EstadoRegistro", ver: "Version", fEdic: "FechaUltimaEdicionFuncional", pEdic: "PersonaUltimaEdicionID", motivo: "MotivoAjuste" };
+const F_NAR = { fkAct: "ActividadGlobalID", vig: "Vigencia", per: "Periodo", txt1: "TextoNarrativo", txt2: "DescripcionLogrosAlcanzados", txt3: "PrincipalesLogros", fec: "FechaRegistro", resp: "Responsable", estado: "EstadoRegistro", ver: "Version", fEdic: "FechaUltimaEdicionFuncional", pEdic: "PersonaUltimaEdicionID", motivo: "MotivoAjuste", respGid: "ResponsableGlobalID", planAct: "PlanActividadGlobalID", indId: "IndicadorID", indNom: "NombreIndicador", indTipo: "TipoValorIndicador", indUnidad: "UnidadMedidaIndicador", indCalc: "TipoCalculoAvanceActividad", clave: "ClaveUnicaReporteActividad", meta: "MetaAnualIndicador", valTri: "ValorIndicadorTrimestre", valAcum: "ValorIndicadorAcumulado", pct: "PorcentajeAvanceIndicador", obsInd: "ObservacionIndicador", eviInd: "EvidenciaIndicadorURL", odsPlan: "ReportaODSPlan", odsTxt: "AvanceODSPeriodo", rezPlan: "ReportaRezagoPlan", rezTxt: "AvanceRezagoPeriodo", resPlan: "ReportaReservaPlan", resTxt: "AvanceReservaPeriodo" };
 const F_UBI = { fkAvance: "AvanceTareaGlobalID", dane: "CodigoDANE", mun: "MunicipioNombre", desc: "DescripcionSitio", fec: "FechaRegistro" };
 const F_WF = { solId: "SolicitudID", tipo: "TipoObjeto", objId: "ObjetoID", objGid: "ObjetoGlobalID", vig: "Vigencia", per: "Periodo", persId: "PersonaSolicitaID", fec: "FechaSolicitud", est: "EstadoActual" };
 
@@ -165,6 +167,7 @@ let planSubCtx = new Map(), biSubCtx = new Map();
 let planTarCtx = new Map(), biTarCtx = new Map();
 let existingAvances = new Map(); 
 let existingNarrativa = null; 
+let indicatorPriorAccumulated = 0;
 let existingWFSolicitudes = new Map(); 
 let deletedLocations = []; 
 let rowLocations = new Map(); 
@@ -211,6 +214,195 @@ function getMetaProgramadaByTarea(tareaGid) {
     const meta = Number(pTar.MetaProgramada);
     return isNaN(meta) ? null : meta;
 }
+
+
+// --- FASE 2: REPORTE CONSOLIDADO DE ACTIVIDAD ---
+const PERIOD_ORDER = ["T1", "T2", "T3", "T4"];
+
+function byId(id) { return document.getElementById(id); }
+
+function normalizeSiNo(value, defaultValue = "NO") {
+    const raw = String(value ?? "").trim().toUpperCase();
+    if (["SI", "SÍ", "TRUE", "1", "YES"].includes(raw)) return "SI";
+    if (["NO", "FALSE", "0"].includes(raw)) return "NO";
+    return defaultValue;
+}
+
+function getPlanFlag(fieldName) {
+    return normalizeSiNo(planActCtx?.[fieldName], "NO");
+}
+
+function getPlanTipoIndicador() {
+    const tipo = normalizeText(planActCtx?.TipoValorIndicador || "NUMERICO");
+    if (tipo.includes("PORC")) return "PORCENTUAL";
+    return "NUMERICO";
+}
+
+function getPlanMetaAnual() {
+    if (!planActCtx || planActCtx.MetaProgramada === null || planActCtx.MetaProgramada === undefined || String(planActCtx.MetaProgramada).trim() === "") return null;
+    const meta = Number(planActCtx.MetaProgramada);
+    return Number.isFinite(meta) ? meta : null;
+}
+
+function isIndicadorActivoEnPlan() {
+    return !!(planActCtx && normalizeSiNo(planActCtx.Aplica, "SI") !== "NO" && (planActCtx.IndicadorID || planActCtx.NombreIndicador || getPlanMetaAnual() !== null));
+}
+
+function formatNumberForUi(value, decimals = 2) {
+    if (value === null || value === undefined || !Number.isFinite(Number(value))) return "";
+    const n = Number(value);
+    if (Number.isInteger(n)) return String(n);
+    return String(Number(n.toFixed(decimals)));
+}
+
+function getCurrentIndicadorValue() {
+    const el = byId("txt-valor-indicador");
+    if (!el || el.value === "" || el.value === null || el.value === undefined) return null;
+    const num = Number(el.value);
+    return Number.isFinite(num) ? num : null;
+}
+
+function calculateIndicadorValues(currentValue = getCurrentIndicadorValue()) {
+    const tipo = getPlanTipoIndicador();
+    const meta = getPlanMetaAnual();
+    if (currentValue === null) return { current: null, accumulated: null, pct: null, meta, tipo };
+
+    let accumulated;
+    let pct;
+    if (tipo === "PORCENTUAL") {
+        // Regla funcional: el indicador porcentual se interpreta como fotografía del avance reportado,
+        // se valida entre 0 y 100 y no se suma entre trimestres para evitar acumulados artificiales.
+        accumulated = currentValue;
+        pct = currentValue;
+    } else {
+        accumulated = Number(indicatorPriorAccumulated || 0) + currentValue;
+        pct = meta && meta > 0 ? (accumulated / meta) * 100 : null;
+    }
+    return { current: currentValue, accumulated, pct, meta, tipo };
+}
+
+function updateIndicatorCalculatedUI() {
+    const calc = calculateIndicadorValues();
+    const priorEl = byId("calc-valor-previo");
+    const acumEl = byId("calc-valor-acumulado");
+    const pctEl = byId("calc-porcentaje-indicador");
+    if (priorEl) priorEl.value = formatNumberForUi(indicatorPriorAccumulated || 0);
+    if (acumEl) acumEl.value = calc.accumulated === null ? "" : formatNumberForUi(calc.accumulated);
+    if (pctEl) pctEl.value = calc.pct === null ? "" : `${formatNumberForUi(calc.pct)}%`;
+}
+
+function setConsolidatedFieldsDisabled(disabled) {
+    [
+        "txt-valor-indicador",
+        "txt-observacion-indicador",
+        "txt-evidencia-indicador",
+        "txt-avance-ods",
+        "txt-avance-rezago",
+        "txt-avance-reserva"
+    ].forEach(id => {
+        const el = byId(id);
+        if (el) el.disabled = disabled;
+    });
+}
+
+function clearReporteConsolidadoFields(clearValues = true) {
+    if (clearValues) {
+        [
+            "txt-valor-indicador",
+            "txt-observacion-indicador",
+            "txt-evidencia-indicador",
+            "txt-avance-ods",
+            "txt-avance-rezago",
+            "txt-avance-reserva",
+            "calc-valor-previo",
+            "calc-valor-acumulado",
+            "calc-porcentaje-indicador"
+        ].forEach(id => { const el = byId(id); if (el) el.value = ""; });
+    }
+    const warn = byId("indicador-warning");
+    if (warn) { warn.style.display = "none"; warn.textContent = ""; }
+}
+
+function syncReporteConsolidadoUI() {
+    const blockIndicador = byId("bloque-indicador-actividad");
+    const ctx = byId("indicador-contexto");
+    const blockEspeciales = byId("bloque-componentes-especiales");
+    const blockOds = byId("bloque-ods");
+    const blockRezago = byId("bloque-rezago");
+    const blockReserva = byId("bloque-reserva");
+    const emptyEspeciales = byId("componentes-especiales-empty");
+
+    const hasPlan = !!planActCtx;
+    const indicadorActivo = isIndicadorActivoEnPlan();
+    if (blockIndicador) blockIndicador.style.display = indicadorActivo ? "block" : "none";
+
+    if (ctx && indicadorActivo) {
+        const tipo = getPlanTipoIndicador();
+        const meta = getPlanMetaAnual();
+        ctx.innerHTML = `
+            <span class="ctx-badge">Indicador: ${escapeHtml(planActCtx.IndicadorID || "N/A")}</span>
+            <span class="ctx-badge">Nombre: ${escapeHtml(planActCtx.NombreIndicador || "Sin nombre")}</span>
+            <span class="ctx-badge">Unidad: ${escapeHtml(planActCtx.UnidadMedida || "N/A")}</span>
+            <span class="ctx-badge">Tipo: ${tipo}</span>
+            <span class="ctx-badge">Meta anual: ${meta !== null ? formatNumberForUi(meta) : "N/D"}</span>
+            <span class="ctx-badge">Fuente avance: ${escapeHtml(planActCtx.TipoCalculoAvanceActividad || "N/D")}</span>
+        `;
+    }
+
+    const reportaODS = hasPlan && getPlanFlag("ReportaODS") === "SI";
+    const reportaRezago = hasPlan && getPlanFlag("ReportaRezago") === "SI";
+    const reportaReserva = hasPlan && getPlanFlag("ReportaReserva") === "SI";
+    const anyEspecial = reportaODS || reportaRezago || reportaReserva;
+
+    if (blockEspeciales) blockEspeciales.style.display = hasPlan ? "block" : "none";
+    if (blockOds) blockOds.style.display = reportaODS ? "block" : "none";
+    if (blockRezago) blockRezago.style.display = reportaRezago ? "block" : "none";
+    if (blockReserva) blockReserva.style.display = reportaReserva ? "block" : "none";
+    if (emptyEspeciales) emptyEspeciales.style.display = hasPlan && !anyEspecial ? "block" : "none";
+
+    updateIndicatorCalculatedUI();
+}
+
+async function fetchIndicadorPriorAccumulated(actGid, vig, periodo) {
+    const idx = PERIOD_ORDER.indexOf(periodo);
+    if (!actGid || !vig || idx <= 0) return 0;
+    const priorPeriods = PERIOD_ORDER.slice(0, idx).map(p => `'${p}'`).join(",");
+    if (!priorPeriods) return 0;
+    try {
+        const q = await fetchJson(`${URL_NARRATIVA}/query`, {
+            f: "json",
+            where: `ActividadGlobalID='${actGid}' AND Vigencia=${vig} AND Periodo IN (${priorPeriods})`,
+            outFields: "Periodo,ValorIndicadorTrimestre",
+            returnGeometry: false
+        });
+        return (q.features || []).reduce((sum, f) => {
+            const val = Number(f.attributes?.ValorIndicadorTrimestre);
+            return sum + (Number.isFinite(val) ? val : 0);
+        }, 0);
+    } catch (e) {
+        console.warn("No fue posible calcular acumulado previo del indicador.", e);
+        auditError("CALC_INDICADOR_PREVIO", e, { actGid, vig, periodo });
+        return 0;
+    }
+}
+
+function populateReporteConsolidadoFromExisting(nar) {
+    const setVal = (id, val) => { const el = byId(id); if (el) el.value = val ?? ""; };
+    setVal("txt-valor-indicador", nar?.ValorIndicadorTrimestre);
+    setVal("txt-observacion-indicador", nar?.ObservacionIndicador);
+    setVal("txt-evidencia-indicador", nar?.EvidenciaIndicadorURL);
+    setVal("txt-avance-ods", nar?.AvanceODSPeriodo);
+    setVal("txt-avance-rezago", nar?.AvanceRezagoPeriodo);
+    setVal("txt-avance-reserva", nar?.AvanceReservaPeriodo);
+    updateIndicatorCalculatedUI();
+}
+
+function bindReporteConsolidadoEvents() {
+    const valEl = byId("txt-valor-indicador");
+    if (valEl) valEl.addEventListener("input", updateIndicatorCalculatedUI);
+}
+
+bindReporteConsolidadoEvents();
 
 // --- PANEL DE SOPORTE (SUPERADMIN) ---
 function refreshSupportPanel() {
@@ -900,6 +1092,8 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
           `;
       } else actContextPanel.style.display = "none"; 
 
+      syncReporteConsolidadoUI();
+
       elIndicadores.innerHTML = cacheSubactividades.map(sa => subActividadCardHtml(sa)).join("");
       if (elSubactNav) elSubactNav.style.display = cacheSubactividades.length ? "flex" : "none";
       
@@ -926,6 +1120,9 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
               ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales"].forEach(id => { 
                  const el = document.getElementById(id); if (el) { el.value = ""; el.disabled = false; } 
               });
+              clearReporteConsolidadoFields(false);
+              syncReporteConsolidadoUI();
+              setConsolidatedFieldsDisabled(false);
               document.getElementById("narrativa-badge-container").innerHTML = "";
               document.getElementById("container-motivo-narrativa").style.display = "none";
               
@@ -1092,6 +1289,8 @@ async function loadExistingData(actGid) {
       if (locList) locList.innerHTML = "";
   });
   
+  indicatorPriorAccumulated = await fetchIndicadorPriorAccumulated(actGid, vig, per);
+
   const qNar = await fetchJson(`${URL_NARRATIVA}/query`, { f:"json", where:`ActividadGlobalID='${actGid}' AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"*" });
   
   if(qNar && Array.isArray(qNar.features) && qNar.features.length) {
@@ -1100,8 +1299,13 @@ async function loadExistingData(actGid) {
     document.getElementById("txt-reporte-narrativo").value = existingNarrativa.TextoNarrativo || "";
     document.getElementById("txt-logros-descripcion").value = existingNarrativa.DescripcionLogrosAlcanzados || "";
     document.getElementById("txt-logros-principales").value = existingNarrativa.PrincipalesLogros || "";
+    populateReporteConsolidadoFromExisting(existingNarrativa);
     applyReadonlyStateNarrativa(existingNarrativa.EstadoRegistro);
+  } else {
+    clearReporteConsolidadoFields(true);
   }
+
+  syncReporteConsolidadoUI();
 
   let allAvancesFeatures = [];
   if(cacheTareas.length > 0) {
@@ -1202,7 +1406,7 @@ function applyReadonlyStateNarrativa(estado) {
 
   document.getElementById("narrativa-badge-container").innerHTML = `<span class="status-badge status-badge--${estado.toLowerCase()}">${estado}</span>`;
   if(estado === "Devuelto") document.getElementById("container-motivo-narrativa").style.display = "block";
-  ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales", "txt-motivo-narrativa"].forEach(id => { document.getElementById(id).disabled = isReadonly; });
+  ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales", "txt-motivo-narrativa", "txt-valor-indicador", "txt-observacion-indicador", "txt-evidencia-indicador", "txt-avance-ods", "txt-avance-rezago", "txt-avance-reserva"].forEach(id => { const el = document.getElementById(id); if (el) el.disabled = isReadonly; });
 }
 
 function evaluateHistoricalMode(forceReadOnly = false) {
@@ -1244,7 +1448,7 @@ function evaluateHistoricalMode(forceReadOnly = false) {
                  rowEl.querySelectorAll(".loc-item__actions").forEach(a => a.style.display = "none");
              }
         });
-        ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales", "txt-motivo-narrativa"].forEach(id => { 
+        ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales", "txt-motivo-narrativa", "txt-valor-indicador", "txt-observacion-indicador", "txt-evidencia-indicador", "txt-avance-ods", "txt-avance-rezago", "txt-avance-reserva"].forEach(id => { 
              const el = document.getElementById(id); if(el) el.disabled = true; 
         });
     } else {
@@ -1255,6 +1459,7 @@ function evaluateHistoricalMode(forceReadOnly = false) {
         elModo.style.color = "#1d4ed8";
         btnGuardar.style.display = "inline-flex";
         btnEnviar.style.display = "inline-flex";
+        setConsolidatedFieldsDisabled(false);
     }
 }
 
@@ -1485,6 +1690,7 @@ function validateTaskRowsForSubmit() { return validateTaskRows(true); }
 
 function validateNarrative(isSubmit) {
     let errors = [];
+    let warnings = [];
     clearNarrativeMessage();
 
     const txt1 = document.getElementById("txt-reporte-narrativo")?.value || "";
@@ -1492,10 +1698,24 @@ function validateNarrative(isSubmit) {
     const txt3 = document.getElementById("txt-logros-principales")?.value || "";
     const motivoN = document.getElementById("txt-motivo-narrativa")?.value || "";
 
+    const valIndicador = getCurrentIndicadorValue();
+    const obsIndicador = byId("txt-observacion-indicador")?.value || "";
+    const calc = calculateIndicadorValues(valIndicador);
+    const indicadorActivo = isIndicadorActivoEnPlan();
+
     if (!document.getElementById("txt-reporte-narrativo")?.disabled) {
         if (isSubmit) {
             if (txt1.trim() === "" || txt2.trim() === "" || txt3.trim() === "") {
                 errors.push("Los campos Reporte Narrativo, Descripción de logros y Principales logros son obligatorios al enviar.");
+            }
+
+            if (indicadorActivo) {
+                if (valIndicador === null) {
+                    errors.push("Debe registrar el valor trimestral del indicador anual de la actividad.");
+                }
+                if (calc.meta === null || calc.meta <= 0) {
+                    errors.push("La meta anual del indicador no está disponible o no es válida en PLAN_Actividad.");
+                }
             }
 
             if (existingNarrativa && existingNarrativa.EstadoRegistro === "Devuelto") {
@@ -1504,12 +1724,43 @@ function validateNarrative(isSubmit) {
                 }
             }
         }
+
+        if (valIndicador !== null) {
+            if (valIndicador < 0) errors.push("El valor trimestral del indicador no puede ser negativo.");
+
+            if (calc.tipo === "PORCENTUAL" && valIndicador > 100) {
+                if (isSubmit) errors.push("El indicador porcentual no puede superar 100 al enviar.");
+                else warnings.push("El indicador porcentual no debería superar 100.");
+            }
+
+            if (calc.tipo === "NUMERICO" && calc.meta !== null && calc.accumulated !== null && calc.accumulated > calc.meta) {
+                if (isSubmit && obsIndicador.trim() === "") {
+                    errors.push("El acumulado del indicador supera la meta anual; registre una observación funcional antes de enviar.");
+                } else {
+                    warnings.push("El acumulado del indicador supera la meta anual. Revise la observación funcional.");
+                }
+            }
+        }
+
+        if (isSubmit) {
+            if (getPlanFlag("ReportaODS") === "SI" && (byId("txt-avance-ods")?.value || "").trim() === "") {
+                errors.push("Debe diligenciar el avance ODS del periodo porque la actividad lo exige en PLAN_Actividad.");
+            }
+            if (getPlanFlag("ReportaRezago") === "SI" && (byId("txt-avance-rezago")?.value || "").trim() === "") {
+                errors.push("Debe diligenciar el avance de rezago del periodo porque la actividad lo exige en PLAN_Actividad.");
+            }
+            if (getPlanFlag("ReportaReserva") === "SI" && (byId("txt-avance-reserva")?.value || "").trim() === "") {
+                errors.push("Debe diligenciar el avance de reserva del periodo porque la actividad lo exige en PLAN_Actividad.");
+            }
+        }
     }
 
     if (errors.length > 0) {
         showNarrativeMessage(errors.join(" "), "error");
+    } else if (warnings.length > 0 && !isSubmit) {
+        showNarrativeMessage(warnings.join(" "), "warning");
     }
-    return errors.length;
+    return { errors: errors.length, warnings: warnings.length };
 }
 
 function validateNarrativeForSave() { return validateNarrative(false); }
@@ -1523,12 +1774,12 @@ function validateBeforeSave() {
         return { valid: false, warnings: 0 };
     }
     let taskValidation = validateTaskRowsForSave();
-    let narrErrors = validateNarrativeForSave();
-    if (taskValidation.errors > 0 || narrErrors > 0) {
-        setStatus(`Revise las validaciones inline antes de guardar (${taskValidation.errors} tareas con error).`, "error");
+    let narrValidation = validateNarrativeForSave();
+    if (taskValidation.errors > 0 || narrValidation.errors > 0) {
+        setStatus(`Revise las validaciones inline antes de guardar (${taskValidation.errors} tareas con error, ${narrValidation.errors} errores de reporte consolidado).`, "error");
         return { valid: false, warnings: 0 };
     }
-    return { valid: true, warnings: taskValidation.warnings };
+    return { valid: true, warnings: taskValidation.warnings + narrValidation.warnings };
 }
 
 function validateBeforeSubmit() {
@@ -1539,9 +1790,9 @@ function validateBeforeSubmit() {
         return { valid: false, warnings: 0 };
     }
     let taskValidation = validateTaskRowsForSubmit();
-    let narrErrors = validateNarrativeForSubmit();
-    if (taskValidation.errors > 0 || narrErrors > 0) {
-        setStatus(`No se puede enviar a revisión. Corrija los errores indicados (${taskValidation.errors} tareas con error).`, "error");
+    let narrValidation = validateNarrativeForSubmit();
+    if (taskValidation.errors > 0 || narrValidation.errors > 0) {
+        setStatus(`No se puede enviar a revisión. Corrija los errores indicados (${taskValidation.errors} tareas con error, ${narrValidation.errors} errores de reporte consolidado).`, "error");
         return { valid: false, warnings: 0 };
     }
     return { valid: true, warnings: 0 };
@@ -1583,6 +1834,10 @@ function openSubmitPreview() {
     const txt1 = document.getElementById("txt-reporte-narrativo")?.value.trim() !== "" ? "Sí" : "No";
     const txt2 = document.getElementById("txt-logros-descripcion")?.value.trim() !== "" ? "Sí" : "No";
     const txt3 = document.getElementById("txt-logros-principales")?.value.trim() !== "" ? "Sí" : "No";
+    const calcInd = calculateIndicadorValues();
+    const odsReq = getPlanFlag("ReportaODS") === "SI" ? ((byId("txt-avance-ods")?.value || "").trim() !== "" ? "Sí" : "Pendiente") : "No aplica";
+    const rezReq = getPlanFlag("ReportaRezago") === "SI" ? ((byId("txt-avance-rezago")?.value || "").trim() !== "" ? "Sí" : "Pendiente") : "No aplica";
+    const resReq = getPlanFlag("ReportaReserva") === "SI" ? ((byId("txt-avance-reserva")?.value || "").trim() !== "" ? "Sí" : "Pendiente") : "No aplica";
 
     const summaryHtml = `
         <div class="summary-item"><strong>Vigencia / Periodo:</strong> <span>${vig} - ${per}</span></div>
@@ -1594,6 +1849,11 @@ function openSubmitPreview() {
         <div class="summary-item"><strong>Reporte Narrativo:</strong> <span>${txt1}</span></div>
         <div class="summary-item"><strong>Descripción de logros:</strong> <span>${txt2}</span></div>
         <div class="summary-item"><strong>Principales logros:</strong> <span>${txt3}</span></div>
+        <div style="margin-top:8px; font-weight:bold; font-size:12px; color:var(--muted); text-transform:uppercase;">Indicador y componentes especiales</div>
+        <div class="summary-item"><strong>Indicador:</strong> <span>${escapeHtml(planActCtx?.IndicadorID || "N/A")}</span></div>
+        <div class="summary-item"><strong>Valor trimestre:</strong> <span>${calcInd.current === null ? "No registrado" : formatNumberForUi(calcInd.current)}</span></div>
+        <div class="summary-item"><strong>Acumulado / %:</strong> <span>${calcInd.accumulated === null ? "N/D" : formatNumberForUi(calcInd.accumulated)} / ${calcInd.pct === null ? "N/D" : formatNumberForUi(calcInd.pct) + "%"}</span></div>
+        <div class="summary-item"><strong>ODS / Rezago / Reserva:</strong> <span>${odsReq} / ${rezReq} / ${resReq}</span></div>
     `;
 
     document.getElementById("modal-summary-content").innerHTML = summaryHtml;
@@ -1738,13 +1998,54 @@ function collectDraft(isSubmit) {
     }
   });
 
-  // NARRATIVA
+  // REPORTE CONSOLIDADO DE ACTIVIDAD / NARRATIVA
   if(!document.getElementById("txt-reporte-narrativo").disabled) {
-    const txt1 = document.getElementById("txt-reporte-narrativo").value, txt2 = document.getElementById("txt-logros-descripcion").value, txt3 = document.getElementById("txt-logros-principales").value, motivoN = document.getElementById("txt-motivo-narrativa")?.value;
-    if(txt1 || txt2 || txt3) {
-      
+    const txt1 = document.getElementById("txt-reporte-narrativo").value;
+    const txt2 = document.getElementById("txt-logros-descripcion").value;
+    const txt3 = document.getElementById("txt-logros-principales").value;
+    const motivoN = document.getElementById("txt-motivo-narrativa")?.value;
+
+    const valorIndicador = getCurrentIndicadorValue();
+    const calc = calculateIndicadorValues(valorIndicador);
+    const obsIndicador = byId("txt-observacion-indicador")?.value || "";
+    const eviIndicador = byId("txt-evidencia-indicador")?.value || "";
+    const avanceODS = byId("txt-avance-ods")?.value || "";
+    const avanceRezago = byId("txt-avance-rezago")?.value || "";
+    const avanceReserva = byId("txt-avance-reserva")?.value || "";
+
+    const hasNarrativePayload = [txt1, txt2, txt3, obsIndicador, eviIndicador, avanceODS, avanceRezago, avanceReserva].some(v => String(v || "").trim() !== "") || valorIndicador !== null;
+
+    if(hasNarrativePayload) {
       const estadoNuevoN = isSubmit ? "Enviado" : (existingNarrativa ? existingNarrativa.EstadoRegistro : "Borrador");
-      const baseN = { [F_NAR.estado]: estadoNuevoN, [F_NAR.pEdic]: currentUser.pid, [F_NAR.fEdic]: epochNow, [F_NAR.motivo]: motivoN || "", [F_NAR.txt1]: txt1, [F_NAR.txt2]: txt2, [F_NAR.txt3]: txt3 };
+      const baseN = {
+        [F_NAR.estado]: estadoNuevoN,
+        [F_NAR.pEdic]: currentUser.pid,
+        [F_NAR.fEdic]: epochNow,
+        [F_NAR.motivo]: motivoN || "",
+        [F_NAR.txt1]: txt1,
+        [F_NAR.txt2]: txt2,
+        [F_NAR.txt3]: txt3,
+        [F_NAR.respGid]: currentUser.gid,
+        [F_NAR.planAct]: planActCtx?.GlobalID || null,
+        [F_NAR.indId]: planActCtx?.IndicadorID || null,
+        [F_NAR.indNom]: planActCtx?.NombreIndicador || null,
+        [F_NAR.indTipo]: getPlanTipoIndicador(),
+        [F_NAR.indUnidad]: planActCtx?.UnidadMedida || null,
+        [F_NAR.indCalc]: planActCtx?.TipoCalculoAvanceActividad || null,
+        [F_NAR.clave]: `${actGid}|${vig}|${per}`,
+        [F_NAR.meta]: calc.meta,
+        [F_NAR.valTri]: valorIndicador,
+        [F_NAR.valAcum]: calc.accumulated,
+        [F_NAR.pct]: calc.pct,
+        [F_NAR.obsInd]: obsIndicador,
+        [F_NAR.eviInd]: eviIndicador,
+        [F_NAR.odsPlan]: getPlanFlag("ReportaODS"),
+        [F_NAR.odsTxt]: getPlanFlag("ReportaODS") === "SI" ? avanceODS : "",
+        [F_NAR.rezPlan]: getPlanFlag("ReportaRezago"),
+        [F_NAR.rezTxt]: getPlanFlag("ReportaRezago") === "SI" ? avanceRezago : "",
+        [F_NAR.resPlan]: getPlanFlag("ReportaReserva"),
+        [F_NAR.resTxt]: getPlanFlag("ReportaReserva") === "SI" ? avanceReserva : ""
+      };
       
       let narrGidFinal = null;
       let versionActualN = 1;
@@ -1760,7 +2061,7 @@ function collectDraft(isSubmit) {
       
       if(isSubmit) {
         const existingWfN = existingWFSolicitudes.get(narrGidFinal);
-        const wfPayloadN = { [F_WF.tipo]: "ReporteNarrativo", [F_WF.objGid]: narrGidFinal, [F_WF.vig]: vig, [F_WF.per]: per, [F_WF.persId]: currentUser.pid, [F_WF.fec]: epochNow, [F_WF.est]: "Enviado", ComentarioSolicitante: motivoN ? `Corrección operativa: ${motivoN}` : "Reporte operativo V4", Version: versionActualN };
+        const wfPayloadN = { [F_WF.tipo]: "ReporteNarrativo", [F_WF.objGid]: narrGidFinal, [F_WF.objId]: `${actGid}|${vig}|${per}`, [F_WF.vig]: vig, [F_WF.per]: per, [F_WF.persId]: currentUser.pid, [F_WF.fec]: epochNow, [F_WF.est]: "Enviado", ComentarioSolicitante: motivoN ? `Corrección operativa: ${motivoN}` : "Reporte consolidado de actividad V4", Version: versionActualN };
         
         if(existingWfN) { wfPayloadN.OBJECTID = existingWfN.OBJECTID; res.wfUpdates.push({ attributes: wfPayloadN }); } 
         else { wfPayloadN.GlobalID = generateGUID(); wfPayloadN.SolicitudID = generateGUID(); res.wfAdds.push({ attributes: wfPayloadN }); }
@@ -1790,7 +2091,7 @@ function clearForm(){
   clearNarrativeMessage();
   if (elSubactNav) elSubactNav.style.display = "none";
   if (elTopSubactSelector) elTopSubactSelector.style.display = "none";
-  if(document.getElementById("txt-reporte-narrativo")) document.getElementById("txt-reporte-narrativo").value = ""; if(document.getElementById("txt-logros-descripcion")) document.getElementById("txt-logros-descripcion").value = ""; if(document.getElementById("txt-logros-principales")) document.getElementById("txt-logros-principales").value = "";
+  if(document.getElementById("txt-reporte-narrativo")) document.getElementById("txt-reporte-narrativo").value = ""; if(document.getElementById("txt-logros-descripcion")) document.getElementById("txt-logros-descripcion").value = ""; if(document.getElementById("txt-logros-principales")) document.getElementById("txt-logros-principales").value = ""; clearReporteConsolidadoFields(true);
   rowLocations.clear(); clearMapGraphics(); activeRowId = null; pillActive.textContent = "Tarea activa para georreferenciar: —";
   document.querySelectorAll(".row").forEach(r => {
     r.classList.remove("row--active");
@@ -1810,6 +2111,7 @@ btnRefresh.addEventListener("click", async () => {
         elIndicadores.innerHTML = "";
         actContextPanel.style.display = "none";
         document.getElementById("narrativa-badge-container").innerHTML = "";
+        clearReporteConsolidadoFields(true);
         document.getElementById("container-motivo-narrativa").style.display = "none";
         elModo.style.display = "none";
         viewOnlyMode = false;

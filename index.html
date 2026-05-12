@@ -135,6 +135,61 @@
           <input type="text" id="txt-motivo-narrativa" placeholder="Indica qué corregiste en la narrativa..." />
         </div>
 
+        <div id="bloque-indicador-actividad" class="narrative-subcard" style="display:none;">
+          <div class="subcard-header">
+            <h3>Indicador anual de la actividad</h3>
+            <p class="muted">El indicador mide el resultado general de la actividad. Las tareas siguen siendo soporte operativo.</p>
+          </div>
+          <div id="indicador-contexto" class="indicator-context-grid"></div>
+          <div id="indicador-warning" class="msg-inline msg--warning" style="display:none;"></div>
+          <div class="grid2 grid2--wide">
+            <div class="field">
+              <label for="txt-valor-indicador">Valor del indicador en el trimestre</label>
+              <input id="txt-valor-indicador" type="number" step="any" placeholder="Ej.: 10" />
+            </div>
+            <div class="field">
+              <label for="calc-valor-previo">Acumulado previo</label>
+              <input id="calc-valor-previo" type="text" readonly placeholder="0" />
+            </div>
+            <div class="field">
+              <label for="calc-valor-acumulado">Valor acumulado calculado</label>
+              <input id="calc-valor-acumulado" type="text" readonly placeholder="—" />
+            </div>
+            <div class="field">
+              <label for="calc-porcentaje-indicador">% avance del indicador</label>
+              <input id="calc-porcentaje-indicador" type="text" readonly placeholder="—" />
+            </div>
+          </div>
+          <div class="field">
+            <label for="txt-observacion-indicador">Observación del indicador</label>
+            <textarea id="txt-observacion-indicador" rows="3" placeholder="Explique el avance, desviaciones o razones del comportamiento del indicador..."></textarea>
+          </div>
+          <div class="field">
+            <label for="txt-evidencia-indicador">Evidencia del indicador (URL)</label>
+            <input id="txt-evidencia-indicador" type="url" placeholder="https://..." />
+          </div>
+        </div>
+
+        <div id="bloque-componentes-especiales" class="narrative-subcard" style="display:none;">
+          <div class="subcard-header">
+            <h3>ODS, Rezago y Reserva</h3>
+            <p class="muted">Estos campos se habilitan únicamente cuando OAP los marcó como aplicables en PLAN_Actividad.</p>
+          </div>
+          <div id="componentes-especiales-empty" class="msg-inline msg--info" style="display:none;">Esta actividad no exige reporte ODS, Rezago ni Reserva para la vigencia seleccionada.</div>
+          <div id="bloque-ods" class="special-block" style="display:none;">
+            <label for="txt-avance-ods">Avance ODS del periodo</label>
+            <textarea id="txt-avance-ods" rows="4" placeholder="Describa el avance ODS del trimestre..."></textarea>
+          </div>
+          <div id="bloque-rezago" class="special-block" style="display:none;">
+            <label for="txt-avance-rezago">Avance Rezago del periodo</label>
+            <textarea id="txt-avance-rezago" rows="4" placeholder="Describa el avance de rezago del trimestre..."></textarea>
+          </div>
+          <div id="bloque-reserva" class="special-block" style="display:none;">
+            <label for="txt-avance-reserva">Avance Reserva del periodo</label>
+            <textarea id="txt-avance-reserva" rows="4" placeholder="Describa el avance de reserva del trimestre..."></textarea>
+          </div>
+        </div>
+
         <div class="field">
           <label for="txt-reporte-narrativo">Reporte Narrativo</label>
           <textarea id="txt-reporte-narrativo" rows="5" placeholder="Resumen ejecutivo del trimestre..."></textarea>
