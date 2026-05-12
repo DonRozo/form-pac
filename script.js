@@ -214,7 +214,7 @@ function getMetaProgramadaByTarea(tareaGid) {
 
 // --- PANEL DE SOPORTE (SUPERADMIN) ---
 function refreshSupportPanel() {
-    if (!currentUser || !currentUser.roles.includes("SUPERADMIN")) return;
+    if (!currentUser || !currentUser.isSuperAdmin) return;
     
     document.getElementById("panel-soporte").style.display = "block";
     
@@ -366,6 +366,49 @@ function generateGUID() { return '{' + crypto.randomUUID().toUpperCase() + '}'; 
 // --- HELPER: NORMALIZADOR DE GUID ---
 function normalizeGuidKey(v) { 
   return String(v || "").replace(/[{}]/g, "").trim().toLowerCase(); 
+}
+
+function normalizeGuidLiteral(v) {
+  const key = normalizeGuidKey(v);
+  return key ? `{${key.toUpperCase()}}` : null;
+}
+
+function uniqueGuidList(values) {
+  const map = new Map();
+  (values || []).forEach(v => {
+    const lit = normalizeGuidLiteral(v);
+    if (lit) map.set(normalizeGuidKey(lit), lit);
+  });
+  return [...map.values()];
+}
+
+function normalizeText(v) {
+  return String(v || "").trim().toUpperCase();
+}
+
+function normalizeRole(role) {
+  const r = normalizeText(role);
+  if (r === "APROBADOR") return "APROBADOR_AREA";
+  if (r === "PUBLICADOR OAP") return "PUBLICADOR";
+  if (r === "VISUALIZADOR OAP") return "VISUALIZADOR";
+  return r;
+}
+
+function hasRoleInList(roles, role) {
+  const normalized = normalizeRole(role);
+  return (roles || []).map(normalizeRole).includes(normalized);
+}
+
+function isEditorOnlyRoleSet(roles) {
+  const normalized = (roles || []).map(normalizeRole).filter(Boolean);
+  return normalized.includes("EDITOR") && normalized.every(r => r === "EDITOR");
+}
+
+function buildGuidWhere(fieldName, guidValue) {
+  const literal = normalizeGuidLiteral(guidValue);
+  const bare = normalizeGuidKey(guidValue).toUpperCase();
+  if (!literal || !bare) return "1=0";
+  return `(${fieldName}='${literal}' OR ${fieldName}='${bare}')`;
 }
 
 // --- Funciones Base (Técnicas) ---
@@ -528,17 +571,29 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
     const pid = qPers.features[0].attributes.PersonaID;
 
     const resR = await fetchJson(`${URL_ROL}/query`, { f: "json", where: `(PersonaID='${otp.PersonaGlobalID}' OR PersonaID='${pid}') AND Activo='SI'`, outFields: "RolID", returnGeometry: false });
-    const roles = (resR.features || []).map(f => String(f.attributes.RolID).trim().toUpperCase());
+    const roles = [...new Set((resR.features || []).map(f => normalizeRole(f.attributes.RolID)).filter(Boolean))];
     
-    if (!roles.includes("EDITOR") && !roles.includes("SUPERADMIN")) {
+    if (!hasRoleInList(roles, "EDITOR") && !hasRoleInList(roles, "SUPERADMIN")) {
         throw new Error("Acceso denegado: Su rol no le permite utilizar esta aplicación de captura operativa.");
     }
 
-    currentUser = { gid: otp.PersonaGlobalID, pid: pid, nombre: qPers.features[0].attributes.Nombre, correo, roles, alcances: [] };
+    currentUser = {
+        gid: otp.PersonaGlobalID,
+        pid: pid,
+        nombre: qPers.features[0].attributes.Nombre,
+        correo,
+        roles,
+        alcances: [],
+        isSuperAdmin: hasRoleInList(roles, "SUPERADMIN"),
+        isEditorOnly: isEditorOnlyRoleSet(roles)
+    };
     
     await postForm(`${URL_OTP}/applyEdits`, { f:"json", updates: [{attributes: {OBJECTID: otp.OBJECTID, Usado: "SI"}}] });
     await writeAuditEvent("OTP_VALIDATE", "APP_REPORTE", currentUser.gid, "OK", "Ingreso exitoso a módulo operativo V4");
     
+    // Se conserva lectura de SEG_Alcance para trazabilidad/diagnóstico, pero la App Reporte
+    // no lo usa para ampliar ni restringir tareas del reportador operativo.
+    // Regla vigente: las tareas visibles del EDITOR se resuelven por SEG_Asignacion + Vigencia.
     const qAlcance = await fetchJson(`${URL_ALCANCE}/query`, { f:"json", where:`(PersonaID='${currentUser.gid}' OR PersonaID='${currentUser.pid}') AND Activo='SI'`, outFields:"ObjetoGlobalID" });
     currentUser.alcances = (qAlcance.features || []).map(f => f.attributes.ObjetoGlobalID).filter(Boolean);
     currentUser.hasGlobalScope = (qAlcance.features || []).some(f => !f.attributes.ObjetoGlobalID);
@@ -547,7 +602,7 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
     document.getElementById("pill-user").style.display = "block";
     document.getElementById("pill-user").textContent = `Usuario: ${currentUser.nombre}`;
     
-    if (currentUser.roles.includes("SUPERADMIN")) {
+    if (currentUser.isSuperAdmin) {
         document.getElementById("pill-superadmin").style.display = "block";
         refreshSupportPanel();
     } else {
@@ -567,45 +622,79 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
 // --- Filtros SEG_Asignacion Híbrido + SEG_Alcance V4 ---
 async function loadAsignaciones() {
   if(!currentUser) return;
-  if(currentUser.roles.includes("SUPERADMIN")) { asignacionesActivas = []; return; }
+  if(currentUser.isSuperAdmin) { asignacionesActivas = []; return; }
 
   try {
-      const vig = elVigencia.value;
+      const vig = parseInt(elVigencia.value, 10);
+      if (!vig || Number.isNaN(vig)) {
+          asignacionesActivas = [];
+          setStatus("Seleccione una vigencia válida para consultar asignaciones operativas.", "warning");
+          return;
+      }
+
+      const personaWhere = buildGuidWhere("PersonaGlobalID", currentUser.gid);
       const qAsig = await fetchJson(`${URL_ASIGNACION}/query`, { 
-          f: "json", where: `PersonaGlobalID='${currentUser.gid}' AND Vigencia=${vig} AND Activo='SI'`, 
-          outFields: "GlobalID,TipoAsignacion,ActividadGlobalID,TareaGlobalID,HeredaHijos,Activo,Vigencia" 
+          f: "json",
+          where: `${personaWhere} AND Vigencia=${vig} AND Activo='SI'`, 
+          outFields: "GlobalID,PersonaGlobalID,TipoAsignacion,ActividadGlobalID,TareaGlobalID,HeredaHijos,Activo,Vigencia",
+          returnGeometry: false
       });
       
       let asigActividades = [], asigTareas = [];
 
       (qAsig.features || []).forEach(f => {
-          const a = f.attributes;
-          const tipo = (a.TipoAsignacion || "").toUpperCase(), hereda = (a.HeredaHijos || "").toUpperCase();
-          const actGid = a.ActividadGlobalID, tarGid = a.TareaGlobalID;
+          const a = f.attributes || {};
+          const tipo = normalizeText(a.TipoAsignacion);
+          const hereda = normalizeText(a.HeredaHijos);
+          const actGid = normalizeGuidLiteral(a.ActividadGlobalID);
+          const tarGid = normalizeGuidLiteral(a.TareaGlobalID);
 
-          if (tipo === "ACTIVIDAD") { if (hereda === "SI" && actGid) asigActividades.push(actGid); } 
-          else if (tipo === "TAREA") { if (tarGid) asigTareas.push(tarGid); } 
-          else { if (tarGid) asigTareas.push(tarGid); else if (actGid && hereda === "SI") asigActividades.push(actGid); }
+          if (tipo === "ACTIVIDAD") {
+              if (hereda === "SI" && actGid) asigActividades.push(actGid);
+          } else if (tipo === "TAREA") {
+              if (tarGid) asigTareas.push(tarGid);
+          } else {
+              // Compatibilidad con registros históricos incompletos: si hay tarea, manda tarea;
+              // si solo hay actividad con herencia, se expanden sus tareas descendientes.
+              if (tarGid) asigTareas.push(tarGid);
+              else if (actGid && hereda === "SI") asigActividades.push(actGid);
+          }
       });
 
-      asigActividades = [...new Set(asigActividades)]; asigTareas = [...new Set(asigTareas)];
-      let qJerarquiaFeatures = []; const collectedTaskGuids = new Set();
+      asigActividades = uniqueGuidList(asigActividades);
+      asigTareas = uniqueGuidList(asigTareas);
+      let qJerarquiaFeatures = [];
+      const collectedTaskKeys = new Set();
 
       if (asigActividades.length > 0) {
           let subDeActividades = [];
           for (let i = 0; i < asigActividades.length; i += 50) {
               const chunk = asigActividades.slice(i, i + 50).map(g => `'${g}'`).join(",");
-              const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
+              const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID", returnGeometry:false });
               if(qS && Array.isArray(qS.features)) subDeActividades.push(...qS.features);
           }
-          const subGuids = subDeActividades.map(f => f.attributes.GlobalID);
+          const subGuids = uniqueGuidList(subDeActividades.map(f => f.attributes.GlobalID));
           if (subGuids.length > 0) {
+              const mapSubToAct = new Map();
+              subDeActividades.forEach(s => mapSubToAct.set(normalizeGuidKey(s.attributes.GlobalID), normalizeGuidLiteral(s.attributes.ActividadGlobalID)));
+
               for (let i = 0; i < subGuids.length; i += 50) {
                   const chunk = subGuids.slice(i, i + 50).map(g => `'${g}'`).join(",");
-                  const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
+                  const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID", returnGeometry:false });
                   if(qT && Array.isArray(qT.features)) {
-                      const mapSubToAct = new Map(); subDeActividades.forEach(s => mapSubToAct.set(s.attributes.GlobalID, s.attributes.ActividadGlobalID));
-                      qT.features.forEach(t => { t.attributes.ActividadGlobalID = mapSubToAct.get(t.attributes.SubActividadGlobalID); t.attributes.OrigenConsolidado = 'ACTIVIDAD'; qJerarquiaFeatures.push(t); collectedTaskGuids.add(t.attributes.GlobalID); });
+                      qT.features.forEach(t => {
+                          const tGuid = normalizeGuidLiteral(t.attributes.GlobalID);
+                          const tKey = normalizeGuidKey(tGuid);
+                          const sGuid = normalizeGuidLiteral(t.attributes.SubActividadGlobalID);
+                          t.attributes.GlobalID = tGuid;
+                          t.attributes.SubActividadGlobalID = sGuid;
+                          t.attributes.ActividadGlobalID = mapSubToAct.get(normalizeGuidKey(sGuid));
+                          t.attributes.OrigenConsolidado = "ACTIVIDAD";
+                          if (!collectedTaskKeys.has(tKey)) {
+                              qJerarquiaFeatures.push(t);
+                              collectedTaskKeys.add(tKey);
+                          }
+                      });
                   }
               }
           }
@@ -615,39 +704,48 @@ async function loadAsignaciones() {
           let tareasPuntuales = [];
           for (let i = 0; i < asigTareas.length; i += 50) {
               const chunk = asigTareas.slice(i, i + 50).map(g => `'${g}'`).join(",");
-              const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID" });
+              const qT = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,SubActividadGlobalID", returnGeometry:false });
               if(qT && Array.isArray(qT.features)) tareasPuntuales.push(...qT.features);
           }
-          const validSubIds = [...new Set(tareasPuntuales.map(t => t.attributes.SubActividadGlobalID).filter(Boolean))];
+          const validSubIds = uniqueGuidList(tareasPuntuales.map(t => t.attributes.SubActividadGlobalID).filter(Boolean));
           const subMap = new Map();
           if (validSubIds.length > 0) {
               for (let i = 0; i < validSubIds.length; i += 50) {
                   const chunk = validSubIds.slice(i, i + 50).map(g => `'${g}'`).join(",");
-                  const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID" });
-                  if(qS && Array.isArray(qS.features)) qS.features.forEach(f => subMap.set(f.attributes.GlobalID, f.attributes.ActividadGlobalID));
+                  const qS = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`GlobalID IN (${chunk})`, outFields:"GlobalID,ActividadGlobalID", returnGeometry:false });
+                  if(qS && Array.isArray(qS.features)) {
+                      qS.features.forEach(f => subMap.set(normalizeGuidKey(f.attributes.GlobalID), normalizeGuidLiteral(f.attributes.ActividadGlobalID)));
+                  }
               }
           }
           tareasPuntuales.forEach(t => {
-              t.attributes.ActividadGlobalID = subMap.get(t.attributes.SubActividadGlobalID);
-              if (!collectedTaskGuids.has(t.attributes.GlobalID)) { t.attributes.OrigenConsolidado = 'TAREA'; qJerarquiaFeatures.push(t); collectedTaskGuids.add(t.attributes.GlobalID); }
+              const tGuid = normalizeGuidLiteral(t.attributes.GlobalID);
+              const tKey = normalizeGuidKey(tGuid);
+              const sGuid = normalizeGuidLiteral(t.attributes.SubActividadGlobalID);
+              t.attributes.GlobalID = tGuid;
+              t.attributes.SubActividadGlobalID = sGuid;
+              t.attributes.ActividadGlobalID = subMap.get(normalizeGuidKey(sGuid));
+              if (!collectedTaskKeys.has(tKey)) {
+                  t.attributes.OrigenConsolidado = "TAREA";
+                  qJerarquiaFeatures.push(t);
+                  collectedTaskKeys.add(tKey);
+              }
           });
       }
 
-      const tarMap = new Map(), subMap = new Map(), originMap = new Map(); const validTaskGuids = [];
-      qJerarquiaFeatures.forEach(f => {
-          const tGuid = f.attributes.GlobalID, sGuid = f.attributes.SubActividadGlobalID, aGuid = f.attributes.ActividadGlobalID, oGuid = f.attributes.OrigenConsolidado;
-          validTaskGuids.push(tGuid); tarMap.set(tGuid, sGuid); originMap.set(tGuid, oGuid); if(sGuid) subMap.set(sGuid, aGuid);
-      });
+      // Regla crítica App Reporte:
+      // Las tareas finales para usuarios no SUPERADMIN salen únicamente de SEG_Asignacion activa
+      // para la vigencia seleccionada. SEG_Alcance no se usa aquí para ampliar/restringir captura.
+      asignacionesActivas = qJerarquiaFeatures.map(f => ({
+          TareaGlobalID: normalizeGuidLiteral(f.attributes.GlobalID),
+          SubActividadGlobalID: normalizeGuidLiteral(f.attributes.SubActividadGlobalID),
+          ActividadGlobalID: normalizeGuidLiteral(f.attributes.ActividadGlobalID),
+          TipoOrigenAsignacion: f.attributes.OrigenConsolidado || "TAREA"
+      })).filter(a => a.TareaGlobalID && a.ActividadGlobalID);
 
-      let finalTasks = validTaskGuids;
-      if (!currentUser.hasGlobalScope && currentUser.alcances.length > 0) {
-          finalTasks = validTaskGuids.filter(tGuid => {
-              const sGuid = tarMap.get(tGuid), aGuid = sGuid ? subMap.get(sGuid) : null;
-              return currentUser.alcances.includes(tGuid) || (sGuid && currentUser.alcances.includes(sGuid)) || (aGuid && currentUser.alcances.includes(aGuid));
-          });
-      } else if (!currentUser.hasGlobalScope && currentUser.alcances.length === 0) finalTasks = []; 
-
-      asignacionesActivas = finalTasks.map(tGuid => ({ TareaGlobalID: tGuid, SubActividadGlobalID: tarMap.get(tGuid), ActividadGlobalID: tarMap.get(tGuid) ? subMap.get(tarMap.get(tGuid)) : null, TipoOrigenAsignacion: originMap.get(tGuid) }));
+      if (!asignacionesActivas.length) {
+          setStatus(`No tiene tareas asignadas activas para la vigencia ${vig}.`, "info");
+      }
   } catch (e) {
       auditError("LOAD_ASIGNACIONES", e, { vigencia: elVigencia.value });
       setStatus("Error al consultar asignaciones operativas en la plataforma.", "error");
@@ -661,7 +759,7 @@ async function loadActividades() {
       let data = [];
       cacheActividadesPesos.clear();
 
-      if (currentUser.roles.includes("SUPERADMIN")) {
+      if (currentUser.isSuperAdmin) {
           const qAct = await fetchJson(`${URL_ACTIVIDAD}/query`, { f:"json", where:`Activo='SI' AND Vigencia=${vig}`, outFields:"GlobalID,ActividadID,NombreActividad,Peso", orderByFields:"ActividadID ASC" });
           if(qAct && Array.isArray(qAct.features) && qAct.features.length > 0) {
               qAct.features.forEach(f => cacheActividadesPesos.set(normalizeGuidKey(f.attributes.GlobalID), f.attributes.Peso || 0));
@@ -710,13 +808,17 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
       const subQ = await fetchJson(`${URL_SUBACTIVIDAD}/query`, { f:"json", where:`ActividadGlobalID='${actividadGlobalId}'`, outFields:"*" });
       cacheSubactividades = (subQ && Array.isArray(subQ.features) ? subQ.features : []).map(f=>f.attributes);
       
-      const tareasAsignadas = asignacionesActivas.filter(a => a.ActividadGlobalID === actividadGlobalId).map(a => a.TareaGlobalID);
+      const tareasAsignadasKeys = new Set(
+        asignacionesActivas
+          .filter(a => normalizeGuidKey(a.ActividadGlobalID) === normalizeGuidKey(actividadGlobalId))
+          .map(a => normalizeGuidKey(a.TareaGlobalID))
+      );
       const inListSub = cacheSubactividades.map(s => `'${s.GlobalID}'`).join(",");
       
       if(inListSub) {
         const tareaQ = await fetchJson(`${URL_TAREA}/query`, { f:"json", where:`SubActividadGlobalID IN (${inListSub})`, outFields:"*" });
         let allTasks = (tareaQ && Array.isArray(tareaQ.features) ? tareaQ.features : []).map(f=>f.attributes);
-        if (!currentUser.roles.includes("SUPERADMIN")) allTasks = allTasks.filter(t => tareasAsignadas.includes(t.GlobalID));
+        if (!currentUser.isSuperAdmin) allTasks = allTasks.filter(t => tareasAsignadasKeys.has(normalizeGuidKey(t.GlobalID)));
         cacheTareas = allTasks;
       }
 
