@@ -392,3 +392,62 @@ input[readonly] {
 @media (max-width: 700px) {
   .grid2--wide { grid-template-columns: 1fr; }
 }
+
+/* ===========================================================
+   AJUSTE VISUAL OAP · Alineación general App Reporte
+   - Mantiene lógica funcional sin cambios.
+   - Da margen lateral consistente a selección, subactividades,
+     reporte narrativo, acciones y mensajes de estado.
+   =========================================================== */
+
+/* Selección: vigencia, periodo y actividad asignada */
+.panel--form > .grid2,
+.panel--form > .field,
+.panel--form > .field-motivo {
+  margin-left: 16px;
+  margin-right: 16px;
+}
+
+/* Listado dinámico de subactividades/tareas */
+.indicadores {
+  margin: 0 16px 16px 16px;
+}
+
+.indicadores .card {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* Bloque final de narrativa alineado con ODS, Rezago y Reserva */
+.narrative-text-card {
+  margin-top: 0;
+  background: #ffffff;
+}
+
+.narrative-text-card .field:last-child {
+  padding-bottom: 0;
+}
+
+/* Acciones y estado final alineados con el resto del formulario */
+.actions,
+.status-global {
+  margin-left: 16px;
+  margin-right: 16px;
+}
+
+/* Ajuste preventivo para pantallas pequeñas */
+@media (max-width: 700px) {
+  .panel--form > .grid2,
+  .panel--form > .field,
+  .panel--form > .field-motivo,
+  .indicadores,
+  .actions,
+  .status-global,
+  .narrative-subcard,
+  #actividad-context,
+  #msg-narrativa,
+  .subact-nav {
+    margin-left: 10px !important;
+    margin-right: 10px !important;
+  }
+}
