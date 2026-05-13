@@ -26,14 +26,16 @@
                     + CORRECCIÓN CRÍTICA DE AISLAMIENTO PLAN/BI Y PROTECCIÓN ARRAY/JSON.
                     + FASE 2: REP_ReporteNarrativo como reporte consolidado de actividad.
                     + Captura de indicador anual, acumulado, porcentaje, ODS, Rezago y Reserva.
+                    + INTEGRACIÓN WF: Creación dinámica de WF_SolicitudRevision centralizada en Actividad.
+                    + FIX UAT FINAL: applyWorkflowEdits asilado, fallback WF_SolicitudRevision, GUID fixes en auditoría y actualización Clave/Version en fallback.
    =========================================================== */
 
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
 const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/MpiosCAR/FeatureServer";
 const CAR_JUR_LAYER_ID = 0; 
 
-// URL PowerAutomate OTP
-const URL_WEBHOOK_POWERAUTOMATE = "https://default64f30d63182749d899511db17d0949.e4.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/1123b3fd4a854b40b2b22dd45b03ca7c/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=Qz68D2G5RAq9cmMvOew1roy8bD3YQPtju4KPW2vEtvc"; 
+// URL PowerAutomate OTP (Debe parametrizarse antes de desplegar; con placeholder el OTP no funcionará)
+const URL_WEBHOOK_POWERAUTOMATE = "URL_WEBHOOK_AQUI_NO_EXPONER_CREDENCIALES"; 
 
 // Índices DATAPAC_V4
 const getUrl = (id) => `${SERVICE_URL}/${id}`;
@@ -61,9 +63,45 @@ const URL_PLAN_ACT = getUrl(36);
 const F_AVA = { fkTarea: "TareaGlobalID", vig: "Vigencia", per: "Periodo", val: "ValorReportado", obs: "Observaciones", evi: "EvidenciaURL", fec: "FechaRegistro", resp: "Responsable", estado: "EstadoRegistro", ver: "Version", fEdic: "FechaUltimaEdicionFuncional", pEdic: "PersonaUltimaEdicionID", motivo: "MotivoAjuste" };
 const F_NAR = { fkAct: "ActividadGlobalID", vig: "Vigencia", per: "Periodo", txt1: "TextoNarrativo", txt2: "DescripcionLogrosAlcanzados", txt3: "PrincipalesLogros", fec: "FechaRegistro", resp: "Responsable", estado: "EstadoRegistro", ver: "Version", fEdic: "FechaUltimaEdicionFuncional", pEdic: "PersonaUltimaEdicionID", motivo: "MotivoAjuste", respGid: "ResponsableGlobalID", planAct: "PlanActividadGlobalID", indId: "IndicadorID", indNom: "NombreIndicador", indTipo: "TipoValorIndicador", indUnidad: "UnidadMedidaIndicador", indCalc: "TipoCalculoAvanceActividad", clave: "ClaveUnicaReporteActividad", meta: "MetaAnualIndicador", valTri: "ValorIndicadorTrimestre", valAcum: "ValorIndicadorAcumulado", pct: "PorcentajeAvanceIndicador", obsInd: "ObservacionIndicador", eviInd: "EvidenciaIndicadorURL", odsPlan: "ReportaODSPlan", odsTxt: "AvanceODSPeriodo", rezPlan: "ReportaRezagoPlan", rezTxt: "AvanceRezagoPeriodo", resPlan: "ReportaReservaPlan", resTxt: "AvanceReservaPeriodo" };
 const F_UBI = { fkAvance: "AvanceTareaGlobalID", dane: "CodigoDANE", mun: "MunicipioNombre", desc: "DescripcionSitio", fec: "FechaRegistro" };
-const F_WF = { solId: "SolicitudID", tipo: "TipoObjeto", objId: "ObjetoID", objGid: "ObjetoGlobalID", vig: "Vigencia", per: "Periodo", persId: "PersonaSolicitaID", fec: "FechaSolicitud", est: "EstadoActual" };
 
-// --- REGLAS DE NEGOCIO TEMPORALES (DEFINIDAS POR OAP) ---
+const F_WF = { 
+  solId: "SolicitudID", 
+  tipo: "TipoObjeto", 
+  objId: "ObjetoID", 
+  objGid: "ObjetoGlobalID", 
+  vig: "Vigencia", 
+  per: "Periodo", 
+  persId: "PersonaSolicitaID", 
+  fec: "FechaSolicitud", 
+  est: "EstadoActual",
+  ver: "Version",
+  comentario: "ComentarioSolicitante",
+  actGid: "ActividadGlobalID",
+  planActGid: "PlanActividadGlobalID",
+  repNarGid: "ReporteNarrativoGlobalID",
+  dep: "DependenciaReportante",
+  rolActual: "RolResponsableActual",
+  personaRespActual: "PersonaResponsableActualID",
+  etapaActual: "EtapaActual",
+  fecUltMov: "FechaUltimoMovimiento",
+  clave: "ClaveUnicaSolicitud",
+  tipoFlujo: "TipoFlujoWorkflow",
+  pasos: "PasosRequeridosWorkflow",
+  pasoOrden: "PasoActualOrden"
+};
+
+const WORKFLOW_MATRIX = {
+  COMPLETO: { estadoInicial: "EnVistoBuenoDirector", rolInicial: "VISTO_BUENO_AREA", etapaInicial: "VISTO_BUENO_DIRECTOR", pasos: ["VISTO_BUENO_AREA", "ENLACE_DEPENDENCIA", "APROBADOR_AREA", "REVISOR_OAP", "PUBLICADOR"] },
+  SIN_DIRECTOR: { estadoInicial: "EnRevisionEnlace", rolInicial: "ENLACE_DEPENDENCIA", etapaInicial: "VALIDACION_ENLACE", pasos: ["ENLACE_DEPENDENCIA", "APROBADOR_AREA", "REVISOR_OAP", "PUBLICADOR"] },
+  SIN_ENLACE: { estadoInicial: "EnVistoBuenoDirector", rolInicial: "VISTO_BUENO_AREA", etapaInicial: "VISTO_BUENO_DIRECTOR", pasos: ["VISTO_BUENO_AREA", "APROBADOR_AREA", "REVISOR_OAP", "PUBLICADOR"] },
+  SIN_SUBDIRECTOR: { estadoInicial: "EnVistoBuenoDirector", rolInicial: "VISTO_BUENO_AREA", etapaInicial: "VISTO_BUENO_DIRECTOR", pasos: ["VISTO_BUENO_AREA", "ENLACE_DEPENDENCIA", "REVISOR_OAP", "PUBLICADOR"] },
+  OAP_DIRECTO: { estadoInicial: "EnRevisionOAP", rolInicial: "REVISOR_OAP", etapaInicial: "REVISION_OAP", pasos: ["REVISOR_OAP", "PUBLICADOR"] },
+  PUBLICACION_DIRECTA: { estadoInicial: "AprobadoOAP", rolInicial: "PUBLICADOR", etapaInicial: "PUBLICACION", pasos: ["PUBLICADOR"] },
+  OPERATIVO_SIMPLE: { estadoInicial: "EnRevisionOAP", rolInicial: "REVISOR_OAP", etapaInicial: "REVISION_OAP", pasos: ["REVISOR_OAP"] },
+  ESPECIAL: { estadoInicial: "EnRevisionOAP", rolInicial: "REVISOR_OAP", etapaInicial: "REVISION_OAP", pasos: ["REVISOR_OAP"] }
+};
+
+// --- REGLAS DE NEGOCIO TEMPORALES ---
 const OPERATIVE_VIGENCIA = 2026; 
 const OPERATIVE_PERIODO = 'T1';  
 
@@ -75,7 +113,7 @@ const elModo = document.getElementById("pill-modo"), actContextPanel = document.
 const elSubactNav = document.getElementById("subact-nav-bar");
 const elTopSubactSelector = document.getElementById("top-subact-selector");
 
-// UI Variables Drawer Mapa (MOVIDAS AL PRINCIPIO)
+// UI Variables Drawer Mapa
 const elMapDrawer = document.getElementById("map-drawer");
 const elMapOverlay = document.getElementById("map-overlay");
 const btnCloseMap = document.getElementById("btn-close-map");
@@ -94,9 +132,7 @@ function closeMapDrawer() {
 
 if(btnCloseMap) btnCloseMap.addEventListener("click", closeMapDrawer);
 if(elMapOverlay) elMapOverlay.addEventListener("click", closeMapDrawer);
-window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeMapDrawer();
-});
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMapDrawer(); });
 
 // Eventos de Navegación por Subactividades
 if(document.getElementById("btn-expand-all")) {
@@ -122,7 +158,7 @@ if(elTopSubactSelector) {
             cardEl.classList.remove("collapsed");
             cardEl.scrollIntoView({ behavior: "smooth", block: "start" });
         }
-        e.target.value = ""; // Resetear selección
+        e.target.value = ""; 
     });
 }
 
@@ -142,16 +178,13 @@ function populateTopSubactSelector() {
         card.id = cardId;
         const titleEl = card.querySelector(".card__title");
         const titleText = titleEl ? titleEl.textContent : `Subactividad ${index + 1}`;
-        // Limitar longitud del texto
         const shortTitle = titleText.length > 50 ? titleText.substring(0, 47) + "..." : titleText;
         html += `<option value="${cardId}">${shortTitle}</option>`;
     });
     elTopSubactSelector.innerHTML = html;
 }
 
-window.toggleAccordion = function(cardEl) {
-    if (cardEl) cardEl.classList.toggle('collapsed');
-};
+window.toggleAccordion = function(cardEl) { if (cardEl) cardEl.classList.toggle('collapsed'); };
 
 // Inicializar selectores de UI con el Contexto Operativo
 elVigencia.value = OPERATIVE_VIGENCIA;
@@ -161,7 +194,7 @@ elPeriodo.value = OPERATIVE_PERIODO;
 let currentUser = null; 
 let asignacionesActivas = []; 
 let cacheSubactividades = [], cacheTareas = [];
-let cacheActividadesPesos = new Map(); // Cache local de Pesos de CFG_Actividad
+let cacheActividadesPesos = new Map(); 
 let planActCtx = null, biActCtx = null;
 let planSubCtx = new Map(), biSubCtx = new Map();
 let planTarCtx = new Map(), biTarCtx = new Map();
@@ -182,9 +215,7 @@ let lastGlobalMsg = null;
 let diagSubsVis = 0, diagSubsLoad = 0, diagSubsMatch = 0;
 let diagTarsVis = 0, diagTarsLoad = 0, diagTarsMatch = 0;
 
-function getTemporalScore(v, p) {
-    return parseInt(v) * 10 + parseInt(String(p).replace('T', ''));
-}
+function getTemporalScore(v, p) { return parseInt(v) * 10 + parseInt(String(p).replace('T', '')); }
 
 function evaluateHistoricalSelection(selectedVigencia, selectedPeriodo) {
     const v = parseInt(selectedVigencia);
@@ -199,7 +230,6 @@ function evaluateHistoricalSelection(selectedVigencia, selectedPeriodo) {
     return { isFuture, isPastVigencia, isPastQuarter, isCurrent, v, p: selectedPeriodo };
 }
 
-// Helper para Validación CFG_Tarea.TipoValorAvance
 function getTipoValorAvanceByTarea(tareaGid) {
     if (!cacheTareas || cacheTareas.length === 0) return "";
     const task = cacheTareas.find(t => t.GlobalID === tareaGid);
@@ -207,14 +237,12 @@ function getTipoValorAvanceByTarea(tareaGid) {
     return String(task.TipoValorAvance).toUpperCase().trim();
 }
 
-// Helper para Validación PLAN_TareaVigencia.MetaProgramada
 function getMetaProgramadaByTarea(tareaGid) {
     const pTar = planTarCtx.get(normalizeGuidKey(tareaGid));
     if (!pTar || pTar.MetaProgramada === null || pTar.MetaProgramada === undefined || String(pTar.MetaProgramada).trim() === '') return null;
     const meta = Number(pTar.MetaProgramada);
     return isNaN(meta) ? null : meta;
 }
-
 
 // --- FASE 2: REPORTE CONSOLIDADO DE ACTIVIDAD ---
 const PERIOD_ORDER = ["T1", "T2", "T3", "T4"];
@@ -228,9 +256,7 @@ function normalizeSiNo(value, defaultValue = "NO") {
     return defaultValue;
 }
 
-function getPlanFlag(fieldName) {
-    return normalizeSiNo(planActCtx?.[fieldName], "NO");
-}
+function getPlanFlag(fieldName) { return normalizeSiNo(planActCtx?.[fieldName], "NO"); }
 
 function getPlanTipoIndicador() {
     const tipo = normalizeText(planActCtx?.TipoValorIndicador || "NUMERICO");
@@ -270,8 +296,6 @@ function calculateIndicadorValues(currentValue = getCurrentIndicadorValue()) {
     let accumulated;
     let pct;
     if (tipo === "PORCENTUAL") {
-        // Regla funcional: el indicador porcentual se interpreta como fotografía del avance reportado,
-        // se valida entre 0 y 100 y no se suma entre trimestres para evitar acumulados artificiales.
         accumulated = currentValue;
         pct = currentValue;
     } else {
@@ -490,8 +514,11 @@ async function auditError(context, error, extra = {}) {
     if (error && typeof error === 'object' && error._audited) return; 
     
     const errorMsg = error instanceof Error ? error.message : String(error);
-    const detail = `[${context}] ERR: ${errorMsg}`.substring(0, 255);
-    const functionalContext = JSON.stringify(extra).substring(0, 255);
+    
+    let pid = currentUser ? currentUser.pid : null;
+    let detailStr = `[${context}] ERR: ${errorMsg} | CTX: ${JSON.stringify(extra)}`;
+    if (!currentUser) detailStr = `[NO_AUTH] ${detailStr}`;
+    const detail = detailStr.substring(0, 500);
     
     console.error(`[AUDIT ERROR] ${context}:`, error, extra);
     
@@ -501,14 +528,15 @@ async function auditError(context, error, extra = {}) {
     
     try {
         const attrs = {
-            GlobalID: generateGUID(),
-            TipoEvento: `ERR_${context}`.substring(0, 50),
-            Entidad: "APP_REPORTE",
-            ObjetoGlobalID: currentUser ? currentUser.gid : "",
+            EventoID: generateGUID(),
+            Modulo: "APP_REPORTE",
+            Evento: `ERR_${context}`.substring(0, 100),
             Resultado: "ERROR",
-            DetalleEvento: `CTX: ${functionalContext} | ${detail}`.substring(0, 255),
-            PersonaID: currentUser ? currentUser.pid : "NO_AUTH",
-            FechaEvento: Date.now()
+            FechaEvento: Date.now(),
+            PersonaID: pid,
+            Detalle: detail,
+            IP: "N/A",
+            UserAgent: navigator.userAgent.substring(0, 255)
         };
         
         const form = new URLSearchParams();
@@ -719,11 +747,21 @@ function getPeriodo() { return elPeriodo.value || OPERATIVE_PERIODO; }
 
 function initCombosFijos() { renderCombo("combo-actividad", [], "Cargando..."); }
 
-// --- Funciones de Historial y Workflow ---
-async function writeAuditEvent(tipo, entidad, objGid, resultado, detalle) {
+// --- Funciones de Historial y Auditoria ---
+async function writeAuditEvent(evento, modulo, resultado, detalle) {
   if (!currentUser) return;
   try {
-    const attrs = { GlobalID: generateGUID(), TipoEvento: tipo, Entidad: entidad, ObjetoGlobalID: objGid || "", Resultado: resultado, DetalleEvento: detalle ? detalle.substring(0, 255) : "", PersonaID: currentUser.pid, FechaEvento: Date.now() };
+    const attrs = { 
+        EventoID: generateGUID(), 
+        Modulo: modulo, 
+        Evento: evento, 
+        Resultado: resultado, 
+        FechaEvento: Date.now(),
+        PersonaID: currentUser.pid, 
+        Detalle: detalle ? detalle.substring(0, 500) : "", 
+        IP: "N/A", 
+        UserAgent: navigator.userAgent.substring(0, 255) 
+    };
     await postForm(`${URL_AUD_EVENTO}/applyEdits`, { adds: [{attributes: attrs}] });
   } catch(e) { console.error("[AUDIT_SYSTEM] Error al guardar evento:", e); }
 }
@@ -734,6 +772,239 @@ async function writeAuditHistory(tipoObj, objGid, campo, valAnt, valNuevo, motiv
     const attrs = { GlobalID: generateGUID(), TipoObjeto: tipoObj, ObjetoID: "0", ObjetoGlobalID: objGid || "", CampoModificado: campo || "", ValorAnterior: valAnt ? String(valAnt).substring(0, 1000) : "", ValorNuevo: valNuevo ? String(valNuevo).substring(0, 1000) : "", PersonaID: currentUser.pid, FechaCambio: Date.now(), MotivoCambio: motivo || "", OrigenCambio: "APP_REPORTE" };
     await postForm(`${URL_AUD_HISTORIAL}/applyEdits`, { adds: [{attributes: attrs}] });
   } catch(e) { console.error("[AUDIT_SYSTEM] Error al guardar historial:", e); }
+}
+
+// --- RESOLUCION E INYECCION WORKFLOW V4 ---
+
+function buildWorkflowSequence(planAct) {
+    let rawTipo = planAct && planAct.TipoFlujoWorkflow ? normalizeText(planAct.TipoFlujoWorkflow) : "";
+    let usedFallback = false;
+
+    if (!rawTipo || !WORKFLOW_MATRIX[rawTipo]) {
+        rawTipo = "COMPLETO";
+        usedFallback = true;
+    }
+
+    const conf = WORKFLOW_MATRIX[rawTipo];
+    return {
+        tipoFlujoWorkflow: rawTipo,
+        estadoInicial: conf.estadoInicial,
+        rolInicial: conf.rolInicial,
+        etapaInicial: conf.etapaInicial,
+        pasosArray: conf.pasos,
+        pasosRequeridosWorkflow: conf.pasos.join("|"),
+        pasoActualOrden: 1,
+        usedFallback: usedFallback
+    };
+}
+
+async function resolvePlanActividadWorkflow(actividadGlobalID, vigencia) {
+    try {
+        const where = `ActividadGlobalID='${normalizeGuidLiteral(actividadGlobalID)}' AND Vigencia=${vigencia}`;
+        const q = await fetchJson(`${URL_PLAN_ACT}/query`, {
+            f: "json",
+            where: where,
+            outFields: "*"
+        });
+        if (q && q.features && q.features.length > 0) return q.features[0].attributes;
+        return null;
+    } catch (error) {
+        auditError("RESOLVE_PLAN_ACT", error, { actividadGlobalID, vigencia });
+        return null;
+    }
+}
+
+async function resolveNarrativaAfterSave({ actividadGlobalID, vigencia, periodo, version, claveUnicaReporteActividad }) {
+    try {
+        if (claveUnicaReporteActividad) {
+            let q = await fetchJson(`${URL_NARRATIVA}/query`, {
+                f: "json",
+                where: `ClaveUnicaReporteActividad='${claveUnicaReporteActividad}'`,
+                outFields: "*",
+                orderByFields: "FechaRegistro DESC"
+            });
+            if (q && q.features && q.features.length > 0) return q.features[0].attributes;
+        }
+
+        let fallbackWhere = `ActividadGlobalID='${normalizeGuidLiteral(actividadGlobalID)}' AND Vigencia=${vigencia} AND Periodo='${periodo}'`;
+        if (version) fallbackWhere += ` AND Version=${version}`;
+
+        const qFall = await fetchJson(`${URL_NARRATIVA}/query`, {
+            f: "json",
+            where: fallbackWhere,
+            outFields: "*",
+            orderByFields: "FechaRegistro DESC"
+        });
+        if (qFall && qFall.features && qFall.features.length > 0) return qFall.features[0].attributes;
+
+        return null;
+    } catch (error) {
+        auditError("RESOLVE_NARRATIVA", error, { actividadGlobalID, vigencia, periodo, version });
+        return null;
+    }
+}
+
+async function findExistingWorkflowSolicitud(claveUnicaSolicitud, narrativaAttrs) {
+    try {
+        let q = await fetchJson(`${URL_WF_SOLICITUD}/query`, {
+            f: "json",
+            where: `ClaveUnicaSolicitud='${claveUnicaSolicitud}'`,
+            outFields: "*"
+        });
+
+        if (q && q.features && q.features.length > 0) {
+            if (q.features.length > 1) await writeAuditEvent("WF_SOLICITUD_DUPLICADA_EVITADA", "APP_REPORTE", "ADVERTENCIA", `Múltiples solicitudes encontradas para clave única.`);
+            return q.features[0].attributes;
+        }
+
+        if (narrativaAttrs) {
+            let fallbackWhere = "";
+            if (narrativaAttrs.GlobalID) {
+                fallbackWhere = `ReporteNarrativoGlobalID='${normalizeGuidLiteral(narrativaAttrs.GlobalID)}'`;
+            } else if (narrativaAttrs.ActividadGlobalID && narrativaAttrs.Vigencia && narrativaAttrs.Periodo) {
+                fallbackWhere = `ActividadGlobalID='${normalizeGuidLiteral(narrativaAttrs.ActividadGlobalID)}' AND Vigencia=${narrativaAttrs.Vigencia} AND Periodo='${narrativaAttrs.Periodo}'`;
+            }
+
+            if (fallbackWhere) {
+                let qFall = await fetchJson(`${URL_WF_SOLICITUD}/query`, {
+                    f: "json",
+                    where: fallbackWhere,
+                    outFields: "*"
+                });
+                
+                if (qFall && qFall.features && qFall.features.length > 0) {
+                    const allowedStates = ["Borrador", "Devuelto", "Enviado", "EnVistoBuenoDirector", "EnRevisionEnlace", "EnAprobacionSubdirector", "EnRevisionOAP"];
+                    const validFeatures = qFall.features.filter(f => allowedStates.includes(f.attributes.EstadoActual));
+                    if (validFeatures.length > 0) {
+                        return validFeatures[0].attributes;
+                    }
+                }
+            }
+        }
+        return null;
+    } catch (error) {
+        auditError("FIND_EXISTING_WF", error, { claveUnicaSolicitud });
+        return null;
+    }
+}
+
+async function applyWorkflowEdits({ adds = [], updates = [] }) {
+    const payload = { f: "json" };
+    if (adds.length > 0) payload.adds = JSON.stringify(adds);
+    if (updates.length > 0) payload.updates = JSON.stringify(updates);
+
+    const data = await postForm(`${URL_WF_SOLICITUD}/applyEdits`, payload);
+
+    if (data.addResults && Array.isArray(data.addResults)) {
+        for (const r of data.addResults) {
+            if (r.success === false) throw new Error(`Fallo insertando WF: ${r.error?.description || JSON.stringify(r.error)}`);
+        }
+    }
+    if (data.updateResults && Array.isArray(data.updateResults)) {
+        for (const r of data.updateResults) {
+            if (r.success === false) throw new Error(`Fallo actualizando WF: ${r.error?.description || JSON.stringify(r.error)}`);
+        }
+    }
+    return data;
+}
+
+async function createOrUpdateWorkflowSolicitudFromNarrativa({ narrativaAttrs, planAct, isSubmit }) {
+    if (!isSubmit) return;
+
+    if (!narrativaAttrs || !narrativaAttrs.GlobalID || !narrativaAttrs.ActividadGlobalID || !narrativaAttrs.Vigencia || !narrativaAttrs.Periodo || narrativaAttrs.EstadoRegistro !== "Enviado") {
+        await auditError("WF_SOLICITUD_ERROR", "Datos críticos en narrativa inválidos o estado no es Enviado.", narrativaAttrs);
+        throw new Error("Datos de narrativa incompletos o en estado incorrecto para generar workflow. Debe confirmarse en BD como 'Enviado'.");
+    }
+
+    const claveUnicaSolicitud = [
+        normalizeGuidKey(narrativaAttrs.ActividadGlobalID),
+        narrativaAttrs.Vigencia,
+        narrativaAttrs.Periodo,
+        narrativaAttrs.Version || 1
+    ].join("|");
+
+    const wfSeq = buildWorkflowSequence(planAct);
+
+    if (planAct) {
+        const reqDir = normalizeSiNo(planAct.RequiereVistoBuenoDirector);
+        if (wfSeq.tipoFlujoWorkflow === "SIN_DIRECTOR" && reqDir === "SI") {
+            await writeAuditEvent("WF_FLAGS_CONTRADICTORIOS", "APP_REPORTE", "ADVERTENCIA", `Flujo SIN_DIRECTOR contradice RequiereVistoBuenoDirector=SI en PLAN ${planAct.GlobalID}`);
+        }
+        if (wfSeq.tipoFlujoWorkflow === "ESPECIAL") {
+            await writeAuditEvent("WF_FLUJO_ESPECIAL_ADVERTENCIA", "APP_REPORTE", "ADVERTENCIA", `Flujo ESPECIAL enviado sin ruta automatizada estándar. PLAN ${planAct.GlobalID}`);
+        }
+    }
+
+    const existingWf = await findExistingWorkflowSolicitud(claveUnicaSolicitud, narrativaAttrs);
+
+    const wfAttrs = {
+        [F_WF.solId]: generateGUID(),
+        [F_WF.tipo]: "ReporteNarrativo",
+        [F_WF.objId]: narrativaAttrs.ClaveUnicaReporteActividad || claveUnicaSolicitud,
+        [F_WF.objGid]: narrativaAttrs.GlobalID,
+        [F_WF.actGid]: narrativaAttrs.ActividadGlobalID,
+        [F_WF.planActGid]: planAct ? planAct.GlobalID : null,
+        [F_WF.repNarGid]: narrativaAttrs.GlobalID,
+        [F_WF.vig]: Number(narrativaAttrs.Vigencia),
+        [F_WF.per]: narrativaAttrs.Periodo,
+        [F_WF.persId]: currentUser?.pid || currentUser?.gid || null,
+        [F_WF.fec]: Date.now(),
+        [F_WF.est]: wfSeq.estadoInicial,
+        [F_WF.ver]: Number(narrativaAttrs.Version || 1),
+        [F_WF.comentario]: "Envío generado desde App Reporte",
+        [F_WF.dep]: currentUser?.dependencia || "", 
+        [F_WF.rolActual]: wfSeq.rolInicial,
+        [F_WF.personaRespActual]: null,
+        [F_WF.etapaActual]: wfSeq.etapaInicial,
+        [F_WF.fecUltMov]: Date.now(),
+        [F_WF.clave]: claveUnicaSolicitud,
+        [F_WF.tipoFlujo]: wfSeq.tipoFlujoWorkflow,
+        [F_WF.pasos]: wfSeq.pasosRequeridosWorkflow,
+        [F_WF.pasoOrden]: wfSeq.pasoActualOrden
+    };
+
+    Object.keys(wfAttrs).forEach(k => { if (wfAttrs[k] === undefined) wfAttrs[k] = null; });
+
+    if (!existingWf) {
+        wfAttrs.GlobalID = generateGUID();
+        await applyWorkflowEdits({ adds: [{ attributes: wfAttrs }] });
+        await writeAuditEvent("WF_SOLICITUD_CREADA", "APP_REPORTE", "OK", `Workflow creado: ${wfAttrs.GlobalID}. Flujo: ${wfSeq.tipoFlujoWorkflow}`);
+
+        if (wfSeq.usedFallback) {
+             await writeAuditEvent("WF_FLUJO_DEFAULT_COMPLETO", "APP_REPORTE", "ADVERTENCIA", `Aplicado flujo COMPLETO por defecto para: ${wfAttrs.GlobalID}.`);
+        }
+
+        return { action: wfSeq.usedFallback ? "default_fallback" : "created", role: wfSeq.rolInicial, estado: wfSeq.estadoInicial, clave: claveUnicaSolicitud };
+    } else {
+        const currentEst = existingWf.EstadoActual;
+        const blockStates = ["Aprobado", "AprobadoOAP", "Publicado"];
+
+        if (blockStates.includes(currentEst) && !(wfSeq.tipoFlujoWorkflow === "PUBLICACION_DIRECTA" && currentEst === "AprobadoOAP")) {
+            throw new Error("El reporte ya tiene una solicitud aprobada o publicada. No se puede reenviar desde App Reporte sin habilitar corrección controlada.");
+        }
+
+        const updateAttrs = {
+            OBJECTID: existingWf.OBJECTID,
+            [F_WF.est]: currentEst === "Devuelto" ? wfSeq.estadoInicial : (currentEst === "Borrador" ? wfSeq.estadoInicial : currentEst),
+            [F_WF.rolActual]: currentEst === "Devuelto" || currentEst === "Borrador" ? wfSeq.rolInicial : existingWf.RolResponsableActual,
+            [F_WF.etapaActual]: currentEst === "Devuelto" || currentEst === "Borrador" ? wfSeq.etapaInicial : existingWf.EtapaActual,
+            [F_WF.fecUltMov]: Date.now(),
+            [F_WF.tipoFlujo]: wfSeq.tipoFlujoWorkflow,
+            [F_WF.pasos]: wfSeq.pasosRequeridosWorkflow,
+            [F_WF.pasoOrden]: currentEst === "Devuelto" || currentEst === "Borrador" ? wfSeq.pasoActualOrden : existingWf.PasoActualOrden,
+            [F_WF.repNarGid]: narrativaAttrs.GlobalID,
+            [F_WF.planActGid]: planAct ? planAct.GlobalID : null,
+            [F_WF.objGid]: narrativaAttrs.GlobalID,
+            [F_WF.comentario]: existingWf.ComentarioSolicitante || wfAttrs[F_WF.comentario],
+            [F_WF.clave]: claveUnicaSolicitud,
+            [F_WF.ver]: Number(narrativaAttrs.Version || 1)
+        };
+
+        await applyWorkflowEdits({ updates: [{ attributes: updateAttrs }] });
+        await writeAuditEvent("WF_SOLICITUD_ACTUALIZADA", "APP_REPORTE", "OK", `Workflow actualizado: ${existingWf.GlobalID}. Estado: ${updateAttrs[F_WF.est]}`);
+        
+        return { action: "updated", role: updateAttrs[F_WF.rolActual], estado: updateAttrs[F_WF.est], clave: claveUnicaSolicitud };
+    }
 }
 
 // --- Autenticación OTP y Roles V4 ---
@@ -781,11 +1052,8 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
     };
     
     await postForm(`${URL_OTP}/applyEdits`, { f:"json", updates: [{attributes: {OBJECTID: otp.OBJECTID, Usado: "SI"}}] });
-    await writeAuditEvent("OTP_VALIDATE", "APP_REPORTE", currentUser.gid, "OK", "Ingreso exitoso a módulo operativo V4");
+    await writeAuditEvent("OTP_VALIDATE", "APP_REPORTE", "OK", `Ingreso exitoso a módulo operativo V4. GID: ${currentUser.gid}`);
     
-    // Se conserva lectura de SEG_Alcance para trazabilidad/diagnóstico, pero la App Reporte
-    // no lo usa para ampliar ni restringir tareas del reportador operativo.
-    // Regla vigente: las tareas visibles del EDITOR se resuelven por SEG_Asignacion + Vigencia.
     const qAlcance = await fetchJson(`${URL_ALCANCE}/query`, { f:"json", where:`(PersonaID='${currentUser.gid}' OR PersonaID='${currentUser.pid}') AND Activo='SI'`, outFields:"ObjetoGlobalID" });
     currentUser.alcances = (qAlcance.features || []).map(f => f.attributes.ObjetoGlobalID).filter(Boolean);
     currentUser.hasGlobalScope = (qAlcance.features || []).some(f => !f.attributes.ObjetoGlobalID);
@@ -846,8 +1114,6 @@ async function loadAsignaciones() {
           } else if (tipo === "TAREA") {
               if (tarGid) asigTareas.push(tarGid);
           } else {
-              // Compatibilidad con registros históricos incompletos: si hay tarea, manda tarea;
-              // si solo hay actividad con herencia, se expanden sus tareas descendientes.
               if (tarGid) asigTareas.push(tarGid);
               else if (actGid && hereda === "SI") asigActividades.push(actGid);
           }
@@ -925,9 +1191,6 @@ async function loadAsignaciones() {
           });
       }
 
-      // Regla crítica App Reporte:
-      // Las tareas finales para usuarios no SUPERADMIN salen únicamente de SEG_Asignacion activa
-      // para la vigencia seleccionada. SEG_Alcance no se usa aquí para ampliar/restringir captura.
       asignacionesActivas = qJerarquiaFeatures.map(f => ({
           TareaGlobalID: normalizeGuidLiteral(f.attributes.GlobalID),
           SubActividadGlobalID: normalizeGuidLiteral(f.attributes.SubActividadGlobalID),
@@ -1051,7 +1314,7 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
           auditError("LOAD_CONTEXTO_PLAN", e, { actividadGlobalId });
       }
 
-      // --- BLOQUE 2: CARGA DE BI (INDEPENDIENTE Y CORREGIDO) ---
+      // --- BLOQUE 2: CARGA DE BI ---
       try {
           const qBiAct = await fetchJson(`${URL_BI_ACT}/query`, { f:"json", where:`GlobalID_Nivel='${actividadGlobalId}' AND Vigencia=${vig}`, outFields:"*" });
           if(qBiAct && Array.isArray(qBiAct.features) && qBiAct.features.length) biActCtx = qBiAct.features[0].attributes;
@@ -1185,7 +1448,7 @@ function activateTaskRow(rowEl) {
     rowEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
     setStatus("Tarea seleccionada para ubicar puntos en el mapa.", "success");
     
-    openMapDrawer(); // INYECCIÓN UX
+    openMapDrawer();
 }
 
 // --- Render y Estados V4 ---
@@ -1355,19 +1618,7 @@ async function loadExistingData(actGid) {
       }
   }
 
-  const allObjGuids = avGuids.concat(existingNarrativa ? [`'${existingNarrativa.GlobalID}'`] : []);
-  if(allObjGuids.length > 0) {
-      const chunkSize = 15;
-      for (let i = 0; i < allObjGuids.length; i += chunkSize) {
-          const chunk = allObjGuids.slice(i, i + chunkSize).join(",");
-          const qWf = await fetchJson(`${URL_WF_SOLICITUD}/query`, { 
-            f:"json", where:`ObjetoGlobalID IN (${chunk}) AND Vigencia=${vig} AND Periodo='${per}'`, outFields:"OBJECTID,GlobalID,ObjetoGlobalID,Version" 
-          });
-          if(qWf && Array.isArray(qWf.features)) qWf.features.forEach(f => existingWFSolicitudes.set(f.attributes.ObjetoGlobalID, f.attributes));
-      }
-  }
-
-  if (avGuids.length === 0 && !existingNarrativa) {
+  if(avGuids.length === 0 && !existingNarrativa) {
       return { status: "empty" };
   }
   return { status: "ok" };
@@ -1630,7 +1881,6 @@ function validateTaskRows(isSubmit) {
             if (isNaN(numVal)) {
                 rowErrors.push("El Valor Reportado debe ser numérico.");
             } else {
-                // 1. Validación por TipoValorAvance (Porcentaje)
                 const tipoValor = getTipoValorAvanceByTarea(tareaGid);
                 if (tipoValor.includes("PORCENTAJE") || tipoValor === "%") {
                     if (numVal < 0) {
@@ -1644,7 +1894,6 @@ function validateTaskRows(isSubmit) {
                     }
                 }
                 
-                // 2. Validación por MetaProgramada (PLAN_TareaVigencia)
                 const metaProg = getMetaProgramadaByTarea(tareaGid);
                 if (metaProg !== null && numVal > metaProg) {
                     if (isSubmit) {
@@ -1671,7 +1920,6 @@ function validateTaskRows(isSubmit) {
             });
         }
 
-        // Impresión visual en UI (se priorizan los errores sobre los warnings)
         if (rowErrors.length > 0) {
             showRowMessage(rowId, rowErrors.join(" "), "error");
             rowEl.classList.add("row--error");
@@ -1890,28 +2138,106 @@ async function processSave(isSubmit) {
     btnGuardar.disabled = true; btnEnviar.disabled = true;
     
     const draft = collectDraft(isSubmit);
-    if(!draft.updates.length && !draft.adds.length && !draft.narrAdds.length && !draft.narrUpdates.length && !deletedLocations.length) {
-       setStatus("No hay cambios operativos para guardar.", "info"); return;
-    }
+    let hasChanges = draft.adds.length || draft.updates.length || draft.ubicAdds.length || draft.ubicUpdates.length || deletedLocations.length || draft.narrAdds.length || draft.narrUpdates.length;
     
-    await executeSave(draft);
-    
-    const inputAct = document.querySelector("#combo-actividad .combo-input");
-    const eventType = isSubmit ? "ENVIAR_REVISION" : "GUARDAR_BORRADOR";
-    const detailMsg = `Actividad: ${inputAct ? inputAct.value : 'Desconocida'}. Tareas afect: ${draft.adds.length + draft.updates.length}.`;
-    await writeAuditEvent(eventType, "APP_REPORTE", draft.actGid, "OK", detailMsg);
+    if (isSubmit) {
+        if (!existingNarrativa && draft.narrAdds.length === 0) {
+            setStatus("Debe guardar o diligenciar el reporte consolidado antes de enviar a revisión.", "error");
+            return;
+        }
 
-    let successMsg = isSubmit ? "Reporte enviado a revisión." : "Borrador guardado exitosamente.";
-    let msgType = "success";
-    
-    if (!isSubmit && validation.warnings > 0) {
-        successMsg = `Se guardó el borrador, pero revise las advertencias de los valores reportados (${validation.warnings} advertencias).`;
-        msgType = "warning";
+        // REGLA OBLIGATORIA: Forzar actualización de estado y metadatos operativos si no fueron capturados
+        if (existingNarrativa && !["Enviado", "Aprobado", "Publicado", "EnRevision"].includes(existingNarrativa.EstadoRegistro)) {
+            const inDraft = draft.narrUpdates.find(u => u.attributes.OBJECTID === existingNarrativa.OBJECTID);
+            if (!inDraft) {
+                draft.narrUpdates.push({
+                    attributes: {
+                        OBJECTID: existingNarrativa.OBJECTID,
+                        EstadoRegistro: "Enviado",
+                        PersonaUltimaEdicionID: currentUser.pid,
+                        FechaUltimaEdicionFuncional: Date.now(),
+                        MotivoAjuste: document.getElementById("txt-motivo-narrativa")?.value || "",
+                        Version: (existingNarrativa.Version || 1) + 1
+                    }
+                });
+                hasChanges = true;
+            }
+        }
+
+        if (hasChanges) {
+            await executeSave(draft);
+        }
+
+        // Resolucion integral de workflow centralizado
+        const actGid = getActividadId();
+        const vig = Number(elVigencia.value);
+        const per = getPeriodo();
+        const claveUnica = `${actGid}|${vig}|${per}`;
+
+        let expectedVersion = 1;
+        if (existingNarrativa) expectedVersion = existingNarrativa.Version || 1;
+        if (draft.narrUpdates.length > 0) expectedVersion = (existingNarrativa.Version || 1) + 1;
+
+        const resolvedNarrativa = await resolveNarrativaAfterSave({ 
+            actividadGlobalID: actGid, 
+            vigencia: vig, 
+            periodo: per, 
+            version: expectedVersion,
+            claveUnicaReporteActividad: claveUnica 
+        });
+        
+        if (!resolvedNarrativa) {
+             throw new Error("No se pudo confirmar el guardado del reporte consolidado.");
+        }
+
+        let currentPlanAct = planActCtx;
+        if (!currentPlanAct || !currentPlanAct.TipoFlujoWorkflow) {
+             currentPlanAct = await resolvePlanActividadWorkflow(actGid, vig);
+             if (!currentPlanAct) throw new Error("No se pudo resolver la planeación de la actividad para crear la solicitud de revisión.");
+        }
+
+        const wfResult = await createOrUpdateWorkflowSolicitudFromNarrativa({
+            narrativaAttrs: resolvedNarrativa,
+            planAct: currentPlanAct,
+            isSubmit: isSubmit
+        });
+
+        const inputAct = document.querySelector("#combo-actividad .combo-input");
+        const actName = inputAct ? inputAct.value : 'Desconocida';
+        await writeAuditEvent("ENVIAR_REVISION", "APP_REPORTE", "OK", `Actividad: ${actName}. Workflow creado/actualizado. Estado: ${wfResult.estado}`);
+
+        let successMsg = "";
+        if (wfResult.action === "created") {
+            successMsg = `Reporte enviado a revisión. Se creó la solicitud de workflow dinámico para el rol: ${wfResult.role}.`;
+        } else if (wfResult.action === "updated") {
+            successMsg = `Reporte reenviado a revisión. Se actualizó la solicitud de workflow existente para el rol: ${wfResult.role}.`;
+        } else if (wfResult.action === "default_fallback") {
+            successMsg = `Reporte enviado a revisión. La actividad no tenía tipo de flujo configurado. Se aplicó el flujo COMPLETO por defecto.`;
+        } else {
+            successMsg = "Reporte enviado a revisión.";
+        }
+
+        setStatus(successMsg, "success");
+        await loadExistingData(actGid); 
+        evaluateHistoricalMode();
+
+    } else {
+        if (!hasChanges) {
+           setStatus("No hay cambios operativos para guardar.", "info"); 
+           return;
+        }
+        await executeSave(draft);
+        const inputAct = document.querySelector("#combo-actividad .combo-input");
+        const actName = inputAct ? inputAct.value : 'Desconocida';
+        await writeAuditEvent("GUARDAR_BORRADOR", "APP_REPORTE", "OK", `Actividad: ${actName}. Tareas afect: ${draft.adds.length + draft.updates.length}.`);
+        
+        let successMsg = "Borrador guardado exitosamente.";
+        if (validation.warnings > 0) successMsg = `Se guardó el borrador, pero revise las advertencias de los valores reportados (${validation.warnings} advertencias).`;
+        setStatus(successMsg, validation.warnings > 0 ? "warning" : "success");
+        await loadExistingData(getActividadId()); 
+        evaluateHistoricalMode();
     }
 
-    setStatus(successMsg, msgType);
-    await loadExistingData(getActividadId()); 
-    evaluateHistoricalMode();
   } catch(e) { 
       console.error(e); 
       setStatus(e.message || "Fallo en la preparación de datos.", "error"); 
@@ -1924,7 +2250,7 @@ async function processSave(isSubmit) {
 function collectDraft(isSubmit) {
   const actGid = getActividadId(), vig = Number(elVigencia.value), per = getPeriodo();
   const epochNow = Date.now();
-  const res = { actGid, adds: [], updates: [], ubicAdds: [], ubicUpdates: [], wfAdds: [], wfUpdates: [], narrAdds: [], narrUpdates: [] };
+  const res = { actGid, adds: [], updates: [], ubicAdds: [], ubicUpdates: [], narrAdds: [], narrUpdates: [] };
   
   // AVANCES TAREAS
   document.querySelectorAll(".row").forEach(rowEl => {
@@ -1979,23 +2305,6 @@ function collectDraft(isSubmit) {
       if(pt.isExisting) { uAttrs.OBJECTID = pt.ptId; res.ubicUpdates.push({ attributes: uAttrs, geometry: geom }); }
       else { uAttrs[F_UBI.fkAvance] = avanceGidFinal; res.ubicAdds.push({ attributes: uAttrs, geometry: geom }); }
     });
-
-    // Workflow Avance
-    if(isSubmit) {
-      const existingWf = existingWFSolicitudes.get(avanceGidFinal);
-      const wfPayload = {
-        [F_WF.tipo]: "AvanceTarea", [F_WF.objGid]: avanceGidFinal, [F_WF.vig]: vig, [F_WF.per]: per, [F_WF.persId]: currentUser.pid, [F_WF.fec]: epochNow, [F_WF.est]: "Enviado",
-        ComentarioSolicitante: motivo ? `Corrección operativa: ${motivo}` : "Reporte operativo V4", Version: versionActual
-      };
-
-      if(existingWf) {
-        wfPayload.OBJECTID = existingWf.OBJECTID;
-        res.wfUpdates.push({ attributes: wfPayload });
-      } else {
-        wfPayload.GlobalID = generateGUID(); wfPayload.SolicitudID = generateGUID();
-        res.wfAdds.push({ attributes: wfPayload });
-      }
-    }
   });
 
   // REPORTE CONSOLIDADO DE ACTIVIDAD / NARRATIVA
@@ -2058,28 +2367,38 @@ function collectDraft(isSubmit) {
         narrGidFinal = generateGUID(); baseN.GlobalID = narrGidFinal; baseN[F_NAR.fkAct] = actGid; baseN.Vigencia = vig; baseN.Periodo = per; baseN[F_NAR.ver] = versionActualN; baseN.FechaRegistro = epochNow; baseN.Responsable = currentUser.nombre;
         res.narrAdds.push({ attributes: baseN });
       }
-      
-      if(isSubmit) {
-        const existingWfN = existingWFSolicitudes.get(narrGidFinal);
-        const wfPayloadN = { [F_WF.tipo]: "ReporteNarrativo", [F_WF.objGid]: narrGidFinal, [F_WF.objId]: `${actGid}|${vig}|${per}`, [F_WF.vig]: vig, [F_WF.per]: per, [F_WF.persId]: currentUser.pid, [F_WF.fec]: epochNow, [F_WF.est]: "Enviado", ComentarioSolicitante: motivoN ? `Corrección operativa: ${motivoN}` : "Reporte consolidado de actividad V4", Version: versionActualN };
-        
-        if(existingWfN) { wfPayloadN.OBJECTID = existingWfN.OBJECTID; res.wfUpdates.push({ attributes: wfPayloadN }); } 
-        else { wfPayloadN.GlobalID = generateGUID(); wfPayloadN.SolicitudID = generateGUID(); res.wfAdds.push({ attributes: wfPayloadN }); }
-      }
     }
   }
   return res;
 }
 
+// Validación de responses estricta requerida para UAT
 async function executeSave(draft) {
+  const validateResults = (results, operation) => {
+    if (results && Array.isArray(results)) {
+      for (const r of results) {
+        if (r.success === false) {
+          throw new Error(`Fallo en ${operation}: ${r.error?.description || JSON.stringify(r.error)}`);
+        }
+      }
+    }
+  };
+
+  const applyAndCheck = async (url, payload) => {
+    const data = await postForm(`${url}/applyEdits`, payload);
+    validateResults(data.addResults, "adds");
+    validateResults(data.updateResults, "updates");
+    validateResults(data.deleteResults, "deletes");
+    return data;
+  };
+
   try {
-    if(draft.adds.length || draft.updates.length) await postForm(`${URL_AVANCE_TAREA}/applyEdits`, { f: "json", adds: draft.adds, updates: draft.updates });
-    if(draft.ubicAdds.length || draft.ubicUpdates.length || deletedLocations.length) await postForm(`${URL_TAREA_UBICACION}/applyEdits`, { f:"json", adds: draft.ubicAdds, updates: draft.ubicUpdates, deletes: deletedLocations });
-    if(draft.narrAdds.length || draft.narrUpdates.length) await postForm(`${URL_NARRATIVA}/applyEdits`, { f:"json", adds: draft.narrAdds, updates: draft.narrUpdates });
-    if(draft.wfAdds.length || draft.wfUpdates.length) await postForm(`${URL_WF_SOLICITUD}/applyEdits`, { f:"json", adds: draft.wfAdds, updates: draft.wfUpdates });
+    if(draft.adds.length || draft.updates.length) await applyAndCheck(URL_AVANCE_TAREA, { f: "json", adds: draft.adds, updates: draft.updates });
+    if(draft.ubicAdds.length || draft.ubicUpdates.length || deletedLocations.length) await applyAndCheck(URL_TAREA_UBICACION, { f:"json", adds: draft.ubicAdds, updates: draft.ubicUpdates, deletes: deletedLocations });
+    if(draft.narrAdds.length || draft.narrUpdates.length) await applyAndCheck(URL_NARRATIVA, { f:"json", adds: draft.narrAdds, updates: draft.narrUpdates });
   } catch(e) {
     auditError("APPLY_EDITS_API", e, { draftStats: { a: draft.adds.length, u: draft.updates.length } });
-    const customErr = new Error("Falla en la sincronización de datos con el servidor principal.");
+    const customErr = new Error(`Falla en la sincronización de datos con el servidor principal: ${e.message}`);
     customErr._audited = true; 
     throw customErr;
   }
