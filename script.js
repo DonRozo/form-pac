@@ -195,6 +195,7 @@ elPeriodo.value = OPERATIVE_PERIODO;
 
 // Estado Global
 let currentUser = null;
+let pendingLoginPersona = null;
 let asignacionesActivas = [];
 let cacheSubactividades = [], cacheTareas = [];
 let cacheActividadesPesos = new Map();
@@ -607,6 +608,14 @@ function uniqueGuidList(values) {
 
 function normalizeText(v) {
     return String(v || "").trim().toUpperCase();
+}
+
+function escapeSql(value) {
+    return String(value ?? "").replaceAll("'", "''");
+}
+
+function isActiveSi(value) {
+    return normalizeSiNo(value, "NO") === "SI";
 }
 
 function normalizeRole(role) {
@@ -1080,43 +1089,130 @@ async function createOrUpdateWorkflowSolicitudFromNarrativa({ narrativaAttrs, pl
 }
 
 // --- Autenticación OTP y Roles V4 ---
+async function findActiveLoginPersona(cedula, correo) {
+    const qPers = await fetchJson(`${URL_PERSONA}/query`, {
+        f: "json",
+        where: `Cedula='${escapeSql(cedula)}' AND Correo='${escapeSql(correo)}'`,
+        outFields: "OBJECTID,GlobalID,PersonaID,Nombre,Cedula,Correo,Activo,Dependencia",
+        returnGeometry: false
+    });
+    return (qPers.features || [])
+        .map(f => f.attributes)
+        .filter(p => isActiveSi(p.Activo));
+}
+
+async function loadActiveLoginRoles(persona) {
+    const roleRefs = [
+        buildGuidWhere("PersonaID", persona.GlobalID),
+        buildGuidWhere("PersonaID", persona.PersonaID)
+    ].filter(w => w !== "1=0");
+
+    if (!roleRefs.length) return [];
+
+    const resR = await fetchJson(`${URL_ROL}/query`, {
+        f: "json",
+        where: `(${roleRefs.join(" OR ")}) AND Activo='SI'`,
+        outFields: "RolID,Activo",
+        returnGeometry: false
+    });
+
+    return [...new Set((resR.features || [])
+        .map(f => f.attributes)
+        .filter(r => isActiveSi(r.Activo))
+        .map(r => normalizeRole(r.RolID))
+        .filter(Boolean))];
+}
+
+function isValidOtpRecord(otp) {
+    if (!otp || normalizeSiNo(otp.Usado, "NO") !== "NO") return false;
+    const fechaExpira = Number(otp.FechaExpira || 0);
+    return !fechaExpira || fechaExpira >= Date.now();
+}
+
 document.getElementById("btn-solicitar-codigo").addEventListener("click", async () => {
-    const cedula = document.getElementById("login-cedula").value.trim(), correo = document.getElementById("login-correo").value.trim().toLowerCase();
+    const cedula = document.getElementById("login-cedula").value.trim();
+    const correo = document.getElementById("login-correo").value.trim().toLowerCase();
     document.getElementById("login-msg-1").textContent = "";
+    pendingLoginPersona = null;
+
     try {
-        const res = await fetch(URL_WEBHOOK_POWERAUTOMATE, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cedula, correo }) });
-        if (res.status === 200 || res.status === 202) { document.getElementById("login-step-1").classList.remove("active"); document.getElementById("login-step-2").classList.add("active"); }
-        else throw new Error("Credenciales inválidas o error de conexión.");
+        if (!cedula || !correo) throw new Error("Ingrese cédula y correo.");
+
+        const personas = await findActiveLoginPersona(cedula, correo);
+        if (personas.length !== 1) {
+            throw new Error("No se encontró un usuario activo con la cédula y correo indicados.");
+        }
+
+        const persona = personas[0];
+        pendingLoginPersona = {
+            pid: persona.PersonaID || cedula,
+            gid: persona.GlobalID,
+            cedula: persona.Cedula || cedula,
+            correo: correo,
+            nombre: persona.Nombre || cedula,
+            dependencia: persona.Dependencia || ""
+        };
+
+        const res = await fetch(URL_WEBHOOK_POWERAUTOMATE, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cedula, correo })
+        });
+
+        if (res.status === 200 || res.status === 202) {
+            document.getElementById("login-step-1").classList.remove("active");
+            document.getElementById("login-step-2").classList.add("active");
+        } else {
+            pendingLoginPersona = null;
+            throw new Error("Credenciales inválidas o error de conexión.");
+        }
     } catch (e) {
+        pendingLoginPersona = null;
         document.getElementById("login-msg-1").textContent = e.message;
         auditError("OTP_SOLICITAR", e, { correo });
     }
 });
-
 document.getElementById("btn-validar-codigo").addEventListener("click", async () => {
-    const correo = document.getElementById("login-correo").value.trim().toLowerCase(), codigo = document.getElementById("login-codigo").value.trim();
-    document.getElementById("login-msg-2").textContent = "Validando acceso...";
+    const codigo = document.getElementById("login-codigo").value.trim();
+    const loginMsg = document.getElementById("login-msg-2");
+    loginMsg.textContent = "Validando acceso...";
+
     try {
-        const qOtp = await fetchJson(`${URL_OTP}/query`, { f: "json", where: `Correo='${correo}' AND CodigoHash='${codigo}' AND Usado='NO'`, outFields: "*" });
-        if (!qOtp.features || !qOtp.features.length) throw new Error("Código incorrecto o expirado.");
-        const otp = qOtp.features[0].attributes;
+        if (!pendingLoginPersona) {
+            throw new Error("Debe solicitar un nuevo código antes de validar el ingreso.");
+        }
+        if (!codigo) throw new Error("Ingrese código.");
 
-        const qPers = await fetchJson(`${URL_PERSONA}/query`, { f: "json", where: `GlobalID='${otp.PersonaGlobalID}' AND Activo='SI'`, outFields: "Nombre,PersonaID" });
-        if (!qPers.features || !qPers.features.length) throw new Error("Usuario inactivo o no encontrado en el sistema.");
-        const pid = qPers.features[0].attributes.PersonaID;
+        const persona = pendingLoginPersona;
+        const qPersonaActiva = await fetchJson(`${URL_PERSONA}/query`, {
+            f: "json",
+            where: `${buildGuidWhere("GlobalID", persona.gid)} AND Activo='SI'`,
+            outFields: "GlobalID,PersonaID,Nombre,Cedula,Correo,Activo,Dependencia",
+            returnGeometry: false
+        });
+        const personaActiva = (qPersonaActiva.features || []).map(f => f.attributes).find(p => isActiveSi(p.Activo));
+        if (!personaActiva) throw new Error("Usuario inactivo o no encontrado en el sistema.");
 
-        const resR = await fetchJson(`${URL_ROL}/query`, { f: "json", where: `(PersonaID='${otp.PersonaGlobalID}' OR PersonaID='${pid}') AND Activo='SI'`, outFields: "RolID", returnGeometry: false });
-        const roles = [...new Set((resR.features || []).map(f => normalizeRole(f.attributes.RolID)).filter(Boolean))];
+        const qOtp = await fetchJson(`${URL_OTP}/query`, {
+            f: "json",
+            where: `${buildGuidWhere("PersonaGlobalID", persona.gid)} AND Correo='${escapeSql(persona.correo)}' AND CodigoHash='${escapeSql(codigo)}' AND Usado='NO'`,
+            outFields: "OBJECTID,PersonaGlobalID,Correo,CodigoHash,Usado,FechaExpira",
+            returnGeometry: false
+        });
+        const otp = (qOtp.features || []).map(f => f.attributes).find(isValidOtpRecord);
+        if (!otp) throw new Error("Código inválido, vencido o ya utilizado.");
 
+        const roles = await loadActiveLoginRoles(personaActiva);
         if (!hasRoleInList(roles, "EDITOR") && !hasRoleInList(roles, "SUPERADMIN")) {
-            throw new Error("Acceso denegado: Su rol no le permite utilizar esta aplicación de captura operativa.");
+            throw new Error("El usuario no tiene rol autorizado para usar la App Reporte.");
         }
 
         currentUser = {
-            gid: otp.PersonaGlobalID,
-            pid: pid,
-            nombre: qPers.features[0].attributes.Nombre,
-            correo,
+            gid: personaActiva.GlobalID,
+            pid: personaActiva.PersonaID || persona.pid,
+            nombre: personaActiva.Nombre || persona.nombre,
+            correo: persona.correo,
+            dependencia: personaActiva.Dependencia || persona.dependencia || "",
             roles,
             alcances: [],
             isSuperAdmin: hasRoleInList(roles, "SUPERADMIN"),
@@ -1124,6 +1220,7 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
         };
 
         await postForm(`${URL_OTP}/applyEdits`, { f: "json", updates: [{ attributes: { OBJECTID: otp.OBJECTID, Usado: "SI" } }] });
+        pendingLoginPersona = null;
         await writeAuditEvent("OTP_VALIDATE", "APP_REPORTE", "OK", `Ingreso exitoso a módulo operativo V4. GID: ${currentUser.gid}`);
 
         const qAlcance = await fetchJson(`${URL_ALCANCE}/query`, { f: "json", where: `(PersonaID='${currentUser.gid}' OR PersonaID='${currentUser.pid}') AND Activo='SI'`, outFields: "ObjetoGlobalID" });
@@ -1146,11 +1243,10 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
         await loadAsignaciones();
         await loadActividades();
     } catch (e) {
-        document.getElementById("login-msg-2").textContent = e.message;
-        auditError("OTP_VALIDAR", e, { correo });
+        loginMsg.textContent = e.message;
+        auditError("OTP_VALIDAR", e, { correo: pendingLoginPersona?.correo || "" });
     }
 });
-
 // --- Filtros SEG_Asignacion Híbrido + SEG_Alcance V4 ---
 async function loadAsignaciones() {
     if (!currentUser) return;
