@@ -196,6 +196,8 @@ elPeriodo.value = OPERATIVE_PERIODO;
 // Estado Global
 let currentUser = null;
 let pendingLoginPersona = null;
+let isRequestingOtp = false;
+let isVerifyingOtp = false;
 let asignacionesActivas = [];
 let cacheSubactividades = [], cacheTareas = [];
 let cacheActividadesPesos = new Map();
@@ -778,6 +780,29 @@ async function writeAuditEvent(evento, modulo, resultado, detalle) {
     } catch (e) { console.error("[AUDIT_SYSTEM] Error al guardar evento:", e); }
 }
 
+async function writeLoginAuditEvent(evento, resultado, detalle, persona = null) {
+    try {
+        const personaId = persona?.pid || persona?.PersonaID || persona?.gid || persona?.GlobalID || currentUser?.pid || currentUser?.gid || null;
+        const attrs = {
+            EventoID: generateGUID(),
+            Modulo: "APP_REPORTE",
+            Evento: String(evento || "").substring(0, 100),
+            Resultado: String(resultado || "").substring(0, 50),
+            FechaEvento: Date.now(),
+            PersonaID: personaId,
+            Detalle: String(detalle || "").substring(0, 500),
+            IP: "N/A",
+            UserAgent: navigator.userAgent.substring(0, 255)
+        };
+        const form = new URLSearchParams();
+        form.append("f", "json");
+        form.append("adds", JSON.stringify([{ attributes: attrs }]));
+        await fetch(`${URL_AUD_EVENTO}/applyEdits`, { method: "POST", body: form });
+    } catch (e) {
+        console.error("[AUDIT_LOGIN] Error al guardar evento:", e);
+    }
+}
+
 // --- Auditoría histórica funcional App Reporte ---
 // Regla: AUD_HistorialCambio.TipoObjeto debe ser el nombre real de la tabla.
 // Regla: AUD_HistorialCambio.ObjetoID debe guardar un identificador funcional disponible,
@@ -1129,7 +1154,18 @@ function isValidOtpRecord(otp) {
     return !fechaExpira || fechaExpira >= Date.now();
 }
 
-document.getElementById("btn-solicitar-codigo").addEventListener("click", async () => {
+function createLoginStageError(stage, message, cause = null) {
+    const err = new Error(message);
+    err._loginStage = stage;
+    if (cause) err.cause = cause;
+    return err;
+}
+
+document.getElementById("btn-solicitar-codigo").addEventListener("click", async (event) => {
+    if (isRequestingOtp) return;
+    isRequestingOtp = true;
+    const btn = event.currentTarget;
+    btn.disabled = true;
     const cedula = document.getElementById("login-cedula").value.trim();
     const correo = document.getElementById("login-correo").value.trim().toLowerCase();
     document.getElementById("login-msg-1").textContent = "";
@@ -1137,6 +1173,7 @@ document.getElementById("btn-solicitar-codigo").addEventListener("click", async 
 
     try {
         if (!cedula || !correo) throw new Error("Ingrese cédula y correo.");
+        await writeLoginAuditEvent("OTP_SOLICITAR_INICIO", "INFO", "Inicio de solicitud de codigo OTP para App Reporte.");
 
         const personas = await findActiveLoginPersona(cedula, correo);
         if (personas.length !== 1) {
@@ -1145,7 +1182,7 @@ document.getElementById("btn-solicitar-codigo").addEventListener("click", async 
 
         const persona = personas[0];
         pendingLoginPersona = {
-            pid: persona.PersonaID || cedula,
+            pid: persona.PersonaID || persona.GlobalID,
             gid: persona.GlobalID,
             cedula: persona.Cedula || cedula,
             correo: correo,
@@ -1160,6 +1197,7 @@ document.getElementById("btn-solicitar-codigo").addEventListener("click", async 
         });
 
         if (res.status === 200 || res.status === 202) {
+            await writeLoginAuditEvent("OTP_SOLICITAR_OK", "OK", "Codigo OTP solicitado correctamente para App Reporte.", pendingLoginPersona);
             document.getElementById("login-step-1").classList.remove("active");
             document.getElementById("login-step-2").classList.add("active");
         } else {
@@ -1169,13 +1207,24 @@ document.getElementById("btn-solicitar-codigo").addEventListener("click", async 
     } catch (e) {
         pendingLoginPersona = null;
         document.getElementById("login-msg-1").textContent = e.message;
+        await writeLoginAuditEvent("OTP_SOLICITAR_ERROR", "ERROR", e.message);
         auditError("OTP_SOLICITAR", e, { correo });
+    } finally {
+        isRequestingOtp = false;
+        btn.disabled = false;
     }
 });
-document.getElementById("btn-validar-codigo").addEventListener("click", async () => {
+
+document.getElementById("btn-validar-codigo").addEventListener("click", async (event) => {
+    if (isVerifyingOtp) return;
+    isVerifyingOtp = true;
+    const btn = event.currentTarget;
+    btn.disabled = true;
     const codigo = document.getElementById("login-codigo").value.trim();
     const loginMsg = document.getElementById("login-msg-2");
     loginMsg.textContent = "Validando acceso...";
+    let otpConsumed = false;
+    let loginPersonaForAudit = pendingLoginPersona;
 
     try {
         if (!pendingLoginPersona) {
@@ -1184,6 +1233,8 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
         if (!codigo) throw new Error("Ingrese código.");
 
         const persona = pendingLoginPersona;
+        loginPersonaForAudit = persona;
+        await writeLoginAuditEvent("OTP_VALIDAR_INICIO", "INFO", "Inicio de validacion OTP para App Reporte.", persona);
         const qPersonaActiva = await fetchJson(`${URL_PERSONA}/query`, {
             f: "json",
             where: `${buildGuidWhere("GlobalID", persona.gid)} AND Activo='SI'`,
@@ -1201,6 +1252,7 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
         });
         const otp = (qOtp.features || []).map(f => f.attributes).find(isValidOtpRecord);
         if (!otp) throw new Error("Código inválido, vencido o ya utilizado.");
+        await writeLoginAuditEvent("OTP_VALIDADO_NO_CONSUMIDO", "OK", "OTP validado; pendiente carga minima de App Reporte.", personaActiva);
 
         const roles = await loadActiveLoginRoles(personaActiva);
         if (!hasRoleInList(roles, "EDITOR") && !hasRoleInList(roles, "SUPERADMIN")) {
@@ -1209,7 +1261,7 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
 
         currentUser = {
             gid: personaActiva.GlobalID,
-            pid: personaActiva.PersonaID || persona.pid,
+            pid: personaActiva.PersonaID || personaActiva.GlobalID || persona.gid,
             nombre: personaActiva.Nombre || persona.nombre,
             correo: persona.correo,
             dependencia: personaActiva.Dependencia || persona.dependencia || "",
@@ -1219,9 +1271,7 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
             isEditorOnly: isEditorOnlyRoleSet(roles)
         };
 
-        await postForm(`${URL_OTP}/applyEdits`, { f: "json", updates: [{ attributes: { OBJECTID: otp.OBJECTID, Usado: "SI" } }] });
-        pendingLoginPersona = null;
-        await writeAuditEvent("OTP_VALIDATE", "APP_REPORTE", "OK", `Ingreso exitoso a módulo operativo V4. GID: ${currentUser.gid}`);
+        await writeLoginAuditEvent("LOGIN_CARGA_MINIMA_INICIO", "INFO", "Inicia carga minima posterior a OTP validado.", currentUser);
 
         const qAlcance = await fetchJson(`${URL_ALCANCE}/query`, { f: "json", where: `(PersonaID='${currentUser.gid}' OR PersonaID='${currentUser.pid}') AND Activo='SI'`, outFields: "ObjetoGlobalID" });
         currentUser.alcances = (qAlcance.features || []).map(f => f.attributes.ObjetoGlobalID).filter(Boolean);
@@ -1241,15 +1291,46 @@ document.getElementById("btn-validar-codigo").addEventListener("click", async ()
         await initMap();
         initCombosFijos();
         await loadAsignaciones();
+        if (loadAsignaciones.lastError) {
+            throw createLoginStageError("LOAD_ASIGNACIONES", "El código fue validado, pero no fue posible cargar sus asignaciones operativas. Solicite soporte y vuelva a intentar.", loadAsignaciones.lastError);
+        }
         await loadActividades();
+        if (loadActividades.lastError) {
+            throw createLoginStageError("LOAD_ACTIVIDADES", "El código fue validado, pero no fue posible cargar el catálogo de actividades. Solicite soporte y vuelva a intentar.", loadActividades.lastError);
+        }
+
+        await postForm(`${URL_OTP}/applyEdits`, { f: "json", updates: [{ attributes: { OBJECTID: otp.OBJECTID, Usado: "SI" } }] });
+        otpConsumed = true;
+        pendingLoginPersona = null;
+        await writeAuditEvent("OTP_VALIDATE", "APP_REPORTE", "OK", `Ingreso exitoso a módulo operativo V4. GID: ${currentUser.gid}`);
+        await writeLoginAuditEvent("LOGIN_CARGA_MINIMA_OK", "OK", "Carga minima completada; OTP marcado como usado.", currentUser);
     } catch (e) {
-        loginMsg.textContent = e.message;
+        const hadPartialLogin = !otpConsumed && !!currentUser;
+        if (hadPartialLogin) {
+            document.getElementById("login-overlay").style.display = "flex";
+            document.getElementById("pill-user").style.display = "none";
+            document.getElementById("pill-superadmin").style.display = "none";
+            currentUser = null;
+        }
+
+        if (!otpConsumed && e._loginStage) {
+            loginMsg.textContent = e.message;
+            await writeLoginAuditEvent(e._loginStage, "ERROR", e.message, loginPersonaForAudit);
+        } else {
+            loginMsg.textContent = e.message;
+            const auditStage = hadPartialLogin ? "LOGIN_CARGA_MINIMA_ERROR" : "OTP_VALIDAR_ERROR";
+            await writeLoginAuditEvent(auditStage, "ERROR", e.message, loginPersonaForAudit);
+        }
         auditError("OTP_VALIDAR", e, { correo: pendingLoginPersona?.correo || "" });
+    } finally {
+        isVerifyingOtp = false;
+        btn.disabled = false;
     }
 });
 // --- Filtros SEG_Asignacion Híbrido + SEG_Alcance V4 ---
 async function loadAsignaciones() {
     if (!currentUser) return;
+    loadAsignaciones.lastError = null;
     if (currentUser.isSuperAdmin) { asignacionesActivas = []; return; }
 
     try {
@@ -1370,6 +1451,7 @@ async function loadAsignaciones() {
             setStatus(`No tiene tareas asignadas activas para la vigencia ${vig}.`, "info");
         }
     } catch (e) {
+        loadAsignaciones.lastError = e;
         auditError("LOAD_ASIGNACIONES", e, { vigencia: elVigencia.value });
         setStatus("Error al consultar asignaciones operativas en la plataforma.", "error");
     }
@@ -1377,6 +1459,7 @@ async function loadAsignaciones() {
 
 async function loadActividades() {
     if (!currentUser) return;
+    loadActividades.lastError = null;
     try {
         const vig = elVigencia.value;
         let data = [];
@@ -1411,6 +1494,7 @@ async function loadActividades() {
 
         if (!data.length) elIndicadores.innerHTML = "";
     } catch (e) {
+        loadActividades.lastError = e;
         auditError("LOAD_ACTIVIDADES", e, { vigencia: elVigencia.value });
         setStatus("Ocurrió un error al cargar el catálogo de actividades.", "error");
     }
