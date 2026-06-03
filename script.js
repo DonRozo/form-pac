@@ -442,6 +442,230 @@ function calculateIndicadorValues(currentValue = getCurrentIndicadorValue()) {
     return { current: currentValue, accumulated, pct, meta, tipo };
 }
 
+function getPlanTipoCalculoActividad() {
+    const tipo = normalizeText(planActCtx?.TipoCalculoAvanceActividad || "DIRECTO_ACTIVIDAD");
+    return tipo.includes("PONDERADO") ? "PONDERADO_TAREAS" : "DIRECTO_ACTIVIDAD";
+}
+
+function getNumericInputValue(value) {
+    if (value === null || value === undefined || String(value).trim() === "") return null;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+}
+
+function getReportedTaskValue(tareaGid) {
+    const rowEl = document.querySelector(`.row[data-tarea-gid="${tareaGid}"]`);
+    if (rowEl) return getNumericInputValue(rowEl.querySelector(".row-valor")?.value);
+    const existing = existingAvances.get(tareaGid);
+    return getNumericInputValue(existing?.ValorReportado);
+}
+
+function isApplicablePlanRecord(record) {
+    return !record || normalizeSiNo(record.Aplica, "SI") !== "NO";
+}
+
+function isPercentageTask(tareaGid) {
+    const tipoValor = getTipoValorAvanceByTarea(tareaGid);
+    return tipoValor.includes("PORCENTAJE") || tipoValor.includes("PORCENTUAL") || tipoValor === "%";
+}
+
+function getTaskDisplayLabel(tarea) {
+    return `Tarea ${tarea?.CodigoTarea || tarea?.GlobalID || "sin identificar"}`;
+}
+
+function getSubActivityDisplayLabel(subActividad) {
+    return `Subactividad ${subActividad?.CodigoSubActividad || subActividad?.GlobalID || "sin identificar"}`;
+}
+
+function calculateTaskProgressPercent(tarea, value = getReportedTaskValue(tarea?.GlobalID)) {
+    const tareaGid = tarea?.GlobalID;
+    const planTar = planTarCtx.get(normalizeGuidKey(tareaGid));
+    const warnings = [];
+    const errors = [];
+
+    if (!tareaGid) return { pct: null, value: null, applies: false, warnings: ["Tarea sin GlobalID."] };
+    if (!isApplicablePlanRecord(planTar)) return { pct: null, value, applies: false, warnings, errors };
+    if (value === null) return { pct: null, value, applies: true, missingValue: true, warnings: ["Sin valor reportado."] };
+
+    if (isPercentageTask(tareaGid)) {
+        if (value < 0 || value > 100) errors.push("El porcentaje de tarea debe estar entre 0 y 100.");
+        return { pct: value, value, applies: true, warnings, errors };
+    }
+
+    const meta = getMetaProgramadaByTarea(tareaGid);
+    if (meta === null || meta <= 0) {
+        errors.push("MetaProgramada de tarea no disponible o no valida.");
+        return { pct: null, value, applies: true, warnings, errors, missingPlanning: true };
+    }
+
+    return { pct: (value / meta) * 100, value, meta, applies: true, warnings, errors };
+}
+
+function calculateWeightedPercent(items, weightField, label) {
+    const warnings = [];
+    const errors = [];
+    let weighted = 0;
+    let weightSum = 0;
+    let applicableCount = 0;
+    let completedCount = 0;
+
+    (items || []).forEach(item => {
+        if (!item || item.applies === false) return;
+        applicableCount++;
+        (item.warnings || []).forEach(w => warnings.push(w));
+        (item.errors || []).forEach(e => errors.push(e));
+        if (item.pct === null || item.pct === undefined || !Number.isFinite(Number(item.pct))) return;
+
+        const weight = Number(item[weightField]);
+        if (!Number.isFinite(weight) || weight <= 0) {
+            errors.push(`Peso no disponible o no valido para ${label}.`);
+            return;
+        }
+
+        weighted += Number(item.pct) * weight;
+        weightSum += weight;
+        completedCount++;
+    });
+
+    const pct = weightSum > 0 ? weighted / weightSum : null;
+    if (applicableCount > 0 && completedCount < applicableCount) {
+        warnings.push(`${completedCount}/${applicableCount} ${label}(s) con avance calculable.`);
+    }
+
+    return { pct, weightSum, applicableCount, completedCount, warnings, errors };
+}
+
+function calculateSubActivityProgress(subActividad) {
+    const planSub = planSubCtx.get(normalizeGuidKey(subActividad?.GlobalID));
+    if (!subActividad?.GlobalID || !isApplicablePlanRecord(planSub)) {
+        return { subActividad, pct: null, applies: false, peso: 0, warnings: [], errors: [], blockingErrors: [], tasks: [] };
+    }
+
+    const tasks = cacheTareas
+        .filter(t => normalizeGuidKey(t.SubActividadGlobalID) === normalizeGuidKey(subActividad.GlobalID))
+        .map(t => {
+            const planTar = planTarCtx.get(normalizeGuidKey(t.GlobalID));
+            const taskCalc = calculateTaskProgressPercent(t);
+            return {
+                ...taskCalc,
+                tarea: t,
+                peso: Number(planTar?.PesoTarea)
+            };
+        });
+
+    const weighted = calculateWeightedPercent(tasks, "peso", "tarea");
+    const pesoSub = Number(planSub?.PesoSubActividad);
+    const errors = [...weighted.errors];
+    const blockingErrors = [];
+    const subLabel = getSubActivityDisplayLabel(subActividad);
+    if (!Number.isFinite(pesoSub) || pesoSub <= 0) {
+        const msg = `${subLabel} sin PesoSubActividad valido.`;
+        errors.push(msg);
+        blockingErrors.push(msg);
+    }
+
+    tasks.forEach(taskCalc => {
+        if (!taskCalc || taskCalc.applies === false) return;
+        const taskLabel = getTaskDisplayLabel(taskCalc.tarea);
+        if (taskCalc.value === null) blockingErrors.push(`${taskLabel} sin ValorReportado.`);
+        if (!Number.isFinite(taskCalc.peso) || taskCalc.peso <= 0) blockingErrors.push(`${taskLabel} sin PesoTarea valido.`);
+        if (!isPercentageTask(taskCalc.tarea?.GlobalID) && (taskCalc.meta === null || taskCalc.meta === undefined || !Number.isFinite(Number(taskCalc.meta)) || Number(taskCalc.meta) <= 0)) {
+            blockingErrors.push(`${taskLabel} numerica sin MetaProgramada valida.`);
+        }
+        (taskCalc.errors || []).forEach(error => blockingErrors.push(`${taskLabel}: ${error}`));
+    });
+
+    if (weighted.completedCount === 0) {
+        blockingErrors.push(`${subLabel} no tiene ninguna tarea calculable.`);
+    }
+
+    return {
+        subActividad,
+        pct: weighted.pct,
+        peso: pesoSub,
+        applies: true,
+        tasks,
+        warnings: weighted.warnings,
+        errors,
+        blockingErrors,
+        applicableCount: weighted.applicableCount,
+        completedCount: weighted.completedCount
+    };
+}
+
+function calculateActivityOperationalProgress() {
+    const subActivities = cacheSubactividades.map(sa => calculateSubActivityProgress(sa));
+    const weighted = calculateWeightedPercent(subActivities, "peso", "subactividad");
+    const blockingErrors = subActivities.flatMap(sa => sa.blockingErrors || []);
+    return { ...weighted, subActivities, blockingErrors: [...new Set(blockingErrors)] };
+}
+
+function calculateIndicatorProgress(currentValue = getCurrentIndicadorValue()) {
+    return calculateIndicadorValues(currentValue);
+}
+
+function buildActivityProgressSummary() {
+    const operational = calculateActivityOperationalProgress();
+    const indicator = calculateIndicatorProgress();
+    const source = getPlanTipoCalculoActividad();
+    const official = source === "PONDERADO_TAREAS" ? operational.pct : indicator.pct;
+    const warnings = [...(operational.warnings || []), ...(operational.errors || [])];
+    const errors = [];
+
+    if (source === "DIRECTO_ACTIVIDAD" && isIndicadorActivoEnPlan()) {
+        if (indicator.current === null) errors.push("ValorIndicadorTrimestre es obligatorio para calcular el avance oficial directo.");
+        if (indicator.tipo === "NUMERICO" && (!indicator.meta || indicator.meta <= 0)) errors.push("MetaAnualIndicador no disponible o no valida.");
+    }
+
+    if (source === "PONDERADO_TAREAS") {
+        (operational.blockingErrors || []).forEach(e => errors.push(e));
+        if (operational.pct === null) errors.push("No fue posible calcular el avance operativo ponderado por tareas.");
+        if (operational.completedCount < operational.applicableCount) errors.push("Hay tareas aplicables sin avance calculable.");
+    }
+
+    return {
+        source,
+        operational,
+        indicator,
+        official,
+        readyForSubmit: errors.length === 0,
+        progressLabel: errors.length === 0 ? "Avance listo para envio" : "Avance parcial",
+        warnings: [...new Set(warnings)],
+        errors: [...new Set(errors)]
+    };
+}
+
+function renderActivityProgressSummaryInContext() {
+    if (!actContextPanel || !planActCtx) return;
+    let box = document.getElementById("activity-progress-preview");
+    if (!box) {
+        box = document.createElement("div");
+        box.id = "activity-progress-preview";
+        box.style.marginTop = "10px";
+        actContextPanel.appendChild(box);
+    }
+
+    const summary = buildActivityProgressSummary();
+    const op = summary.operational;
+    const ind = summary.indicator;
+    const warnHtml = summary.errors.length || summary.warnings.length
+        ? `<div class="msg-inline ${summary.errors.length ? 'msg--warning' : 'msg--info'}" style="margin-top:8px;">${escapeHtml([...summary.errors, ...summary.warnings].slice(0, 3).join(" "))}</div>`
+        : "";
+
+    box.innerHTML = `
+        <div style="font-weight:bold; font-size:12px; color:var(--muted); text-transform:uppercase; margin-bottom:6px;">Vista previa de avance calculado</div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+            <span class="ctx-badge ${summary.readyForSubmit ? '' : 'ctx-badge--tech'}">${summary.progressLabel}</span>
+            <span class="ctx-badge">Subactividades calculables: ${op.completedCount}/${op.applicableCount}</span>
+            <span class="ctx-badge">Avance operativo tareas: ${op.pct === null ? "N/D" : formatNumberForUi(op.pct) + "%"}</span>
+            <span class="ctx-badge">Avance indicador: ${ind.pct === null ? "N/D" : formatNumberForUi(ind.pct) + "%"}</span>
+            <span class="ctx-badge" style="background:#dcfce7; color:#166534;">Avance fisico oficial: ${summary.official === null ? "N/D" : formatNumberForUi(summary.official) + "%"}</span>
+            <span class="ctx-badge ctx-badge--tech">Fuente: ${summary.source}</span>
+        </div>
+        ${warnHtml}
+    `;
+}
+
 function updateIndicatorCalculatedUI() {
     const calc = calculateIndicadorValues();
     const priorEl = byId("calc-valor-previo");
@@ -450,6 +674,7 @@ function updateIndicatorCalculatedUI() {
     if (priorEl) priorEl.value = formatNumberForUi(indicatorPriorAccumulated || 0);
     if (acumEl) acumEl.value = calc.accumulated === null ? "" : formatNumberForUi(calc.accumulated);
     if (pctEl) pctEl.value = calc.pct === null ? "" : `${formatNumberForUi(calc.pct)}%`;
+    renderActivityProgressSummaryInContext();
 }
 
 function setConsolidatedFieldsDisabled(disabled) {
@@ -561,6 +786,12 @@ function populateReporteConsolidadoFromExisting(nar) {
 function bindReporteConsolidadoEvents() {
     const valEl = byId("txt-valor-indicador");
     if (valEl) valEl.addEventListener("input", updateIndicatorCalculatedUI);
+    const indicadoresEl = byId("indicadores");
+    if (indicadoresEl) {
+        indicadoresEl.addEventListener("input", (event) => {
+            if (event.target?.classList?.contains("row-valor")) renderActivityProgressSummaryInContext();
+        });
+    }
 }
 
 bindReporteConsolidadoEvents();
@@ -2129,6 +2360,7 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
 
         elIndicadores.innerHTML = cacheSubactividades.map(sa => subActividadCardHtml(sa)).join("");
         if (elSubactNav) elSubactNav.style.display = cacheSubactividades.length ? "flex" : "none";
+        renderActivityProgressSummaryInContext();
 
         populateTopSubactSelector();
 
@@ -2138,6 +2370,7 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
 
         try {
             const res = await loadExistingData(actividadGlobalId);
+            renderActivityProgressSummaryInContext();
             const histCtx = evaluateHistoricalSelection(elVigencia.value, getPeriodo());
 
             if (res && res.status === "empty") {
@@ -2740,6 +2973,7 @@ function validateNarrative(isSubmit) {
     const obsIndicador = byId("txt-observacion-indicador")?.value || "";
     const calc = calculateIndicadorValues(valIndicador);
     const indicadorActivo = isIndicadorActivoEnPlan();
+    const indicadorObligatorio = indicadorActivo && getPlanTipoCalculoActividad() === "DIRECTO_ACTIVIDAD";
 
     if (!document.getElementById("txt-reporte-narrativo")?.disabled) {
         if (isSubmit) {
@@ -2747,7 +2981,7 @@ function validateNarrative(isSubmit) {
                 errors.push("Los campos Reporte Narrativo, Descripción de logros y Principales logros son obligatorios al enviar.");
             }
 
-            if (indicadorActivo) {
+            if (indicadorObligatorio) {
                 if (valIndicador === null) {
                     errors.push("Debe registrar el valor trimestral del indicador anual de la actividad.");
                 }
@@ -2804,6 +3038,18 @@ function validateNarrative(isSubmit) {
 function validateNarrativeForSave() { return validateNarrative(false); }
 function validateNarrativeForSubmit() { return validateNarrative(true); }
 
+function validateActivityProgress(isSubmit) {
+    const summary = buildActivityProgressSummary();
+    renderActivityProgressSummaryInContext();
+
+    if (isSubmit && summary.errors.length > 0) {
+        showNarrativeMessage(`No se puede resolver el avance calculado de la actividad: ${summary.errors.join(" ")}`, "error");
+        return { errors: summary.errors.length, warnings: 0 };
+    }
+
+    return { errors: 0, warnings: summary.warnings.length + (!isSubmit ? summary.errors.length : 0) };
+}
+
 function validateBeforeSave() {
     clearGlobalMessage();
     let selErrors = validateSelection();
@@ -2813,11 +3059,12 @@ function validateBeforeSave() {
     }
     let taskValidation = validateTaskRowsForSave();
     let narrValidation = validateNarrativeForSave();
-    if (taskValidation.errors > 0 || narrValidation.errors > 0) {
+    let progressValidation = validateActivityProgress(false);
+    if (taskValidation.errors > 0 || narrValidation.errors > 0 || progressValidation.errors > 0) {
         setStatus(`Revise las validaciones inline antes de guardar (${taskValidation.errors} tareas con error, ${narrValidation.errors} errores de reporte consolidado).`, "error");
         return { valid: false, warnings: 0 };
     }
-    return { valid: true, warnings: taskValidation.warnings + narrValidation.warnings };
+    return { valid: true, warnings: taskValidation.warnings + narrValidation.warnings + progressValidation.warnings };
 }
 
 function validateBeforeSubmit() {
@@ -2829,8 +3076,9 @@ function validateBeforeSubmit() {
     }
     let taskValidation = validateTaskRowsForSubmit();
     let narrValidation = validateNarrativeForSubmit();
-    if (taskValidation.errors > 0 || narrValidation.errors > 0) {
-        setStatus(`No se puede enviar a revisión. Corrija los errores indicados (${taskValidation.errors} tareas con error, ${narrValidation.errors} errores de reporte consolidado).`, "error");
+    let progressValidation = validateActivityProgress(true);
+    if (taskValidation.errors > 0 || narrValidation.errors > 0 || progressValidation.errors > 0) {
+        setStatus(`No se puede enviar a revisión. Corrija los errores indicados (${taskValidation.errors} tareas con error, ${narrValidation.errors + progressValidation.errors} errores de reporte consolidado).`, "error");
         return { valid: false, warnings: 0 };
     }
     return { valid: true, warnings: 0 };
@@ -2873,6 +3121,7 @@ function openSubmitPreview() {
     const txt2 = document.getElementById("txt-logros-descripcion")?.value.trim() !== "" ? "Sí" : "No";
     const txt3 = document.getElementById("txt-logros-principales")?.value.trim() !== "" ? "Sí" : "No";
     const calcInd = calculateIndicadorValues();
+    const progressSummary = buildActivityProgressSummary();
     const odsReq = getPlanFlag("ReportaODS") === "SI" ? ((byId("txt-avance-ods")?.value || "").trim() !== "" ? "Sí" : "Pendiente") : "No aplica";
     const rezReq = getPlanFlag("ReportaRezago") === "SI" ? ((byId("txt-avance-rezago")?.value || "").trim() !== "" ? "Sí" : "Pendiente") : "No aplica";
     const resReq = getPlanFlag("ReportaReserva") === "SI" ? ((byId("txt-avance-reserva")?.value || "").trim() !== "" ? "Sí" : "Pendiente") : "No aplica";
@@ -2891,6 +3140,10 @@ function openSubmitPreview() {
         <div class="summary-item"><strong>Indicador:</strong> <span>${escapeHtml(planActCtx?.IndicadorID || "N/A")}</span></div>
         <div class="summary-item"><strong>Valor trimestre:</strong> <span>${calcInd.current === null ? "No registrado" : formatNumberForUi(calcInd.current)}</span></div>
         <div class="summary-item"><strong>Acumulado / %:</strong> <span>${calcInd.accumulated === null ? "N/D" : formatNumberForUi(calcInd.accumulated)} / ${calcInd.pct === null ? "N/D" : formatNumberForUi(calcInd.pct) + "%"}</span></div>
+        <div class="summary-item"><strong>Estado del calculo:</strong> <span>${progressSummary.progressLabel}</span></div>
+        <div class="summary-item"><strong>Avance operativo tareas:</strong> <span>${progressSummary.operational.pct === null ? "N/D" : formatNumberForUi(progressSummary.operational.pct) + "%"}</span></div>
+        <div class="summary-item"><strong>Fuente avance fisico:</strong> <span>${progressSummary.source}</span></div>
+        <div class="summary-item"><strong>Avance fisico oficial:</strong> <span>${progressSummary.official === null ? "N/D" : formatNumberForUi(progressSummary.official) + "%"}</span></div>
         <div class="summary-item"><strong>ODS / Rezago / Reserva:</strong> <span>${odsReq} / ${rezReq} / ${resReq}</span></div>
     `;
 
