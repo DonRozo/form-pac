@@ -58,6 +58,8 @@ const URL_ALCANCE = getUrl(22);
 const URL_AUD_HISTORIAL = getUrl(23);
 const URL_AUD_EVENTO = getUrl(24);
 const URL_WF_SOLICITUD = getUrl(25);
+const URL_WF_APROBACION = getUrl(26);
+const URL_WF_NOTIFICACION = getUrl(27);
 const URL_BI_ACT = getUrl(28);
 const URL_BI_SUB = getUrl(34);
 const URL_BI_TAR = getUrl(35);
@@ -66,6 +68,128 @@ const URL_PLAN_ACT = getUrl(36);
 const F_AVA = { fkTarea: "TareaGlobalID", vig: "Vigencia", per: "Periodo", val: "ValorReportado", obs: "Observaciones", evi: "EvidenciaURL", fec: "FechaRegistro", resp: "Responsable", estado: "EstadoRegistro", ver: "Version", fEdic: "FechaUltimaEdicionFuncional", pEdic: "PersonaUltimaEdicionID", motivo: "MotivoAjuste" };
 const F_NAR = { fkAct: "ActividadGlobalID", vig: "Vigencia", per: "Periodo", txt1: "TextoNarrativo", txt2: "DescripcionLogrosAlcanzados", txt3: "PrincipalesLogros", fec: "FechaRegistro", resp: "Responsable", estado: "EstadoRegistro", ver: "Version", fEdic: "FechaUltimaEdicionFuncional", pEdic: "PersonaUltimaEdicionID", motivo: "MotivoAjuste", respGid: "ResponsableGlobalID", planAct: "PlanActividadGlobalID", indId: "IndicadorID", indNom: "NombreIndicador", indTipo: "TipoValorIndicador", indUnidad: "UnidadMedidaIndicador", indCalc: "TipoCalculoAvanceActividad", clave: "ClaveUnicaReporteActividad", meta: "MetaAnualIndicador", valTri: "ValorIndicadorTrimestre", valAcum: "ValorIndicadorAcumulado", pct: "PorcentajeAvanceIndicador", obsInd: "ObservacionIndicador", eviInd: "EvidenciaIndicadorURL", odsPlan: "ReportaODSPlan", odsTxt: "AvanceODSPeriodo", rezPlan: "ReportaRezagoPlan", rezTxt: "AvanceRezagoPeriodo", resPlan: "ReportaReservaPlan", resTxt: "AvanceReservaPeriodo" };
 const F_UBI = { fkAvance: "AvanceTareaGlobalID", dane: "CodigoDANE", mun: "MunicipioNombre", desc: "DescripcionSitio", fec: "FechaRegistro" };
+
+// Metadata validada contra DATAPAC.json (servicio DATAPAC_V4, 2026-06-01).
+// Se usa como respaldo local si la metadata viva del servicio no responde.
+const DATAPAC_FIELD_METADATA = {
+    REP_AvanceTarea: {
+        Periodo: { type: "esriFieldTypeString", length: 2 },
+        Observaciones: { type: "esriFieldTypeString", length: 2000 },
+        EvidenciaURL: { type: "esriFieldTypeString", length: 500 },
+        Responsable: { type: "esriFieldTypeString", length: 200 },
+        EstadoRegistro: { type: "esriFieldTypeString", length: 50 },
+        MotivoAjuste: { type: "esriFieldTypeString", length: 500 }
+    },
+    REP_TareaUbicacion_PT: {
+        CodigoDANE: { type: "esriFieldTypeString", length: 10 },
+        MunicipioNombre: { type: "esriFieldTypeString", length: 120 },
+        DescripcionSitio: { type: "esriFieldTypeString", length: 500 }
+    },
+    REP_ReporteNarrativo: {
+        Periodo: { type: "esriFieldTypeString", length: 2 },
+        TextoNarrativo: { type: "esriFieldTypeString", length: 5500 },
+        DescripcionLogrosAlcanzados: { type: "esriFieldTypeString", length: 4000 },
+        PrincipalesLogros: { type: "esriFieldTypeString", length: 1000 },
+        Responsable: { type: "esriFieldTypeString", length: 200 },
+        EstadoRegistro: { type: "esriFieldTypeString", length: 50 },
+        MotivoAjuste: { type: "esriFieldTypeString", length: 500 },
+        IndicadorID: { type: "esriFieldTypeString", length: 100 },
+        NombreIndicador: { type: "esriFieldTypeString", length: 256 },
+        TipoValorIndicador: { type: "esriFieldTypeString", length: 50 },
+        UnidadMedidaIndicador: { type: "esriFieldTypeString", length: 100 },
+        TipoCalculoAvanceActividad: { type: "esriFieldTypeString", length: 50 },
+        ClaveUnicaReporteActividad: { type: "esriFieldTypeString", length: 256 },
+        ObservacionIndicador: { type: "esriFieldTypeString", length: 1000 },
+        EvidenciaIndicadorURL: { type: "esriFieldTypeString", length: 500 },
+        ReportaODSPlan: { type: "esriFieldTypeString", length: 2 },
+        AvanceODSPeriodo: { type: "esriFieldTypeString", length: 5000 },
+        ReportaRezagoPlan: { type: "esriFieldTypeString", length: 2 },
+        AvanceRezagoPeriodo: { type: "esriFieldTypeString", length: 5000 },
+        ReportaReservaPlan: { type: "esriFieldTypeString", length: 2 },
+        AvanceReservaPeriodo: { type: "esriFieldTypeString", length: 5000 }
+    },
+    WF_SolicitudRevision: {
+        TipoObjeto: { type: "esriFieldTypeString", length: 100 },
+        ObjetoID: { type: "esriFieldTypeString", length: 100 },
+        Periodo: { type: "esriFieldTypeString", length: 50 },
+        EstadoActual: { type: "esriFieldTypeString", length: 50 },
+        ComentarioSolicitante: { type: "esriFieldTypeString", length: 500 },
+        DependenciaReportante: { type: "esriFieldTypeString", length: 150 },
+        RolResponsableActual: { type: "esriFieldTypeString", length: 50 },
+        EtapaActual: { type: "esriFieldTypeString", length: 50 },
+        ClaveUnicaSolicitud: { type: "esriFieldTypeString", length: 250 },
+        TipoFlujoWorkflow: { type: "esriFieldTypeString", length: 50 },
+        PasosRequeridosWorkflow: { type: "esriFieldTypeString", length: 500 }
+    },
+    WF_AprobacionPaso: {
+        RolResponsable: { type: "esriFieldTypeString", length: 100 },
+        EstadoPaso: { type: "esriFieldTypeString", length: 50 },
+        Decision: { type: "esriFieldTypeString", length: 50 },
+        ObservacionDecision: { type: "esriFieldTypeString", length: 500 },
+        EstadoAnterior: { type: "esriFieldTypeString", length: 50 },
+        EstadoNuevo: { type: "esriFieldTypeString", length: 50 },
+        RolOrigen: { type: "esriFieldTypeString", length: 50 },
+        RolDestino: { type: "esriFieldTypeString", length: 50 },
+        EtapaDecision: { type: "esriFieldTypeString", length: 50 },
+        TipoDecision: { type: "esriFieldTypeString", length: 50 },
+        RequiereAjuste: { type: "esriFieldTypeString", length: 2 },
+        EsDecisionFinal: { type: "esriFieldTypeString", length: 2 }
+    },
+    WF_Notificacion: {
+        Destinatario: { type: "esriFieldTypeString", length: 250 },
+        Canal: { type: "esriFieldTypeString", length: 50 },
+        Asunto: { type: "esriFieldTypeString", length: 250 },
+        Resultado: { type: "esriFieldTypeString", length: 50 },
+        ErrorTecnico: { type: "esriFieldTypeString", length: 1000 },
+        RolDestinatario: { type: "esriFieldTypeString", length: 50 },
+        EstadoWorkflow: { type: "esriFieldTypeString", length: 50 },
+        EtapaWorkflow: { type: "esriFieldTypeString", length: 50 },
+        TipoNotificacion: { type: "esriFieldTypeString", length: 50 },
+        CuerpoMensaje: { type: "esriFieldTypeString", length: 2000 },
+        RequiereAccion: { type: "esriFieldTypeString", length: 2 }
+    },
+    AUD_HistorialCambio: {
+        TipoObjeto: { type: "esriFieldTypeString", length: 100 },
+        ObjetoID: { type: "esriFieldTypeString", length: 100 },
+        CampoModificado: { type: "esriFieldTypeString", length: 100 },
+        ValorAnterior: { type: "esriFieldTypeString", length: 1000 },
+        ValorNuevo: { type: "esriFieldTypeString", length: 1000 },
+        MotivoCambio: { type: "esriFieldTypeString", length: 500 },
+        OrigenCambio: { type: "esriFieldTypeString", length: 100 }
+    },
+    AUD_EventoSistema: {
+        Modulo: { type: "esriFieldTypeString", length: 100 },
+        Evento: { type: "esriFieldTypeString", length: 150 },
+        Resultado: { type: "esriFieldTypeString", length: 50 },
+        Detalle: { type: "esriFieldTypeString", length: 1000 },
+        IP: { type: "esriFieldTypeString", length: 50 },
+        UserAgent: { type: "esriFieldTypeString", length: 250 }
+    }
+};
+
+const ENTITY_URLS = {
+    REP_AvanceTarea: URL_AVANCE_TAREA,
+    REP_TareaUbicacion_PT: URL_TAREA_UBICACION,
+    REP_ReporteNarrativo: URL_NARRATIVA,
+    WF_SolicitudRevision: URL_WF_SOLICITUD,
+    WF_AprobacionPaso: URL_WF_APROBACION,
+    WF_Notificacion: URL_WF_NOTIFICACION,
+    AUD_HistorialCambio: URL_AUD_HISTORIAL,
+    AUD_EventoSistema: URL_AUD_EVENTO
+};
+
+const USER_FUNCTIONAL_TEXT_FIELDS = new Set([
+    "REP_ReporteNarrativo.TextoNarrativo",
+    "REP_ReporteNarrativo.DescripcionLogrosAlcanzados",
+    "REP_ReporteNarrativo.PrincipalesLogros",
+    "REP_ReporteNarrativo.ObservacionIndicador",
+    "REP_ReporteNarrativo.AvanceODSPeriodo",
+    "REP_ReporteNarrativo.AvanceRezagoPeriodo",
+    "REP_ReporteNarrativo.AvanceReservaPeriodo",
+    "REP_ReporteNarrativo.MotivoAjuste",
+    "REP_AvanceTarea.Observaciones",
+    "REP_AvanceTarea.MotivoAjuste"
+]);
 
 const F_WF = {
     solId: "SolicitudID",
@@ -201,6 +325,7 @@ let isVerifyingOtp = false;
 let asignacionesActivas = [];
 let cacheSubactividades = [], cacheTareas = [];
 let cacheActividadesPesos = new Map();
+let cacheActividadesInfo = new Map();
 let planActCtx = null, biActCtx = null;
 let planSubCtx = new Map(), biSubCtx = new Map();
 let planTarCtx = new Map(), biTarCtx = new Map();
@@ -216,6 +341,12 @@ let map, view, graphicsLayer, webMercatorUtils, sketchVM, jurisdiccionLayerView;
 
 let lastCapturedError = null;
 let lastGlobalMsg = null;
+let lastLengthDiagnostics = [];
+let entityFieldMetadataCache = new Map();
+let lastDuplicateDiagnostics = {
+    narrativa: { count: 0, records: [] },
+    workflow: { count: 0, records: [] }
+};
 
 // Diagnósticos de filtrado
 let diagSubsVis = 0, diagSubsLoad = 0, diagSubsMatch = 0;
@@ -463,7 +594,13 @@ function refreshSupportPanel() {
 
     const errEl = document.getElementById("sup-err");
     if (lastCapturedError) {
-        errEl.textContent = typeof lastCapturedError === 'object' ? JSON.stringify(lastCapturedError) : String(lastCapturedError);
+        const lengthDiagText = lastLengthDiagnostics.length
+            ? ` | Diagnostico longitud: ${JSON.stringify(lastLengthDiagnostics.slice(-3))}`
+            : "";
+        const duplicateDiagText = (lastDuplicateDiagnostics.narrativa.count > 1 || lastDuplicateDiagnostics.workflow.count > 1)
+            ? ` | Duplicados: ${JSON.stringify(lastDuplicateDiagnostics)}`
+            : "";
+        errEl.textContent = `${typeof lastCapturedError === 'object' ? JSON.stringify(lastCapturedError) : String(lastCapturedError)}${lengthDiagText}${duplicateDiagText}`;
         errEl.style.display = "block";
     } else {
         errEl.textContent = "Ninguno";
@@ -503,6 +640,9 @@ Diag. Subs (Vis/Load/Match): ${diagSubsVis} / ${diagSubsLoad} / ${diagSubsMatch}
 Diag. Tars (Vis/Load/Match): ${diagTarsVis} / ${diagTarsLoad} / ${diagTarsMatch}
 Último Mensaje Global: ${lastGlobalMsg}
 Último Error Técnico: ${typeof lastCapturedError === 'object' ? JSON.stringify(lastCapturedError) : String(lastCapturedError)}
+Diagnóstico Longitud: ${lastLengthDiagnostics.length ? JSON.stringify(lastLengthDiagnostics.slice(-5)) : "Ninguno"}
+Diagnóstico Duplicados REP_ReporteNarrativo: ${JSON.stringify(lastDuplicateDiagnostics.narrativa)}
+Diagnóstico Duplicados WF_SolicitudRevision: ${JSON.stringify(lastDuplicateDiagnostics.workflow)}
 `.trim();
     navigator.clipboard.writeText(data).then(() => {
         const btn = document.getElementById("btn-copy-diagnostico");
@@ -524,7 +664,7 @@ async function auditError(context, error, extra = {}) {
     let pid = currentUser ? currentUser.pid : null;
     let detailStr = `[${context}] ERR: ${errorMsg} | CTX: ${JSON.stringify(extra)}`;
     if (!currentUser) detailStr = `[NO_AUTH] ${detailStr}`;
-    const detail = detailStr.substring(0, 500);
+    const detail = truncateTechnicalString(detailStr, getFieldMaxLength("AUD_EventoSistema", "Detalle", 1000));
 
     console.error(`[AUDIT ERROR] ${context}:`, error, extra);
 
@@ -533,17 +673,19 @@ async function auditError(context, error, extra = {}) {
     }
 
     try {
-        const attrs = {
+        const attrs = truncateKnownTechnicalFields("AUD_EventoSistema", {
             EventoID: generateGUID(),
             Modulo: "APP_REPORTE",
-            Evento: `ERR_${context}`.substring(0, 100),
+            Evento: `ERR_${context}`,
             Resultado: "ERROR",
             FechaEvento: Date.now(),
             PersonaID: pid,
             Detalle: detail,
             IP: "N/A",
-            UserAgent: navigator.userAgent.substring(0, 255)
-        };
+            UserAgent: navigator.userAgent
+        });
+
+        await validateStringLengthsBeforeApplyEdits("AUD_EventoSistema", attrs, "adds");
 
         const form = new URLSearchParams();
         form.append("f", "json");
@@ -588,6 +730,334 @@ function setStatus(msg, type = "info") { showGlobalMessage(msg, type); }
 function escapeHtml(s) { return (s ?? "").toString().replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
 function toYesNo(v) { const s = (v || "").toString().toLowerCase(); return (s === "si" || s === "sí" || s === "true") ? true : (s === "no" || s === "false" ? false : null); }
 function generateGUID() { return '{' + crypto.randomUUID().toUpperCase() + '}'; }
+
+function getLocalEntityFieldMetadata(entityName) {
+    const raw = DATAPAC_FIELD_METADATA[entityName] || {};
+    return new Map(Object.entries(raw).map(([name, meta]) => [name, { name, ...meta }]));
+}
+
+async function getEntityFieldMetadata(entityName) {
+    if (entityFieldMetadataCache.has(entityName)) return entityFieldMetadataCache.get(entityName);
+
+    const url = ENTITY_URLS[entityName];
+    let metadata = getLocalEntityFieldMetadata(entityName);
+
+    if (url) {
+        try {
+            const form = new URLSearchParams();
+            form.append("f", "json");
+            const response = await fetch(url, { method: "POST", body: form });
+            if (response.ok) {
+                const data = await response.json();
+                if (Array.isArray(data.fields)) {
+                    metadata = new Map(data.fields
+                        .filter(f => f && f.type === "esriFieldTypeString" && Number(f.length) > 0)
+                        .map(f => [f.name, { name: f.name, type: f.type, length: Number(f.length) }]));
+                }
+            }
+        } catch (error) {
+            console.warn(`[METADATA] Se usa metadata local validada para ${entityName}.`, error);
+        }
+    }
+
+    entityFieldMetadataCache.set(entityName, metadata);
+    return metadata;
+}
+
+function truncateTechnicalString(value, maxLength) {
+    if (value === null || value === undefined) return value;
+    const text = String(value);
+    if (!maxLength || text.length <= maxLength) return text;
+    if (maxLength <= 3) return text.substring(0, maxLength);
+    return text.substring(0, maxLength - 3) + "...";
+}
+
+function safeFunctionalId(value, maxLength) {
+    const text = String(value ?? "").trim();
+    if (!text) return "";
+    return truncateTechnicalString(text.replace(/\s+/g, " "), maxLength || 100);
+}
+
+function getFieldMaxLength(entityName, fieldName, fallbackLength = null) {
+    const local = DATAPAC_FIELD_METADATA[entityName] || {};
+    return Number(local[fieldName]?.length || fallbackLength || 0) || null;
+}
+
+function sanitizeValuePreview(value) {
+    const text = String(value ?? "")
+        .replace(/sig=([^&\s]+)/gi, "sig=<OCULTO>")
+        .replace(/(token|password|contraseña|client_secret|bearer)\s*[:=]\s*([^&\s]+)/gi, "$1=<OCULTO>");
+    return truncateTechnicalString(text.replace(/\s+/g, " "), 120);
+}
+
+function registerLengthDiagnostic(entityName, operation, fieldName, maxLength, actualLength, value) {
+    const diag = {
+        tipo: "LONGITUD",
+        entityName,
+        operation,
+        fieldName,
+        maxLength,
+        actualLength,
+        valuePreview: sanitizeValuePreview(value)
+    };
+    lastLengthDiagnostics.push(diag);
+    if (lastLengthDiagnostics.length > 20) lastLengthDiagnostics = lastLengthDiagnostics.slice(-20);
+    lastCapturedError = {
+        tipo: "Error de longitud antes de enviar a ArcGIS",
+        entityName,
+        operation,
+        fieldName,
+        maxLength,
+        actualLength,
+        valuePreview: diag.valuePreview
+    };
+    refreshSupportPanel();
+    return diag;
+}
+
+function createLengthValidationError(diagnostics) {
+    const first = diagnostics[0] || {};
+    const fieldText = first.fieldName ? ` Campo: ${first.fieldName}.` : "";
+    const lengthText = first.actualLength && first.maxLength ? ` Longitud: ${first.actualLength}/${first.maxLength}.` : "";
+    const error = new Error(`Error de longitud antes de enviar a ArcGIS. Tabla: ${first.entityName || "N/D"}.${fieldText}${lengthText}`);
+    error._lengthDiagnostics = diagnostics;
+    return error;
+}
+
+function createArcGisLengthError(entityName, operation, error) {
+    const message = error instanceof Error ? error.message : String(error || "");
+    const diag = {
+        tipo: "Error de longitud devuelto por ArcGIS",
+        entityName,
+        operation,
+        fieldName: "No identificado por ArcGIS",
+        maxLength: null,
+        actualLength: null,
+        valuePreview: ""
+    };
+    lastLengthDiagnostics.push(diag);
+    if (lastLengthDiagnostics.length > 20) lastLengthDiagnostics = lastLengthDiagnostics.slice(-20);
+    lastCapturedError = { ...diag, error: sanitizeValuePreview(message) };
+    refreshSupportPanel();
+    const wrapped = new Error(`Error de longitud devuelto por ArcGIS. Tabla: ${entityName}. Campo: no identificado. ${message}`);
+    wrapped._lengthDiagnostics = [diag];
+    return wrapped;
+}
+
+async function validateStringLengthsBeforeApplyEdits(entityName, attributes, operation) {
+    const metadata = await getEntityFieldMetadata(entityName);
+    const diagnostics = [];
+
+    Object.entries(attributes || {}).forEach(([fieldName, value]) => {
+        if (value === null || value === undefined) return;
+        const meta = metadata.get(fieldName);
+        if (!meta || meta.type !== "esriFieldTypeString" || !meta.length) return;
+        const actualLength = String(value).length;
+        if (actualLength > meta.length) {
+            diagnostics.push(registerLengthDiagnostic(entityName, operation, fieldName, meta.length, actualLength, value));
+        }
+    });
+
+    if (diagnostics.length) throw createLengthValidationError(diagnostics);
+    return true;
+}
+
+async function validateApplyEditsPayload(entityName, payload) {
+    const normalizeFeatures = (value) => {
+        if (!value) return [];
+        if (Array.isArray(value)) return value;
+        if (typeof value === "string") {
+            try { return JSON.parse(value); } catch (e) { return []; }
+        }
+        return [];
+    };
+
+    for (const feature of normalizeFeatures(payload.adds)) {
+        await validateStringLengthsBeforeApplyEdits(entityName, feature.attributes || {}, "adds");
+    }
+    for (const feature of normalizeFeatures(payload.updates)) {
+        await validateStringLengthsBeforeApplyEdits(entityName, feature.attributes || {}, "updates");
+    }
+}
+
+function truncateKnownTechnicalFields(entityName, attrs) {
+    if (!attrs) return attrs;
+    const truncateField = (fieldName, fallbackLength) => {
+        if (attrs[fieldName] === null || attrs[fieldName] === undefined) return;
+        const maxLength = getFieldMaxLength(entityName, fieldName, fallbackLength);
+        if (maxLength) attrs[fieldName] = truncateTechnicalString(attrs[fieldName], maxLength);
+    };
+
+    if (entityName === "AUD_EventoSistema") {
+        ["Modulo", "Evento", "Resultado", "Detalle", "IP", "UserAgent"].forEach(field => truncateField(field));
+    } else if (entityName === "AUD_HistorialCambio") {
+        ["TipoObjeto", "ObjetoID", "CampoModificado", "ValorAnterior", "ValorNuevo", "MotivoCambio", "OrigenCambio"].forEach(field => truncateField(field));
+    } else if (entityName === "WF_SolicitudRevision") {
+        ["TipoObjeto", "ObjetoID", "Periodo", "EstadoActual", "ComentarioSolicitante", "DependenciaReportante", "RolResponsableActual", "EtapaActual", "ClaveUnicaSolicitud", "TipoFlujoWorkflow", "PasosRequeridosWorkflow"].forEach(field => truncateField(field));
+    } else if (entityName === "WF_Notificacion") {
+        ["Destinatario", "Canal", "Asunto", "Resultado", "ErrorTecnico", "RolDestinatario", "EstadoWorkflow", "EtapaWorkflow", "TipoNotificacion", "CuerpoMensaje", "RequiereAccion"].forEach(field => truncateField(field));
+    }
+    return attrs;
+}
+
+function validateFunctionalTextDraftLocally(draft) {
+    const check = [];
+    (draft.adds || []).forEach(f => check.push({ entity: "REP_AvanceTarea", operation: "adds", attrs: f.attributes || {} }));
+    (draft.updates || []).forEach(f => check.push({ entity: "REP_AvanceTarea", operation: "updates", attrs: f.attributes || {} }));
+    (draft.narrAdds || []).forEach(f => check.push({ entity: "REP_ReporteNarrativo", operation: "adds", attrs: f.attributes || {} }));
+    (draft.narrUpdates || []).forEach(f => check.push({ entity: "REP_ReporteNarrativo", operation: "updates", attrs: f.attributes || {} }));
+
+    const diagnostics = [];
+    check.forEach(item => {
+        Object.entries(item.attrs).forEach(([fieldName, value]) => {
+            if (!USER_FUNCTIONAL_TEXT_FIELDS.has(`${item.entity}.${fieldName}`)) return;
+            if (value === null || value === undefined) return;
+            const maxLength = getFieldMaxLength(item.entity, fieldName);
+            if (!maxLength) return;
+            const actualLength = String(value).length;
+            if (actualLength > maxLength) {
+                diagnostics.push(registerLengthDiagnostic(item.entity, item.operation, fieldName, maxLength, actualLength, value));
+            }
+        });
+    });
+
+    if (diagnostics.length) throw createLengthValidationError(diagnostics);
+}
+
+async function validateAuditPayloadsBeforeApply(draft) {
+    for (const feature of (draft.auditHistoryAdds || [])) {
+        await validateStringLengthsBeforeApplyEdits("AUD_HistorialCambio", feature.attributes || {}, "adds");
+    }
+    for (const feature of (draft.auditEventAdds || [])) {
+        await validateStringLengthsBeforeApplyEdits("AUD_EventoSistema", feature.attributes || {}, "adds");
+    }
+}
+
+async function executePreparedAuditPayloads(draft) {
+    if (draft.auditHistoryAdds && draft.auditHistoryAdds.length) {
+        try {
+            await postForm(`${URL_AUD_HISTORIAL}/applyEdits`, { adds: draft.auditHistoryAdds });
+        } catch (error) {
+            console.error("[AUDIT_SYSTEM] Error al guardar auditoria funcional preparada:", error);
+        }
+    }
+    if (draft.auditEventAdds && draft.auditEventAdds.length) {
+        try {
+            await postForm(`${URL_AUD_EVENTO}/applyEdits`, { adds: draft.auditEventAdds });
+        } catch (error) {
+            console.error("[AUDIT_SYSTEM] Error al guardar auditoria tecnica preparada:", error);
+        }
+    }
+}
+
+function resolveExpectedNarrativaFromDraft(draft) {
+    if (draft.narrAdds && draft.narrAdds.length) {
+        return { ...(draft.narrAdds[0].attributes || {}) };
+    }
+    if (draft.narrUpdates && draft.narrUpdates.length) {
+        const updateAttrs = draft.narrUpdates[0].attributes || {};
+        return {
+            ...(existingNarrativa || {}),
+            ...updateAttrs,
+            GlobalID: existingNarrativa?.GlobalID || updateAttrs.GlobalID,
+            ActividadGlobalID: existingNarrativa?.ActividadGlobalID || updateAttrs.ActividadGlobalID || draft.actGid,
+            Vigencia: existingNarrativa?.Vigencia || updateAttrs.Vigencia || Number(elVigencia.value),
+            Periodo: existingNarrativa?.Periodo || updateAttrs.Periodo || getPeriodo()
+        };
+    }
+    return existingNarrativa ? { ...existingNarrativa } : null;
+}
+
+async function validateDraftBeforeAnyWrite(draft, preparedWorkflow = null) {
+    validateFunctionalTextDraftLocally(draft);
+    await validateApplyEditsPayload("REP_AvanceTarea", { adds: draft.adds, updates: draft.updates });
+    await validateApplyEditsPayload("REP_TareaUbicacion_PT", { adds: draft.ubicAdds, updates: draft.ubicUpdates });
+    await validateApplyEditsPayload("REP_ReporteNarrativo", { adds: draft.narrAdds, updates: draft.narrUpdates });
+    if (preparedWorkflow) {
+        await validateApplyEditsPayload("WF_SolicitudRevision", { adds: preparedWorkflow.adds || [], updates: preparedWorkflow.updates || [] });
+    }
+    await validateAuditPayloadsBeforeApply(draft);
+}
+
+const RECORD_ORDER_FIELDS = [
+    "FechaUltimaEdicionFuncional",
+    "EditDate",
+    "FechaRegistro",
+    "Version",
+    "OBJECTID"
+];
+
+function toSortableNumber(value) {
+    if (value === null || value === undefined || value === "") return -Infinity;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : -Infinity;
+}
+
+function compareMostRecentRecords(a, b) {
+    const aa = a?.attributes || a || {};
+    const bb = b?.attributes || b || {};
+    for (const field of RECORD_ORDER_FIELDS) {
+        const diff = toSortableNumber(bb[field]) - toSortableNumber(aa[field]);
+        if (diff !== 0) return diff;
+    }
+    return 0;
+}
+
+function selectMostRecentFeature(features) {
+    const list = Array.isArray(features) ? [...features] : [];
+    if (!list.length) return null;
+    list.sort(compareMostRecentRecords);
+    return list[0];
+}
+
+function buildNarrativeDiagnosticRecord(attrs = {}) {
+    return {
+        OBJECTID: attrs.OBJECTID ?? null,
+        GlobalID: attrs.GlobalID || "",
+        EstadoRegistro: attrs.EstadoRegistro || "",
+        Version: attrs.Version ?? null,
+        FechaRegistro: attrs.FechaRegistro ?? null,
+        FechaUltimaEdicionFuncional: attrs.FechaUltimaEdicionFuncional ?? null,
+        EditDate: attrs.EditDate ?? null,
+        lenTextoNarrativo: String(attrs.TextoNarrativo || "").length,
+        lenDescripcionLogrosAlcanzados: String(attrs.DescripcionLogrosAlcanzados || "").length,
+        lenPrincipalesLogros: String(attrs.PrincipalesLogros || "").length
+    };
+}
+
+function buildWorkflowDiagnosticRecord(attrs = {}) {
+    return {
+        OBJECTID: attrs.OBJECTID ?? null,
+        GlobalID: attrs.GlobalID || "",
+        SolicitudID: attrs.SolicitudID || "",
+        ObjetoID: attrs.ObjetoID || "",
+        EstadoActual: attrs.EstadoActual || "",
+        Version: attrs.Version ?? null,
+        FechaSolicitud: attrs.FechaSolicitud ?? null,
+        FechaUltimoMovimiento: attrs.FechaUltimoMovimiento ?? null,
+        EditDate: attrs.EditDate ?? null
+    };
+}
+
+function registerDuplicateDiagnostic(kind, features, context = {}) {
+    const attrsList = (features || []).map(f => f.attributes || f || {});
+    const records = kind === "workflow"
+        ? attrsList.map(buildWorkflowDiagnosticRecord)
+        : attrsList.map(buildNarrativeDiagnosticRecord);
+    const diag = { count: records.length, records, context };
+    lastDuplicateDiagnostics[kind] = diag;
+    if (records.length > 1) {
+        lastCapturedError = {
+            tipo: "Advertencia duplicados read-only",
+            entityName: kind === "workflow" ? "WF_SolicitudRevision" : "REP_ReporteNarrativo",
+            count: records.length,
+            context,
+            records
+        };
+        refreshSupportPanel();
+    }
+    return diag;
+}
 
 // --- HELPER: NORMALIZADOR DE GUID ---
 function normalizeGuidKey(v) {
@@ -761,39 +1231,51 @@ function getPeriodo() { return elPeriodo.value || OPERATIVE_PERIODO; }
 
 function initCombosFijos() { renderCombo("combo-actividad", [], "Cargando..."); }
 
+function getCurrentActividadFunctionalId(fallback = "") {
+    const actGid = getActividadId();
+    const info = cacheActividadesInfo.get(normalizeGuidKey(actGid));
+    return safeFunctionalId(info?.ActividadID || fallback || actGid, getFieldMaxLength("WF_SolicitudRevision", "ObjetoID", 100));
+}
+
 // --- Funciones de Historial y Auditoria ---
 async function writeAuditEvent(evento, modulo, resultado, detalle) {
     if (!currentUser) return;
     try {
-        const attrs = {
-            EventoID: generateGUID(),
-            Modulo: modulo,
-            Evento: evento,
-            Resultado: resultado,
-            FechaEvento: Date.now(),
-            PersonaID: currentUser.pid,
-            Detalle: detalle ? detalle.substring(0, 500) : "",
-            IP: "N/A",
-            UserAgent: navigator.userAgent.substring(0, 255)
-        };
+        const attrs = prepareAuditEventAttrs(evento, modulo, resultado, detalle, currentUser?.pid);
+        await validateStringLengthsBeforeApplyEdits("AUD_EventoSistema", attrs, "adds");
         await postForm(`${URL_AUD_EVENTO}/applyEdits`, { adds: [{ attributes: attrs }] });
     } catch (e) { console.error("[AUDIT_SYSTEM] Error al guardar evento:", e); }
+}
+
+function prepareAuditEventAttrs(evento, modulo, resultado, detalle, personaId = currentUser?.pid || null) {
+    return truncateKnownTechnicalFields("AUD_EventoSistema", {
+        EventoID: generateGUID(),
+        Modulo: modulo || "APP_REPORTE",
+        Evento: evento,
+        Resultado: resultado,
+        FechaEvento: Date.now(),
+        PersonaID: personaId,
+        Detalle: detalle || "",
+        IP: "N/A",
+        UserAgent: navigator.userAgent
+    });
 }
 
 async function writeLoginAuditEvent(evento, resultado, detalle, persona = null) {
     try {
         const personaId = persona?.pid || persona?.PersonaID || persona?.gid || persona?.GlobalID || currentUser?.pid || currentUser?.gid || null;
-        const attrs = {
+        const attrs = truncateKnownTechnicalFields("AUD_EventoSistema", {
             EventoID: generateGUID(),
             Modulo: "APP_REPORTE",
-            Evento: String(evento || "").substring(0, 100),
-            Resultado: String(resultado || "").substring(0, 50),
+            Evento: String(evento || ""),
+            Resultado: String(resultado || ""),
             FechaEvento: Date.now(),
             PersonaID: personaId,
-            Detalle: String(detalle || "").substring(0, 500),
+            Detalle: String(detalle || ""),
             IP: "N/A",
-            UserAgent: navigator.userAgent.substring(0, 255)
-        };
+            UserAgent: navigator.userAgent
+        });
+        await validateStringLengthsBeforeApplyEdits("AUD_EventoSistema", attrs, "adds");
         const form = new URLSearchParams();
         form.append("f", "json");
         form.append("adds", JSON.stringify([{ attributes: attrs }]));
@@ -852,24 +1334,9 @@ async function writeAuditHistory(tipoObj, objGid, campo, valAnt, valNuevo, motiv
     if (!currentUser) return;
 
     try {
-        const objetoIdFuncional = buildAuditObjectId(tipoObj, {
-            ...auditAttrs,
-            GlobalID: objGid || auditAttrs.GlobalID
-        });
+        const attrs = prepareAuditHistoryAttrs(tipoObj, objGid, campo, valAnt, valNuevo, motivo, auditAttrs);
 
-        const attrs = {
-            GlobalID: generateGUID(),
-            TipoObjeto: String(tipoObj || "DESCONOCIDO").trim(),
-            ObjetoID: objetoIdFuncional.substring(0, 100),
-            ObjetoGlobalID: objGid || "",
-            CampoModificado: campo || "",
-            ValorAnterior: valAnt ? String(valAnt).substring(0, 1000) : "",
-            ValorNuevo: valNuevo ? String(valNuevo).substring(0, 1000) : "",
-            PersonaID: currentUser.pid,
-            FechaCambio: Date.now(),
-            MotivoCambio: motivo || "",
-            OrigenCambio: "APP_REPORTE"
-        };
+        await validateStringLengthsBeforeApplyEdits("AUD_HistorialCambio", attrs, "adds");
 
         await postForm(`${URL_AUD_HISTORIAL}/applyEdits`, {
             adds: [{ attributes: attrs }]
@@ -878,6 +1345,27 @@ async function writeAuditHistory(tipoObj, objGid, campo, valAnt, valNuevo, motiv
     } catch (e) {
         console.error("[AUDIT_SYSTEM] Error al guardar historial:", e);
     }
+}
+
+function prepareAuditHistoryAttrs(tipoObj, objGid, campo, valAnt, valNuevo, motivo, auditAttrs = {}) {
+    const objetoIdFuncional = buildAuditObjectId(tipoObj, {
+        ...auditAttrs,
+        GlobalID: objGid || auditAttrs.GlobalID
+    });
+
+    return truncateKnownTechnicalFields("AUD_HistorialCambio", {
+        GlobalID: generateGUID(),
+        TipoObjeto: String(tipoObj || "DESCONOCIDO").trim(),
+        ObjetoID: safeFunctionalId(objetoIdFuncional, getFieldMaxLength("AUD_HistorialCambio", "ObjetoID", 100)),
+        ObjetoGlobalID: objGid || "",
+        CampoModificado: campo || "",
+        ValorAnterior: valAnt ? String(valAnt) : "",
+        ValorNuevo: valNuevo ? String(valNuevo) : "",
+        PersonaID: currentUser?.pid || null,
+        FechaCambio: Date.now(),
+        MotivoCambio: motivo || "",
+        OrigenCambio: "APP_REPORTE"
+    });
 }
 
 // --- RESOLUCION E INYECCION WORKFLOW V4 ---
@@ -922,26 +1410,18 @@ async function resolvePlanActividadWorkflow(actividadGlobalID, vigencia) {
 
 async function resolveNarrativaAfterSave({ actividadGlobalID, vigencia, periodo, version, claveUnicaReporteActividad }) {
     try {
-        if (claveUnicaReporteActividad) {
-            let q = await fetchJson(`${URL_NARRATIVA}/query`, {
-                f: "json",
-                where: `ClaveUnicaReporteActividad='${claveUnicaReporteActividad}'`,
-                outFields: "*",
-                orderByFields: "FechaRegistro DESC"
-            });
-            if (q && q.features && q.features.length > 0) return q.features[0].attributes;
-        }
-
         let fallbackWhere = `ActividadGlobalID='${normalizeGuidLiteral(actividadGlobalID)}' AND Vigencia=${vigencia} AND Periodo='${periodo}'`;
-        if (version) fallbackWhere += ` AND Version=${version}`;
 
         const qFall = await fetchJson(`${URL_NARRATIVA}/query`, {
             f: "json",
             where: fallbackWhere,
             outFields: "*",
-            orderByFields: "FechaRegistro DESC"
+            orderByFields: "FechaUltimaEdicionFuncional DESC, EditDate DESC, FechaRegistro DESC, Version DESC, OBJECTID DESC"
         });
-        if (qFall && qFall.features && qFall.features.length > 0) return qFall.features[0].attributes;
+        if (qFall && qFall.features && qFall.features.length > 0) {
+            registerDuplicateDiagnostic("narrativa", qFall.features, { actividadGlobalID, vigencia, periodo, source: "resolveNarrativaAfterSave" });
+            return selectMostRecentFeature(qFall.features).attributes;
+        }
 
         return null;
     } catch (error) {
@@ -959,8 +1439,8 @@ async function findExistingWorkflowSolicitud(claveUnicaSolicitud, narrativaAttrs
         });
 
         if (q && q.features && q.features.length > 0) {
-            if (q.features.length > 1) await writeAuditEvent("WF_SOLICITUD_DUPLICADA_EVITADA", "APP_REPORTE", "ADVERTENCIA", `Múltiples solicitudes encontradas para clave única.`);
-            return q.features[0].attributes;
+            registerDuplicateDiagnostic("workflow", q.features, { claveUnicaSolicitud, source: "findExistingWorkflowSolicitud.clave" });
+            return selectMostRecentFeature(q.features).attributes;
         }
 
         if (narrativaAttrs) {
@@ -982,7 +1462,8 @@ async function findExistingWorkflowSolicitud(claveUnicaSolicitud, narrativaAttrs
                     const allowedStates = ["Borrador", "Devuelto", "Enviado", "EnVistoBuenoDirector", "EnRevisionEnlace", "EnAprobacionSubdirector", "EnRevisionOAP"];
                     const validFeatures = qFall.features.filter(f => allowedStates.includes(f.attributes.EstadoActual));
                     if (validFeatures.length > 0) {
-                        return validFeatures[0].attributes;
+                        registerDuplicateDiagnostic("workflow", validFeatures, { claveUnicaSolicitud, source: "findExistingWorkflowSolicitud.fallback" });
+                        return selectMostRecentFeature(validFeatures).attributes;
                     }
                 }
             }
@@ -995,30 +1476,49 @@ async function findExistingWorkflowSolicitud(claveUnicaSolicitud, narrativaAttrs
 }
 
 async function applyWorkflowEdits({ adds = [], updates = [] }) {
+    adds.forEach(f => truncateKnownTechnicalFields("WF_SolicitudRevision", f.attributes || {}));
+    updates.forEach(f => truncateKnownTechnicalFields("WF_SolicitudRevision", f.attributes || {}));
+    await validateApplyEditsPayload("WF_SolicitudRevision", { adds, updates });
+
     const payload = { f: "json" };
     if (adds.length > 0) payload.adds = JSON.stringify(adds);
     if (updates.length > 0) payload.updates = JSON.stringify(updates);
 
-    const data = await postForm(`${URL_WF_SOLICITUD}/applyEdits`, payload);
+    let data;
+    try {
+        data = await postForm(`${URL_WF_SOLICITUD}/applyEdits`, payload);
+    } catch (error) {
+        if (/truncated|truncat|string or binary data/i.test(String(error?.message || error))) {
+            throw createArcGisLengthError("WF_SolicitudRevision", adds.length ? "adds" : "updates", error);
+        }
+        throw error;
+    }
 
     if (data.addResults && Array.isArray(data.addResults)) {
         for (const r of data.addResults) {
-            if (r.success === false) throw new Error(`Fallo insertando WF: ${r.error?.description || JSON.stringify(r.error)}`);
+            if (r.success === false) {
+                const msg = r.error?.description || JSON.stringify(r.error);
+                if (/truncated|truncat|string or binary data/i.test(msg)) throw createArcGisLengthError("WF_SolicitudRevision", "adds", new Error(msg));
+                throw new Error(`Fallo insertando WF: ${msg}`);
+            }
         }
     }
     if (data.updateResults && Array.isArray(data.updateResults)) {
         for (const r of data.updateResults) {
-            if (r.success === false) throw new Error(`Fallo actualizando WF: ${r.error?.description || JSON.stringify(r.error)}`);
+            if (r.success === false) {
+                const msg = r.error?.description || JSON.stringify(r.error);
+                if (/truncated|truncat|string or binary data/i.test(msg)) throw createArcGisLengthError("WF_SolicitudRevision", "updates", new Error(msg));
+                throw new Error(`Fallo actualizando WF: ${msg}`);
+            }
         }
     }
     return data;
 }
 
-async function createOrUpdateWorkflowSolicitudFromNarrativa({ narrativaAttrs, planAct, isSubmit }) {
+async function prepareWorkflowSolicitudEdit({ narrativaAttrs, planAct, isSubmit }) {
     if (!isSubmit) return;
 
     if (!narrativaAttrs || !narrativaAttrs.GlobalID || !narrativaAttrs.ActividadGlobalID || !narrativaAttrs.Vigencia || !narrativaAttrs.Periodo || narrativaAttrs.EstadoRegistro !== "Enviado") {
-        await auditError("WF_SOLICITUD_ERROR", "Datos críticos en narrativa inválidos o estado no es Enviado.", narrativaAttrs);
         throw new Error("Datos de narrativa incompletos o en estado incorrecto para generar workflow. Debe confirmarse en BD como 'Enviado'.");
     }
 
@@ -1030,23 +1530,25 @@ async function createOrUpdateWorkflowSolicitudFromNarrativa({ narrativaAttrs, pl
     ].join("|");
 
     const wfSeq = buildWorkflowSequence(planAct);
+    const auditEventAdds = [];
 
     if (planAct) {
         const reqDir = normalizeSiNo(planAct.RequiereVistoBuenoDirector);
         if (wfSeq.tipoFlujoWorkflow === "SIN_DIRECTOR" && reqDir === "SI") {
-            await writeAuditEvent("WF_FLAGS_CONTRADICTORIOS", "APP_REPORTE", "ADVERTENCIA", `Flujo SIN_DIRECTOR contradice RequiereVistoBuenoDirector=SI en PLAN ${planAct.GlobalID}`);
+            auditEventAdds.push({ attributes: prepareAuditEventAttrs("WF_FLAGS_CONTRADICTORIOS", "APP_REPORTE", "ADVERTENCIA", `Flujo SIN_DIRECTOR contradice RequiereVistoBuenoDirector=SI en PLAN ${planAct.GlobalID}`) });
         }
         if (wfSeq.tipoFlujoWorkflow === "ESPECIAL") {
-            await writeAuditEvent("WF_FLUJO_ESPECIAL_ADVERTENCIA", "APP_REPORTE", "ADVERTENCIA", `Flujo ESPECIAL enviado sin ruta automatizada estándar. PLAN ${planAct.GlobalID}`);
+            auditEventAdds.push({ attributes: prepareAuditEventAttrs("WF_FLUJO_ESPECIAL_ADVERTENCIA", "APP_REPORTE", "ADVERTENCIA", `Flujo ESPECIAL enviado sin ruta automatizada estándar. PLAN ${planAct.GlobalID}`) });
         }
     }
 
     const existingWf = await findExistingWorkflowSolicitud(claveUnicaSolicitud, narrativaAttrs);
 
-    const wfAttrs = {
+    const wfObjectId = getCurrentActividadFunctionalId(narrativaAttrs.ClaveUnicaReporteActividad || claveUnicaSolicitud);
+    const wfAttrs = truncateKnownTechnicalFields("WF_SolicitudRevision", {
         [F_WF.solId]: generateGUID(),
         [F_WF.tipo]: "ReporteNarrativo",
-        [F_WF.objId]: narrativaAttrs.ClaveUnicaReporteActividad || claveUnicaSolicitud,
+        [F_WF.objId]: wfObjectId,
         [F_WF.objGid]: narrativaAttrs.GlobalID,
         [F_WF.actGid]: narrativaAttrs.ActividadGlobalID,
         [F_WF.planActGid]: planAct ? planAct.GlobalID : null,
@@ -1067,20 +1569,20 @@ async function createOrUpdateWorkflowSolicitudFromNarrativa({ narrativaAttrs, pl
         [F_WF.tipoFlujo]: wfSeq.tipoFlujoWorkflow,
         [F_WF.pasos]: wfSeq.pasosRequeridosWorkflow,
         [F_WF.pasoOrden]: wfSeq.pasoActualOrden
-    };
+    });
 
     Object.keys(wfAttrs).forEach(k => { if (wfAttrs[k] === undefined) wfAttrs[k] = null; });
 
     if (!existingWf) {
         wfAttrs.GlobalID = generateGUID();
-        await applyWorkflowEdits({ adds: [{ attributes: wfAttrs }] });
-        await writeAuditEvent("WF_SOLICITUD_CREADA", "APP_REPORTE", "OK", `Workflow creado: ${wfAttrs.GlobalID}. Flujo: ${wfSeq.tipoFlujoWorkflow}`);
+        const result = { action: wfSeq.usedFallback ? "default_fallback" : "created", role: wfSeq.rolInicial, estado: wfSeq.estadoInicial, clave: claveUnicaSolicitud };
+        auditEventAdds.push({ attributes: prepareAuditEventAttrs("WF_SOLICITUD_CREADA", "APP_REPORTE", "OK", `Workflow creado: ${wfAttrs.GlobalID}. Flujo: ${wfSeq.tipoFlujoWorkflow}`) });
 
         if (wfSeq.usedFallback) {
-            await writeAuditEvent("WF_FLUJO_DEFAULT_COMPLETO", "APP_REPORTE", "ADVERTENCIA", `Aplicado flujo COMPLETO por defecto para: ${wfAttrs.GlobalID}.`);
+            auditEventAdds.push({ attributes: prepareAuditEventAttrs("WF_FLUJO_DEFAULT_COMPLETO", "APP_REPORTE", "ADVERTENCIA", `Aplicado flujo COMPLETO por defecto para: ${wfAttrs.GlobalID}.`) });
         }
 
-        return { action: wfSeq.usedFallback ? "default_fallback" : "created", role: wfSeq.rolInicial, estado: wfSeq.estadoInicial, clave: claveUnicaSolicitud };
+        return { adds: [{ attributes: wfAttrs }], updates: [], result, auditEventAdds };
     } else {
         const currentEst = existingWf.EstadoActual;
         const blockStates = ["Aprobado", "AprobadoOAP", "Publicado"];
@@ -1089,8 +1591,9 @@ async function createOrUpdateWorkflowSolicitudFromNarrativa({ narrativaAttrs, pl
             throw new Error("El reporte ya tiene una solicitud aprobada o publicada. No se puede reenviar desde App Reporte sin habilitar corrección controlada.");
         }
 
-        const updateAttrs = {
+        const updateAttrs = truncateKnownTechnicalFields("WF_SolicitudRevision", {
             OBJECTID: existingWf.OBJECTID,
+            [F_WF.objId]: wfObjectId,
             [F_WF.est]: currentEst === "Devuelto" ? wfSeq.estadoInicial : (currentEst === "Borrador" ? wfSeq.estadoInicial : currentEst),
             [F_WF.rolActual]: currentEst === "Devuelto" || currentEst === "Borrador" ? wfSeq.rolInicial : existingWf.RolResponsableActual,
             [F_WF.etapaActual]: currentEst === "Devuelto" || currentEst === "Borrador" ? wfSeq.etapaInicial : existingWf.EtapaActual,
@@ -1104,13 +1607,21 @@ async function createOrUpdateWorkflowSolicitudFromNarrativa({ narrativaAttrs, pl
             [F_WF.comentario]: existingWf.ComentarioSolicitante || wfAttrs[F_WF.comentario],
             [F_WF.clave]: claveUnicaSolicitud,
             [F_WF.ver]: Number(narrativaAttrs.Version || 1)
-        };
+        });
 
-        await applyWorkflowEdits({ updates: [{ attributes: updateAttrs }] });
-        await writeAuditEvent("WF_SOLICITUD_ACTUALIZADA", "APP_REPORTE", "OK", `Workflow actualizado: ${existingWf.GlobalID}. Estado: ${updateAttrs[F_WF.est]}`);
+        const result = { action: "updated", role: updateAttrs[F_WF.rolActual], estado: updateAttrs[F_WF.est], clave: claveUnicaSolicitud };
+        auditEventAdds.push({ attributes: prepareAuditEventAttrs("WF_SOLICITUD_ACTUALIZADA", "APP_REPORTE", "OK", `Workflow actualizado: ${existingWf.GlobalID}. Estado: ${updateAttrs[F_WF.est]}`) });
 
-        return { action: "updated", role: updateAttrs[F_WF.rolActual], estado: updateAttrs[F_WF.est], clave: claveUnicaSolicitud };
+        return { adds: [], updates: [{ attributes: updateAttrs }], result, auditEventAdds };
     }
+}
+
+async function createOrUpdateWorkflowSolicitudFromNarrativa({ narrativaAttrs, planAct, isSubmit, preparedWorkflow = null }) {
+    if (!isSubmit) return;
+    const prepared = preparedWorkflow || await prepareWorkflowSolicitudEdit({ narrativaAttrs, planAct, isSubmit });
+    if (!prepared) return;
+    await applyWorkflowEdits({ adds: prepared.adds || [], updates: prepared.updates || [] });
+    return prepared.result;
 }
 
 // --- Autenticación OTP y Roles V4 ---
@@ -1464,11 +1975,15 @@ async function loadActividades() {
         const vig = elVigencia.value;
         let data = [];
         cacheActividadesPesos.clear();
+        cacheActividadesInfo.clear();
 
         if (currentUser.isSuperAdmin) {
             const qAct = await fetchJson(`${URL_ACTIVIDAD}/query`, { f: "json", where: `Activo='SI' AND Vigencia=${vig}`, outFields: "GlobalID,ActividadID,NombreActividad,Peso", orderByFields: "ActividadID ASC" });
             if (qAct && Array.isArray(qAct.features) && qAct.features.length > 0) {
-                qAct.features.forEach(f => cacheActividadesPesos.set(normalizeGuidKey(f.attributes.GlobalID), f.attributes.Peso || 0));
+                qAct.features.forEach(f => {
+                    cacheActividadesPesos.set(normalizeGuidKey(f.attributes.GlobalID), f.attributes.Peso || 0);
+                    cacheActividadesInfo.set(normalizeGuidKey(f.attributes.GlobalID), f.attributes);
+                });
                 data = qAct.features.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
             }
         } else {
@@ -1480,7 +1995,10 @@ async function loadActividades() {
                     const qA = await fetchJson(`${URL_ACTIVIDAD}/query`, { f: "json", where: `GlobalID IN (${chunk}) AND Activo='SI' AND Vigencia=${vig}`, outFields: "GlobalID,ActividadID,NombreActividad,Peso", orderByFields: "ActividadID ASC" });
                     if (qA && Array.isArray(qA.features)) qActFeatures.push(...qA.features);
                 }
-                qActFeatures.forEach(f => cacheActividadesPesos.set(normalizeGuidKey(f.attributes.GlobalID), f.attributes.Peso || 0));
+                qActFeatures.forEach(f => {
+                    cacheActividadesPesos.set(normalizeGuidKey(f.attributes.GlobalID), f.attributes.Peso || 0);
+                    cacheActividadesInfo.set(normalizeGuidKey(f.attributes.GlobalID), f.attributes);
+                });
                 data = qActFeatures.map(f => ({ value: f.attributes.GlobalID, label: `${f.attributes.ActividadID} - ${f.attributes.NombreActividad}` }));
             }
         }
@@ -1806,10 +2324,17 @@ async function loadExistingData(actGid) {
 
     indicatorPriorAccumulated = await fetchIndicadorPriorAccumulated(actGid, vig, per);
 
-    const qNar = await fetchJson(`${URL_NARRATIVA}/query`, { f: "json", where: `ActividadGlobalID='${actGid}' AND Vigencia=${vig} AND Periodo='${per}'`, outFields: "*" });
+    const narrativaWhere = `ActividadGlobalID='${normalizeGuidLiteral(actGid)}' AND Vigencia=${vig} AND Periodo='${per}'`;
+    const qNar = await fetchJson(`${URL_NARRATIVA}/query`, {
+        f: "json",
+        where: narrativaWhere,
+        outFields: "*",
+        orderByFields: "FechaUltimaEdicionFuncional DESC, EditDate DESC, FechaRegistro DESC, Version DESC, OBJECTID DESC"
+    });
 
     if (qNar && Array.isArray(qNar.features) && qNar.features.length) {
-        existingNarrativa = qNar.features[0].attributes;
+        registerDuplicateDiagnostic("narrativa", qNar.features, { actividadGlobalID: actGid, vigencia: vig, periodo: per, source: "loadExistingData" });
+        existingNarrativa = selectMostRecentFeature(qNar.features).attributes;
         existingNarrativa.EstadoRegistro = normalizeState(existingNarrativa.EstadoRegistro);
         document.getElementById("txt-reporte-narrativo").value = existingNarrativa.TextoNarrativo || "";
         document.getElementById("txt-logros-descripcion").value = existingNarrativa.DescripcionLogrosAlcanzados || "";
@@ -1817,7 +2342,20 @@ async function loadExistingData(actGid) {
         populateReporteConsolidadoFromExisting(existingNarrativa);
         applyReadonlyStateNarrativa(existingNarrativa.EstadoRegistro);
     } else {
+        registerDuplicateDiagnostic("narrativa", [], { actividadGlobalID: actGid, vigencia: vig, periodo: per, source: "loadExistingData" });
         clearReporteConsolidadoFields(true);
+    }
+
+    try {
+        const qWfDup = await fetchJson(`${URL_WF_SOLICITUD}/query`, {
+            f: "json",
+            where: narrativaWhere,
+            outFields: "*",
+            orderByFields: "FechaUltimoMovimiento DESC, EditDate DESC, FechaSolicitud DESC, Version DESC, OBJECTID DESC"
+        });
+        registerDuplicateDiagnostic("workflow", qWfDup?.features || [], { actividadGlobalID: actGid, vigencia: vig, periodo: per, source: "loadExistingData" });
+    } catch (error) {
+        console.warn("No fue posible ejecutar diagnostico read-only de duplicados WF.", error);
     }
 
     syncReporteConsolidadoUI();
@@ -2391,6 +2929,7 @@ async function processSave(isSubmit) {
 
         const draft = collectDraft(isSubmit);
         let hasChanges = draft.adds.length || draft.updates.length || draft.ubicAdds.length || draft.ubicUpdates.length || deletedLocations.length || draft.narrAdds.length || draft.narrUpdates.length;
+        validateFunctionalTextDraftLocally(draft);
 
         if (isSubmit) {
             if (!existingNarrativa && draft.narrAdds.length === 0) {
@@ -2416,31 +2955,10 @@ async function processSave(isSubmit) {
                 }
             }
 
-            if (hasChanges) {
-                await executeSave(draft);
-            }
-
             // Resolucion integral de workflow centralizado
             const actGid = getActividadId();
             const vig = Number(elVigencia.value);
             const per = getPeriodo();
-            const claveUnica = `${actGid}|${vig}|${per}`;
-
-            let expectedVersion = 1;
-            if (existingNarrativa) expectedVersion = existingNarrativa.Version || 1;
-            if (draft.narrUpdates.length > 0) expectedVersion = (existingNarrativa.Version || 1) + 1;
-
-            const resolvedNarrativa = await resolveNarrativaAfterSave({
-                actividadGlobalID: actGid,
-                vigencia: vig,
-                periodo: per,
-                version: expectedVersion,
-                claveUnicaReporteActividad: claveUnica
-            });
-
-            if (!resolvedNarrativa) {
-                throw new Error("No se pudo confirmar el guardado del reporte consolidado.");
-            }
 
             let currentPlanAct = planActCtx;
             if (!currentPlanAct || !currentPlanAct.TipoFlujoWorkflow) {
@@ -2448,15 +2966,34 @@ async function processSave(isSubmit) {
                 if (!currentPlanAct) throw new Error("No se pudo resolver la planeación de la actividad para crear la solicitud de revisión.");
             }
 
-            const wfResult = await createOrUpdateWorkflowSolicitudFromNarrativa({
-                narrativaAttrs: resolvedNarrativa,
-                planAct: currentPlanAct,
-                isSubmit: isSubmit
-            });
-
             const inputAct = document.querySelector("#combo-actividad .combo-input");
             const actName = inputAct ? inputAct.value : 'Desconocida';
-            await writeAuditEvent("ENVIAR_REVISION", "APP_REPORTE", "OK", `Actividad: ${actName}. Workflow creado/actualizado. Estado: ${wfResult.estado}`);
+            const expectedNarrativa = resolveExpectedNarrativaFromDraft(draft);
+            if (!expectedNarrativa) throw new Error("No se pudo preparar el reporte consolidado esperado para validar el workflow.");
+
+            const preparedWorkflow = await prepareWorkflowSolicitudEdit({
+                narrativaAttrs: expectedNarrativa,
+                planAct: currentPlanAct,
+                isSubmit: true
+            });
+
+            draft.auditEventAdds.push(...(preparedWorkflow?.auditEventAdds || []));
+            draft.auditEventAdds.push({ attributes: prepareAuditEventAttrs("ENVIAR_REVISION", "APP_REPORTE", "OK", `Actividad: ${actName}. Workflow creado/actualizado. Estado: ${preparedWorkflow.result.estado}`) });
+
+            await validateDraftBeforeAnyWrite(draft, preparedWorkflow);
+
+            if (hasChanges) {
+                await executeSave(draft);
+            }
+
+            const wfResult = await createOrUpdateWorkflowSolicitudFromNarrativa({
+                narrativaAttrs: expectedNarrativa,
+                planAct: currentPlanAct,
+                isSubmit: isSubmit,
+                preparedWorkflow
+            });
+
+            await executePreparedAuditPayloads(draft);
 
             let successMsg = "";
             if (wfResult.action === "created") {
@@ -2478,10 +3015,12 @@ async function processSave(isSubmit) {
                 setStatus("No hay cambios operativos para guardar.", "info");
                 return;
             }
-            await executeSave(draft);
             const inputAct = document.querySelector("#combo-actividad .combo-input");
             const actName = inputAct ? inputAct.value : 'Desconocida';
-            await writeAuditEvent("GUARDAR_BORRADOR", "APP_REPORTE", "OK", `Actividad: ${actName}. Tareas afect: ${draft.adds.length + draft.updates.length}.`);
+            draft.auditEventAdds.push({ attributes: prepareAuditEventAttrs("GUARDAR_BORRADOR", "APP_REPORTE", "OK", `Actividad: ${actName}. Tareas afect: ${draft.adds.length + draft.updates.length}.`) });
+            await validateDraftBeforeAnyWrite(draft, null);
+            await executeSave(draft);
+            await executePreparedAuditPayloads(draft);
 
             let successMsg = "Borrador guardado exitosamente.";
             if (validation.warnings > 0) successMsg = `Se guardó el borrador, pero revise las advertencias de los valores reportados (${validation.warnings} advertencias).`;
@@ -2502,7 +3041,7 @@ async function processSave(isSubmit) {
 function collectDraft(isSubmit) {
     const actGid = getActividadId(), vig = Number(elVigencia.value), per = getPeriodo();
     const epochNow = Date.now();
-    const res = { actGid, adds: [], updates: [], ubicAdds: [], ubicUpdates: [], narrAdds: [], narrUpdates: [] };
+    const res = { actGid, adds: [], updates: [], ubicAdds: [], ubicUpdates: [], narrAdds: [], narrUpdates: [], auditHistoryAdds: [], auditEventAdds: [] };
 
     // AVANCES TAREAS
     document.querySelectorAll(".row").forEach(rowEl => {
@@ -2537,22 +3076,24 @@ function collectDraft(isSubmit) {
             res.updates.push({ attributes: baseAttrs });
 
             if (String(exist.ValorReportado) !== String(val) || String(exist.Observaciones) !== String(obs)) {
-                writeAuditHistory(
-                    "REP_AvanceTarea",
-                    avanceGidFinal,
-                    "Edicion_Operativa",
-                    `Val:${exist.ValorReportado}`,
-                    `Val:${val}|Obs:${obs}`,
-                    motivo,
-                    {
+                res.auditHistoryAdds.push({
+                    attributes: prepareAuditHistoryAttrs(
+                        "REP_AvanceTarea",
+                        avanceGidFinal,
+                        "Edicion_Operativa",
+                        `Val:${exist.ValorReportado}`,
+                        `Val:${val}|Obs:${obs}`,
+                        motivo,
+                        {
                         OBJECTID: exist.OBJECTID,
                         GlobalID: avanceGidFinal,
                         TareaGlobalID: tareaGid,
                         Vigencia: vig,
                         Periodo: per,
                         Version: versionActual
-                    }
-                );
+                        }
+                    )
+                });
             }
         } else {
             avanceGidFinal = generateGUID();
@@ -2562,21 +3103,23 @@ function collectDraft(isSubmit) {
             baseAttrs.GlobalID = avanceGidFinal;
             res.adds.push({ attributes: baseAttrs });
 
-            writeAuditHistory(
-                "REP_AvanceTarea",
-                avanceGidFinal,
-                "__CREATE__",
-                "",
-                `Val:${val}|Obs:${obs}`,
-                "",
-                {
+            res.auditHistoryAdds.push({
+                attributes: prepareAuditHistoryAttrs(
+                    "REP_AvanceTarea",
+                    avanceGidFinal,
+                    "__CREATE__",
+                    "",
+                    `Val:${val}|Obs:${obs}`,
+                    "",
+                    {
                     GlobalID: avanceGidFinal,
                     TareaGlobalID: tareaGid,
                     Vigencia: vig,
                     Periodo: per,
                     Version: versionActual
-                }
-            );
+                    }
+                )
+            });
         }
 
         // Ubicaciones
@@ -2649,14 +3192,15 @@ function collectDraft(isSubmit) {
 
                 res.narrUpdates.push({ attributes: baseN });
 
-                writeAuditHistory(
-                    "REP_ReporteNarrativo",
-                    narrGidFinal,
-                    "Edicion_ReporteConsolidado",
-                    `Estado:${existingNarrativa.EstadoRegistro || ""}|Version:${existingNarrativa.Version || 1}`,
-                    `Estado:${baseN[F_NAR.estado]}|Version:${versionActualN}`,
-                    motivoN || "",
-                    {
+                res.auditHistoryAdds.push({
+                    attributes: prepareAuditHistoryAttrs(
+                        "REP_ReporteNarrativo",
+                        narrGidFinal,
+                        "Edicion_ReporteConsolidado",
+                        `Estado:${existingNarrativa.EstadoRegistro || ""}|Version:${existingNarrativa.Version || 1}`,
+                        `Estado:${baseN[F_NAR.estado]}|Version:${versionActualN}`,
+                        motivoN || "",
+                        {
                         OBJECTID: existingNarrativa.OBJECTID,
                         GlobalID: narrGidFinal,
                         ClaveUnicaReporteActividad: baseN[F_NAR.clave],
@@ -2664,8 +3208,9 @@ function collectDraft(isSubmit) {
                         Vigencia: vig,
                         Periodo: per,
                         Version: versionActualN
-                    }
-                );
+                        }
+                    )
+                });
 
             } else {
                 narrGidFinal = generateGUID();
@@ -2680,22 +3225,24 @@ function collectDraft(isSubmit) {
 
                 res.narrAdds.push({ attributes: baseN });
 
-                writeAuditHistory(
-                    "REP_ReporteNarrativo",
-                    narrGidFinal,
-                    "__CREATE__",
-                    "",
-                    `Estado:${baseN[F_NAR.estado]}|Version:${versionActualN}`,
-                    "",
-                    {
+                res.auditHistoryAdds.push({
+                    attributes: prepareAuditHistoryAttrs(
+                        "REP_ReporteNarrativo",
+                        narrGidFinal,
+                        "__CREATE__",
+                        "",
+                        `Estado:${baseN[F_NAR.estado]}|Version:${versionActualN}`,
+                        "",
+                        {
                         GlobalID: narrGidFinal,
                         ClaveUnicaReporteActividad: baseN[F_NAR.clave],
                         ActividadGlobalID: actGid,
                         Vigencia: vig,
                         Periodo: per,
                         Version: versionActualN
-                    }
-                );
+                        }
+                    )
+                });
             }
         }
     }
@@ -2704,28 +3251,42 @@ function collectDraft(isSubmit) {
 
 // Validación de responses estricta requerida para UAT
 async function executeSave(draft) {
-    const validateResults = (results, operation) => {
+    const validateResults = (results, operation, entityName) => {
         if (results && Array.isArray(results)) {
             for (const r of results) {
                 if (r.success === false) {
-                    throw new Error(`Fallo en ${operation}: ${r.error?.description || JSON.stringify(r.error)}`);
+                    const msg = r.error?.description || JSON.stringify(r.error);
+                    if (/truncated|truncat|string or binary data/i.test(msg)) {
+                        throw createArcGisLengthError(entityName, operation, new Error(msg));
+                    }
+                    throw new Error(`Fallo en ${operation}: ${msg}`);
                 }
             }
         }
     };
 
-    const applyAndCheck = async (url, payload) => {
-        const data = await postForm(`${url}/applyEdits`, payload);
-        validateResults(data.addResults, "adds");
-        validateResults(data.updateResults, "updates");
-        validateResults(data.deleteResults, "deletes");
+    const applyAndCheck = async (entityName, url, payload) => {
+        await validateApplyEditsPayload(entityName, payload);
+        let data;
+        try {
+            data = await postForm(`${url}/applyEdits`, payload);
+        } catch (error) {
+            if (/truncated|truncat|string or binary data/i.test(String(error?.message || error))) {
+                const operation = Array.isArray(payload.adds) && payload.adds.length ? "adds" : "updates";
+                throw createArcGisLengthError(entityName, operation, error);
+            }
+            throw error;
+        }
+        validateResults(data.addResults, "adds", entityName);
+        validateResults(data.updateResults, "updates", entityName);
+        validateResults(data.deleteResults, "deletes", entityName);
         return data;
     };
 
     try {
-        if (draft.adds.length || draft.updates.length) await applyAndCheck(URL_AVANCE_TAREA, { f: "json", adds: draft.adds, updates: draft.updates });
-        if (draft.ubicAdds.length || draft.ubicUpdates.length || deletedLocations.length) await applyAndCheck(URL_TAREA_UBICACION, { f: "json", adds: draft.ubicAdds, updates: draft.ubicUpdates, deletes: deletedLocations });
-        if (draft.narrAdds.length || draft.narrUpdates.length) await applyAndCheck(URL_NARRATIVA, { f: "json", adds: draft.narrAdds, updates: draft.narrUpdates });
+        if (draft.adds.length || draft.updates.length) await applyAndCheck("REP_AvanceTarea", URL_AVANCE_TAREA, { f: "json", adds: draft.adds, updates: draft.updates });
+        if (draft.ubicAdds.length || draft.ubicUpdates.length || deletedLocations.length) await applyAndCheck("REP_TareaUbicacion_PT", URL_TAREA_UBICACION, { f: "json", adds: draft.ubicAdds, updates: draft.ubicUpdates, deletes: deletedLocations });
+        if (draft.narrAdds.length || draft.narrUpdates.length) await applyAndCheck("REP_ReporteNarrativo", URL_NARRATIVA, { f: "json", adds: draft.narrAdds, updates: draft.narrUpdates });
     } catch (e) {
         auditError("APPLY_EDITS_API", e, { draftStats: { a: draft.adds.length, u: draft.updates.length } });
         const customErr = new Error(`Falla en la sincronización de datos con el servidor principal: ${e.message}`);
