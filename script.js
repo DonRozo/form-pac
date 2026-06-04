@@ -33,6 +33,7 @@
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
 const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/MpiosCAR/FeatureServer";
 const CAR_JUR_LAYER_ID = 0;
+const APP_VERSION = "reporte-decimales-20260604";
 
 // URL PowerAutomate OTP.
 // Versión funcional controlada DATA-PAC V4.
@@ -377,8 +378,7 @@ function getTipoValorAvanceByTarea(tareaGid) {
 function getMetaProgramadaByTarea(tareaGid) {
     const pTar = planTarCtx.get(normalizeGuidKey(tareaGid));
     if (!pTar || pTar.MetaProgramada === null || pTar.MetaProgramada === undefined || String(pTar.MetaProgramada).trim() === '') return null;
-    const meta = Number(pTar.MetaProgramada);
-    return isNaN(meta) ? null : meta;
+    return parseDataPacDecimal(pTar.MetaProgramada);
 }
 
 // --- FASE 2: REPORTE CONSOLIDADO DE ACTIVIDAD ---
@@ -403,8 +403,7 @@ function getPlanTipoIndicador() {
 
 function getPlanMetaAnual() {
     if (!planActCtx || planActCtx.MetaProgramada === null || planActCtx.MetaProgramada === undefined || String(planActCtx.MetaProgramada).trim() === "") return null;
-    const meta = Number(planActCtx.MetaProgramada);
-    return Number.isFinite(meta) ? meta : null;
+    return parseDataPacDecimal(planActCtx.MetaProgramada);
 }
 
 function isIndicadorActivoEnPlan() {
@@ -412,17 +411,30 @@ function isIndicadorActivoEnPlan() {
 }
 
 function formatNumberForUi(value, decimals = 2) {
-    if (value === null || value === undefined || !Number.isFinite(Number(value))) return "";
-    const n = Number(value);
+    const n = parseDataPacDecimal(value);
+    if (n === null) return "";
     if (Number.isInteger(n)) return String(n);
     return String(Number(n.toFixed(decimals)));
+}
+
+function parseDataPacDecimal(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+
+    const raw = String(value).trim();
+    if (raw === "") return null;
+    if (/\s/.test(raw) || (raw.includes(",") && raw.includes("."))) return null;
+    if ((raw.match(/,/g) || []).length > 1 || (raw.match(/\./g) || []).length > 1) return null;
+    if (!/^[+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+)$/.test(raw)) return null;
+
+    const num = Number(raw.replace(",", "."));
+    return Number.isFinite(num) ? num : null;
 }
 
 function getCurrentIndicadorValue() {
     const el = byId("txt-valor-indicador");
     if (!el || el.value === "" || el.value === null || el.value === undefined) return null;
-    const num = Number(el.value);
-    return Number.isFinite(num) ? num : null;
+    return parseDataPacDecimal(el.value);
 }
 
 function calculateIndicadorValues(currentValue = getCurrentIndicadorValue()) {
@@ -448,9 +460,7 @@ function getPlanTipoCalculoActividad() {
 }
 
 function getNumericInputValue(value) {
-    if (value === null || value === undefined || String(value).trim() === "") return null;
-    const num = Number(value);
-    return Number.isFinite(num) ? num : null;
+    return parseDataPacDecimal(value);
 }
 
 function getReportedTaskValue(tareaGid) {
@@ -544,17 +554,17 @@ function calculateSubActivityProgress(subActividad) {
     const tasks = cacheTareas
         .filter(t => normalizeGuidKey(t.SubActividadGlobalID) === normalizeGuidKey(subActividad.GlobalID))
         .map(t => {
-            const planTar = planTarCtx.get(normalizeGuidKey(t.GlobalID));
+        const planTar = planTarCtx.get(normalizeGuidKey(t.GlobalID));
             const taskCalc = calculateTaskProgressPercent(t);
             return {
                 ...taskCalc,
                 tarea: t,
-                peso: Number(planTar?.PesoTarea)
+                peso: parseDataPacDecimal(planTar?.PesoTarea)
             };
         });
 
     const weighted = calculateWeightedPercent(tasks, "peso", "tarea");
-    const pesoSub = Number(planSub?.PesoSubActividad);
+    const pesoSub = parseDataPacDecimal(planSub?.PesoSubActividad);
     const errors = [...weighted.errors];
     const blockingErrors = [];
     const subLabel = getSubActivityDisplayLabel(subActividad);
@@ -762,7 +772,7 @@ async function fetchIndicadorPriorAccumulated(actGid, vig, periodo) {
             returnGeometry: false
         });
         return (q.features || []).reduce((sum, f) => {
-            const val = Number(f.attributes?.ValorIndicadorTrimestre);
+            const val = parseDataPacDecimal(f.attributes?.ValorIndicadorTrimestre);
             return sum + (Number.isFinite(val) ? val : 0);
         }, 0);
     } catch (e) {
@@ -821,6 +831,8 @@ function refreshSupportPanel() {
 
     document.getElementById("sup-diag-subs").textContent = `${diagSubsVis} / ${diagSubsLoad} / ${diagSubsMatch}`;
     document.getElementById("sup-diag-tars").textContent = `${diagTarsVis} / ${diagTarsLoad} / ${diagTarsMatch}`;
+    const versionEl = document.getElementById("sup-version");
+    if (versionEl) versionEl.textContent = APP_VERSION;
     document.getElementById("sup-msg").textContent = lastGlobalMsg || "Ninguno";
 
     const errEl = document.getElementById("sup-err");
@@ -859,6 +871,7 @@ document.getElementById("btn-copy-diagnostico").addEventListener("click", () => 
     const data = `
 DATA-PAC V4 | DIAGNÓSTICO UAT
 -----------------------------
+Versión frontend: ${APP_VERSION}
 Usuario: ${currentUser?.nombre}
 Roles: ${currentUser?.roles.join(", ")}
 Contexto: ${elVigencia.value} | ${getPeriodo()}
@@ -2489,7 +2502,7 @@ function tareaRowHtml(t) {
         <label style="color:var(--danger);">Motivo de ajuste (Devuelto)</label>
         <input type="text" class="row-motivo" placeholder="Indica qué corregiste..." ${!aplica ? 'disabled' : ''} />
       </div>
-      <div class="field" style="padding:0;"><label>Valor reportado</label><input class="row-valor" type="number" step="any" ${!aplica ? 'disabled' : ''} /></div>
+      <div class="field" style="padding:0;"><label>Valor reportado</label><input class="row-valor" type="text" inputmode="decimal" ${!aplica ? 'disabled' : ''} /></div>
       <div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Observaciones</label><input class="row-obs" type="text" ${!aplica ? 'disabled' : ''} /></div>
       <div class="field" style="padding:0; grid-column: 1 / span 2;"><label>Evidencia (URL)</label><input class="row-obs row-evi" type="url" ${!aplica ? 'disabled' : ''} /></div>
       ${geo ? `<div class="loc-list" id="loc-list-${rowId}" style="grid-column: 1 / span 2;"></div>` : ``}
@@ -2900,9 +2913,9 @@ function validateTaskRows(isSubmit) {
         let rowWarnings = [];
 
         if (val !== "" && val !== undefined) {
-            const numVal = Number(val);
-            if (isNaN(numVal)) {
-                rowErrors.push("El Valor Reportado debe ser numérico.");
+            const numVal = parseDataPacDecimal(val);
+            if (numVal === null) {
+                rowErrors.push("El Valor Reportado debe ser numerico, con coma o punto decimal y sin separadores de miles.");
             } else {
                 const tipoValor = getTipoValorAvanceByTarea(tareaGid);
                 if (tipoValor.includes("PORCENTAJE") || tipoValor === "%") {
@@ -2969,6 +2982,7 @@ function validateNarrative(isSubmit) {
     const txt3 = document.getElementById("txt-logros-principales")?.value || "";
     const motivoN = document.getElementById("txt-motivo-narrativa")?.value || "";
 
+    const valIndicadorRaw = byId("txt-valor-indicador")?.value;
     const valIndicador = getCurrentIndicadorValue();
     const obsIndicador = byId("txt-observacion-indicador")?.value || "";
     const calc = calculateIndicadorValues(valIndicador);
@@ -3012,6 +3026,9 @@ function validateNarrative(isSubmit) {
                     warnings.push("El acumulado del indicador supera la meta anual. Revise la observación funcional.");
                 }
             }
+        }
+        if (valIndicadorRaw !== undefined && String(valIndicadorRaw).trim() !== "" && valIndicador === null) {
+            errors.push("El valor trimestral del indicador debe ser numerico, con coma o punto decimal y sin separadores de miles.");
         }
 
         if (isSubmit) {
@@ -3301,11 +3318,12 @@ function collectDraft(isSubmit) {
         if (rowEl.classList.contains("is-readonly") || rowEl.classList.contains("is-not-applicable")) return;
 
         const tareaGid = rowEl.getAttribute("data-tarea-gid"), rowId = rowEl.getAttribute("data-row-id");
-        const val = rowEl.querySelector(".row-valor")?.value, obs = rowEl.querySelector(".row-obs")?.value, evi = rowEl.querySelector(".row-evi")?.value;
+        const valRaw = rowEl.querySelector(".row-valor")?.value, obs = rowEl.querySelector(".row-obs")?.value, evi = rowEl.querySelector(".row-evi")?.value;
+        const val = parseDataPacDecimal(valRaw);
         const motivo = rowEl.querySelector(".row-motivo")?.value;
         const locs = rowLocations.get(rowId) || [];
 
-        if (!val && !obs && !evi && locs.length === 0) return;
+        if ((valRaw === "" || valRaw === undefined || valRaw === null) && !obs && !evi && locs.length === 0) return;
 
         const exist = existingAvances.get(tareaGid);
         const estadoNuevo = isSubmit ? "Enviado" : (exist ? exist.EstadoRegistro : "Borrador");
@@ -3325,7 +3343,7 @@ function collectDraft(isSubmit) {
             versionActual = (exist.Version || 1) + 1;
             baseAttrs.OBJECTID = exist.OBJECTID;
             baseAttrs[F_AVA.ver] = versionActual;
-            baseAttrs[F_AVA.val] = val ? Number(val) : null; baseAttrs[F_AVA.obs] = obs; baseAttrs[F_AVA.evi] = evi;
+            baseAttrs[F_AVA.val] = val; baseAttrs[F_AVA.obs] = obs; baseAttrs[F_AVA.evi] = evi;
             res.updates.push({ attributes: baseAttrs });
 
             if (String(exist.ValorReportado) !== String(val) || String(exist.Observaciones) !== String(obs)) {
@@ -3351,7 +3369,7 @@ function collectDraft(isSubmit) {
         } else {
             avanceGidFinal = generateGUID();
             baseAttrs[F_AVA.fkTarea] = tareaGid; baseAttrs.Vigencia = vig; baseAttrs.Periodo = per;
-            baseAttrs[F_AVA.ver] = versionActual; baseAttrs[F_AVA.val] = val ? Number(val) : null; baseAttrs[F_AVA.obs] = obs; baseAttrs[F_AVA.evi] = evi;
+            baseAttrs[F_AVA.ver] = versionActual; baseAttrs[F_AVA.val] = val; baseAttrs[F_AVA.obs] = obs; baseAttrs[F_AVA.evi] = evi;
             baseAttrs.FechaRegistro = epochNow; baseAttrs.Responsable = currentUser.nombre;
             baseAttrs.GlobalID = avanceGidFinal;
             res.adds.push({ attributes: baseAttrs });
