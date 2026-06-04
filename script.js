@@ -676,6 +676,25 @@ function renderActivityProgressSummaryInContext() {
     `;
 }
 
+function buildBiActivityProgressBadgeHtml() {
+    const baseStyle = "background:#dcfce7; color:#166534;";
+    if (!biActCtx) {
+        return `<span class="ctx-badge" style="${baseStyle}">BI actividad: sin registro</span>`;
+    }
+
+    const candidates = [
+        { label: "BI avance fisico", value: biActCtx.AvanceFisicoCalculado },
+        { label: "BI avance operativo", value: biActCtx.AvanceOperativoTareas },
+        { label: "BI avance indicador", value: biActCtx.PorcentajeAvanceIndicador }
+    ];
+    const selected = candidates.find(item => parseDataPacDecimal(item.value) !== null);
+    if (!selected) {
+        return `<span class="ctx-badge" style="${baseStyle}">BI actividad: sin avance calculado</span>`;
+    }
+
+    return `<span class="ctx-badge" style="${baseStyle}">${selected.label}: ${formatNumberForUi(parseDataPacDecimal(selected.value))}%</span>`;
+}
+
 function updateIndicatorCalculatedUI() {
     const calc = calculateIndicadorValues();
     const priorEl = byId("calc-valor-previo");
@@ -2364,7 +2383,7 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
                   <span class="ctx-badge">Línea Base: ${planActCtx.LineaBase ?? 'N/A'}</span>
                   <span class="ctx-badge">Meta Prog.: ${planActCtx.MetaProgramada ?? 'N/A'}</span>
                   <span class="ctx-badge">Unidad: ${planActCtx.UnidadMedida ?? 'N/A'}</span>
-                  <span class="ctx-badge" style="background:#dcfce7; color:#166534;">Avance Acum. Calculado: ${biActCtx?.AvanceAcumulado ?? 0}%</span>
+                  ${buildBiActivityProgressBadgeHtml()}
               </div>
           `;
         } else actContextPanel.style.display = "none";
