@@ -516,6 +516,7 @@ function calculateWeightedPercent(items, weightField, label) {
     const errors = [];
     let weighted = 0;
     let weightSum = 0;
+    let calculableWeightSum = 0;
     let applicableCount = 0;
     let completedCount = 0;
 
@@ -524,7 +525,6 @@ function calculateWeightedPercent(items, weightField, label) {
         applicableCount++;
         (item.warnings || []).forEach(w => warnings.push(w));
         (item.errors || []).forEach(e => errors.push(e));
-        if (item.pct === null || item.pct === undefined || !Number.isFinite(Number(item.pct))) return;
 
         const weight = Number(item[weightField]);
         if (!Number.isFinite(weight) || weight <= 0) {
@@ -532,8 +532,12 @@ function calculateWeightedPercent(items, weightField, label) {
             return;
         }
 
-        weighted += Number(item.pct) * weight;
         weightSum += weight;
+
+        if (item.pct === null || item.pct === undefined || !Number.isFinite(Number(item.pct))) return;
+
+        weighted += Number(item.pct) * weight;
+        calculableWeightSum += weight;
         completedCount++;
     });
 
@@ -541,8 +545,11 @@ function calculateWeightedPercent(items, weightField, label) {
     if (applicableCount > 0 && completedCount < applicableCount) {
         warnings.push(`${completedCount}/${applicableCount} ${label}(s) con avance calculable.`);
     }
+    if (weightSum > 0 && Math.abs(weightSum - 100) > 0.01) {
+        warnings.push(`La suma de pesos aplicables para ${label}(s) es ${formatNumberForUi(weightSum)}%.`);
+    }
 
-    return { pct, weightSum, applicableCount, completedCount, warnings, errors };
+    return { pct, weightSum, calculableWeightSum, applicableCount, completedCount, warnings, errors };
 }
 
 function calculateSubActivityProgress(subActividad) {
