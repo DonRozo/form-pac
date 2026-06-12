@@ -33,7 +33,7 @@
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
 const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/MpiosCAR/FeatureServer";
 const CAR_JUR_LAYER_ID = 0;
-const APP_VERSION = "reporte-decimales-20260604";
+const APP_VERSION = "reporte-img-gestion-20260612";
 
 // URL PowerAutomate OTP.
 // Versión funcional controlada DATA-PAC V4.
@@ -67,7 +67,7 @@ const URL_BI_TAR = getUrl(35);
 const URL_PLAN_ACT = getUrl(36);
 
 const F_AVA = { fkTarea: "TareaGlobalID", vig: "Vigencia", per: "Periodo", val: "ValorReportado", obs: "Observaciones", evi: "EvidenciaURL", fec: "FechaRegistro", resp: "Responsable", estado: "EstadoRegistro", ver: "Version", fEdic: "FechaUltimaEdicionFuncional", pEdic: "PersonaUltimaEdicionID", motivo: "MotivoAjuste" };
-const F_NAR = { fkAct: "ActividadGlobalID", vig: "Vigencia", per: "Periodo", txt1: "TextoNarrativo", txt2: "DescripcionLogrosAlcanzados", txt3: "PrincipalesLogros", fec: "FechaRegistro", resp: "Responsable", estado: "EstadoRegistro", ver: "Version", fEdic: "FechaUltimaEdicionFuncional", pEdic: "PersonaUltimaEdicionID", motivo: "MotivoAjuste", respGid: "ResponsableGlobalID", planAct: "PlanActividadGlobalID", indId: "IndicadorID", indNom: "NombreIndicador", indTipo: "TipoValorIndicador", indUnidad: "UnidadMedidaIndicador", indCalc: "TipoCalculoAvanceActividad", clave: "ClaveUnicaReporteActividad", meta: "MetaAnualIndicador", valTri: "ValorIndicadorTrimestre", valAcum: "ValorIndicadorAcumulado", pct: "PorcentajeAvanceIndicador", obsInd: "ObservacionIndicador", eviInd: "EvidenciaIndicadorURL", odsPlan: "ReportaODSPlan", odsTxt: "AvanceODSPeriodo", rezPlan: "ReportaRezagoPlan", rezTxt: "AvanceRezagoPeriodo", resPlan: "ReportaReservaPlan", resTxt: "AvanceReservaPeriodo" };
+const F_NAR = { fkAct: "ActividadGlobalID", vig: "Vigencia", per: "Periodo", txt1: "TextoNarrativo", txt2: "DescripcionLogrosAlcanzados", txt3: "PrincipalesLogros", fec: "FechaRegistro", resp: "Responsable", estado: "EstadoRegistro", ver: "Version", fEdic: "FechaUltimaEdicionFuncional", pEdic: "PersonaUltimaEdicionID", motivo: "MotivoAjuste", respGid: "ResponsableGlobalID", planAct: "PlanActividadGlobalID", indId: "IndicadorID", indNom: "NombreIndicador", indTipo: "TipoValorIndicador", indUnidad: "UnidadMedidaIndicador", indCalc: "TipoCalculoAvanceActividad", clave: "ClaveUnicaReporteActividad", meta: "MetaAnualIndicador", valTri: "ValorIndicadorTrimestre", valAcum: "ValorIndicadorAcumulado", pct: "PorcentajeAvanceIndicador", obsInd: "ObservacionIndicador", eviInd: "EvidenciaIndicadorURL", odsPlan: "ReportaODSPlan", odsTxt: "AvanceODSPeriodo", rezPlan: "ReportaRezagoPlan", rezTxt: "AvanceRezagoPeriodo", resPlan: "ReportaReservaPlan", resTxt: "AvanceReservaPeriodo", esImg: "EsIMG", pctGestionImg: "PorcentajeGestionIMG" };
 const F_UBI = { fkAvance: "AvanceTareaGlobalID", dane: "CodigoDANE", mun: "MunicipioNombre", desc: "DescripcionSitio", fec: "FechaRegistro" };
 
 // Metadata validada contra DATAPAC.json (servicio DATAPAC_V4, 2026-06-01).
@@ -107,7 +107,9 @@ const DATAPAC_FIELD_METADATA = {
         ReportaRezagoPlan: { type: "esriFieldTypeString", length: 2 },
         AvanceRezagoPeriodo: { type: "esriFieldTypeString", length: 5000 },
         ReportaReservaPlan: { type: "esriFieldTypeString", length: 2 },
-        AvanceReservaPeriodo: { type: "esriFieldTypeString", length: 5000 }
+        AvanceReservaPeriodo: { type: "esriFieldTypeString", length: 5000 },
+        EsIMG: { type: "esriFieldTypeString", length: 2 },
+        PorcentajeGestionIMG: { type: "esriFieldTypeDouble", length: null }
     },
     WF_SolicitudRevision: {
         TipoObjeto: { type: "esriFieldTypeString", length: 100 },
@@ -395,6 +397,10 @@ function normalizeSiNo(value, defaultValue = "NO") {
 
 function getPlanFlag(fieldName) { return normalizeSiNo(planActCtx?.[fieldName], "NO"); }
 
+function isPlanActividadIMG() {
+    return getPlanFlag("EsIMG") === "SI";
+}
+
 function getPlanTipoIndicador() {
     const tipo = normalizeText(planActCtx?.TipoValorIndicador || "NUMERICO");
     if (tipo.includes("PORC")) return "PORCENTUAL";
@@ -429,6 +435,29 @@ function parseDataPacDecimal(value) {
 
     const num = Number(raw.replace(",", "."));
     return Number.isFinite(num) ? num : null;
+}
+
+function parseImgGestionPercent(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+
+    const raw = String(value).trim();
+    if (raw === "") return null;
+    if (/\s/.test(raw) || (raw.includes(",") && raw.includes("."))) return null;
+    if ((raw.match(/,/g) || []).length > 1 || (raw.match(/\./g) || []).length > 1) return null;
+    if (!/^[+-]?(?:\d+(?:[.,]\d+)?|[.,]\d+)$/.test(raw)) return null;
+
+    const unsigned = raw.replace(/^[+-]/, "");
+    if (/^\d{1,3}[.,]\d{3}$/.test(unsigned)) return null;
+
+    const num = Number(raw.replace(",", "."));
+    return Number.isFinite(num) ? num : null;
+}
+
+function getCurrentImgGestionPercent() {
+    const el = byId("txt-porcentaje-gestion-img");
+    if (!el || el.value === "" || el.value === null || el.value === undefined) return null;
+    return parseImgGestionPercent(el.value);
 }
 
 function getCurrentIndicadorValue() {
@@ -720,7 +749,8 @@ function setConsolidatedFieldsDisabled(disabled) {
         "txt-evidencia-indicador",
         "txt-avance-ods",
         "txt-avance-rezago",
-        "txt-avance-reserva"
+        "txt-avance-reserva",
+        "txt-porcentaje-gestion-img"
     ].forEach(id => {
         const el = byId(id);
         if (el) el.disabled = disabled;
@@ -736,6 +766,7 @@ function clearReporteConsolidadoFields(clearValues = true) {
             "txt-avance-ods",
             "txt-avance-rezago",
             "txt-avance-reserva",
+            "txt-porcentaje-gestion-img",
             "calc-valor-previo",
             "calc-valor-acumulado",
             "calc-porcentaje-indicador"
@@ -747,6 +778,7 @@ function clearReporteConsolidadoFields(clearValues = true) {
 
 function syncReporteConsolidadoUI() {
     const blockIndicador = byId("bloque-indicador-actividad");
+    const blockImgGestion = byId("bloque-img-gestion");
     const ctx = byId("indicador-contexto");
     const blockEspeciales = byId("bloque-componentes-especiales");
     const blockOds = byId("bloque-ods");
@@ -756,7 +788,13 @@ function syncReporteConsolidadoUI() {
 
     const hasPlan = !!planActCtx;
     const indicadorActivo = isIndicadorActivoEnPlan();
+    const esImg = isPlanActividadIMG();
     if (blockIndicador) blockIndicador.style.display = indicadorActivo ? "block" : "none";
+    if (blockImgGestion) blockImgGestion.style.display = esImg ? "block" : "none";
+    if (!esImg) {
+        const imgInput = byId("txt-porcentaje-gestion-img");
+        if (imgInput) imgInput.value = "";
+    }
 
     if (ctx && indicadorActivo) {
         const tipo = getPlanTipoIndicador();
@@ -767,6 +805,7 @@ function syncReporteConsolidadoUI() {
             <span class="ctx-badge">Unidad: ${escapeHtml(planActCtx.UnidadMedida || "N/A")}</span>
             <span class="ctx-badge">Tipo: ${tipo}</span>
             <span class="ctx-badge">Meta anual: ${meta !== null ? formatNumberForUi(meta) : "N/D"}</span>
+            <span class="ctx-badge">IMG: ${esImg ? "SI" : "NO"}</span>
             <span class="ctx-badge">Fuente avance: ${escapeHtml(planActCtx.TipoCalculoAvanceActividad || "N/D")}</span>
         `;
     }
@@ -816,6 +855,7 @@ function populateReporteConsolidadoFromExisting(nar) {
     setVal("txt-avance-ods", nar?.AvanceODSPeriodo);
     setVal("txt-avance-rezago", nar?.AvanceRezagoPeriodo);
     setVal("txt-avance-reserva", nar?.AvanceReservaPeriodo);
+    setVal("txt-porcentaje-gestion-img", isPlanActividadIMG() ? nar?.PorcentajeGestionIMG : "");
     updateIndicatorCalculatedUI();
 }
 
@@ -2390,6 +2430,7 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
                   <span class="ctx-badge">Línea Base: ${planActCtx.LineaBase ?? 'N/A'}</span>
                   <span class="ctx-badge">Meta Prog.: ${planActCtx.MetaProgramada ?? 'N/A'}</span>
                   <span class="ctx-badge">Unidad: ${planActCtx.UnidadMedida ?? 'N/A'}</span>
+                  <span class="ctx-badge">IMG: ${isPlanActividadIMG() ? 'SI' : 'NO'}</span>
                   ${buildBiActivityProgressBadgeHtml()}
               </div>
           `;
@@ -2719,7 +2760,7 @@ function applyReadonlyStateNarrativa(estado) {
 
     document.getElementById("narrativa-badge-container").innerHTML = `<span class="status-badge status-badge--${estado.toLowerCase()}">${estado}</span>`;
     if (estado === "Devuelto") document.getElementById("container-motivo-narrativa").style.display = "block";
-    ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales", "txt-motivo-narrativa", "txt-valor-indicador", "txt-observacion-indicador", "txt-evidencia-indicador", "txt-avance-ods", "txt-avance-rezago", "txt-avance-reserva"].forEach(id => { const el = document.getElementById(id); if (el) el.disabled = isReadonly; });
+    ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales", "txt-motivo-narrativa", "txt-valor-indicador", "txt-observacion-indicador", "txt-evidencia-indicador", "txt-avance-ods", "txt-avance-rezago", "txt-avance-reserva", "txt-porcentaje-gestion-img"].forEach(id => { const el = document.getElementById(id); if (el) el.disabled = isReadonly; });
 }
 
 function evaluateHistoricalMode(forceReadOnly = false) {
@@ -2761,7 +2802,7 @@ function evaluateHistoricalMode(forceReadOnly = false) {
                 rowEl.querySelectorAll(".loc-item__actions").forEach(a => a.style.display = "none");
             }
         });
-        ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales", "txt-motivo-narrativa", "txt-valor-indicador", "txt-observacion-indicador", "txt-evidencia-indicador", "txt-avance-ods", "txt-avance-rezago", "txt-avance-reserva"].forEach(id => {
+        ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales", "txt-motivo-narrativa", "txt-valor-indicador", "txt-observacion-indicador", "txt-evidencia-indicador", "txt-avance-ods", "txt-avance-rezago", "txt-avance-reserva", "txt-porcentaje-gestion-img"].forEach(id => {
             const el = document.getElementById(id); if (el) el.disabled = true;
         });
     } else {
@@ -3011,6 +3052,8 @@ function validateNarrative(isSubmit) {
     const valIndicadorRaw = byId("txt-valor-indicador")?.value;
     const valIndicador = getCurrentIndicadorValue();
     const obsIndicador = byId("txt-observacion-indicador")?.value || "";
+    const pctGestionImgRaw = byId("txt-porcentaje-gestion-img")?.value;
+    const pctGestionImg = getCurrentImgGestionPercent();
     const calc = calculateIndicadorValues(valIndicador);
     const indicadorActivo = isIndicadorActivoEnPlan();
     const indicadorObligatorio = indicadorActivo && getPlanTipoCalculoActividad() === "DIRECTO_ACTIVIDAD";
@@ -3055,6 +3098,11 @@ function validateNarrative(isSubmit) {
         }
         if (valIndicadorRaw !== undefined && String(valIndicadorRaw).trim() !== "" && valIndicador === null) {
             errors.push("El valor trimestral del indicador debe ser numerico, con coma o punto decimal y sin separadores de miles.");
+        }
+        if (isPlanActividadIMG() && pctGestionImgRaw !== undefined && String(pctGestionImgRaw).trim() !== "") {
+            if (pctGestionImg === null || pctGestionImg < 0 || pctGestionImg > 100) {
+                errors.push("El avance de gestión IMG debe ser un número entre 0 y 100.");
+            }
         }
 
         if (isSubmit) {
@@ -3165,6 +3213,8 @@ function openSubmitPreview() {
     const txt3 = document.getElementById("txt-logros-principales")?.value.trim() !== "" ? "Sí" : "No";
     const calcInd = calculateIndicadorValues();
     const progressSummary = buildActivityProgressSummary();
+    const pctGestionImg = getCurrentImgGestionPercent();
+    const pctGestionImgDisplay = isPlanActividadIMG() ? (pctGestionImg === null ? "No registrado" : `${formatNumberForUi(pctGestionImg)}%`) : "No aplica";
     const odsReq = getPlanFlag("ReportaODS") === "SI" ? ((byId("txt-avance-ods")?.value || "").trim() !== "" ? "Sí" : "Pendiente") : "No aplica";
     const rezReq = getPlanFlag("ReportaRezago") === "SI" ? ((byId("txt-avance-rezago")?.value || "").trim() !== "" ? "Sí" : "Pendiente") : "No aplica";
     const resReq = getPlanFlag("ReportaReserva") === "SI" ? ((byId("txt-avance-reserva")?.value || "").trim() !== "" ? "Sí" : "Pendiente") : "No aplica";
@@ -3187,6 +3237,7 @@ function openSubmitPreview() {
         <div class="summary-item"><strong>Avance operativo tareas:</strong> <span>${progressSummary.operational.pct === null ? "N/D" : formatNumberForUi(progressSummary.operational.pct) + "%"}</span></div>
         <div class="summary-item"><strong>Fuente avance fisico:</strong> <span>${progressSummary.source}</span></div>
         <div class="summary-item"><strong>Avance fisico oficial:</strong> <span>${progressSummary.official === null ? "N/D" : formatNumberForUi(progressSummary.official) + "%"}</span></div>
+        <div class="summary-item"><strong>Avance gestión IMG:</strong> <span>${pctGestionImgDisplay}</span></div>
         <div class="summary-item"><strong>ODS / Rezago / Reserva:</strong> <span>${odsReq} / ${rezReq} / ${resReq}</span></div>
     `;
 
@@ -3442,8 +3493,11 @@ function collectDraft(isSubmit) {
         const avanceODS = byId("txt-avance-ods")?.value || "";
         const avanceRezago = byId("txt-avance-rezago")?.value || "";
         const avanceReserva = byId("txt-avance-reserva")?.value || "";
+        const esImgReporte = isPlanActividadIMG() ? "SI" : "NO";
+        const pctGestionImgRaw = byId("txt-porcentaje-gestion-img")?.value || "";
+        const pctGestionImg = esImgReporte === "SI" ? getCurrentImgGestionPercent() : null;
 
-        const hasNarrativePayload = [txt1, txt2, txt3, obsIndicador, eviIndicador, avanceODS, avanceRezago, avanceReserva].some(v => String(v || "").trim() !== "") || valorIndicador !== null;
+        const hasNarrativePayload = [txt1, txt2, txt3, obsIndicador, eviIndicador, avanceODS, avanceRezago, avanceReserva, pctGestionImgRaw].some(v => String(v || "").trim() !== "") || valorIndicador !== null;
 
         if (hasNarrativePayload) {
             const estadoNuevoN = isSubmit ? "Enviado" : (existingNarrativa ? existingNarrativa.EstadoRegistro : "Borrador");
@@ -3474,7 +3528,9 @@ function collectDraft(isSubmit) {
                 [F_NAR.rezPlan]: getPlanFlag("ReportaRezago"),
                 [F_NAR.rezTxt]: getPlanFlag("ReportaRezago") === "SI" ? avanceRezago : "",
                 [F_NAR.resPlan]: getPlanFlag("ReportaReserva"),
-                [F_NAR.resTxt]: getPlanFlag("ReportaReserva") === "SI" ? avanceReserva : ""
+                [F_NAR.resTxt]: getPlanFlag("ReportaReserva") === "SI" ? avanceReserva : "",
+                [F_NAR.esImg]: esImgReporte,
+                [F_NAR.pctGestionImg]: esImgReporte === "SI" && String(pctGestionImgRaw).trim() !== "" ? pctGestionImg : null
             };
 
             let narrGidFinal = null;
