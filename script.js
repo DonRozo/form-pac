@@ -33,7 +33,7 @@
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
 const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/MpiosCAR/FeatureServer";
 const CAR_JUR_LAYER_ID = 0;
-const APP_VERSION = "reporte-img-gestion-20260612";
+const APP_VERSION = "reporte-wf-bloqueo-paralelo-20260617";
 
 // URL PowerAutomate OTP.
 // Versión funcional controlada DATA-PAC V4.
@@ -230,6 +230,10 @@ const WORKFLOW_MATRIX = {
     OPERATIVO_SIMPLE: { estadoInicial: "EnRevisionOAP", rolInicial: "REVISOR_OAP", etapaInicial: "REVISION_OAP", pasos: ["REVISOR_OAP"] },
     ESPECIAL: { estadoInicial: "EnRevisionOAP", rolInicial: "REVISOR_OAP", etapaInicial: "REVISION_OAP", pasos: ["REVISOR_OAP"] }
 };
+
+const WF_RESUBMIT_STATES = new Set(["Borrador", "Devuelto", "DevueltoDirector"]);
+const WF_ACTIVE_BLOCKING_STATES = new Set(["Enviado", "EnVistoBuenoDirector", "ConVistoBuenoDirector", "EnRevisionEnlace", "DevueltoEnlace", "AjustadoPorEnlace", "ValidadoPorEnlace", "EnAprobacionSubdirector", "DevueltoSubdirector", "AprobadoSubdireccion", "EnRevisionOAP", "DevueltoOAP", "AprobadoOAP"]);
+const WF_CLOSED_BLOCKING_STATES = new Set(["Aprobado", "Publicado"]);
 
 // --- REGLAS DE NEGOCIO TEMPORALES ---
 const OPERATIVE_VIGENCIA = 2026;
@@ -1539,6 +1543,20 @@ function setComboValue(containerId, value, label) {
 function getActividadId() { const h = document.querySelector("#combo-actividad .combo-value"); return h ? h.value : ""; }
 function getPeriodo() { return elPeriodo.value || OPERATIVE_PERIODO; }
 
+function buildPeriodoWhere(periodo) {
+    const raw = String(periodo || "").trim().toUpperCase();
+    const values = new Set();
+    if (raw) values.add(raw);
+
+    const textMatch = raw.match(/^T([1-4])$/);
+    const numMatch = raw.match(/^([1-4])$/);
+    if (textMatch) values.add(textMatch[1]);
+    if (numMatch) values.add(`T${numMatch[1]}`);
+
+    if (!values.size) return "1=0";
+    return `Periodo IN (${[...values].map(v => `'${escapeSql(v)}'`).join(",")})`;
+}
+
 function initCombosFijos() { renderCombo("combo-actividad", [], "Cargando..."); }
 
 function getCurrentActividadFunctionalId(fallback = "") {
@@ -1740,45 +1758,103 @@ async function resolveNarrativaAfterSave({ actividadGlobalID, vigencia, periodo,
     }
 }
 
+function classifyWorkflowState(estadoActual) {
+    const estado = String(estadoActual || "").trim() || "Borrador";
+    if (WF_RESUBMIT_STATES.has(estado)) return "resubmit";
+    if (WF_ACTIVE_BLOCKING_STATES.has(estado)) return "active_blocking";
+    if (WF_CLOSED_BLOCKING_STATES.has(estado)) return "closed_blocking";
+    return "unknown_blocking";
+}
+
+function getWorkflowStateBlockMessage(estadoActual) {
+    const stateClass = classifyWorkflowState(estadoActual);
+    if (stateClass === "active_blocking") {
+        return "Este reporte ya se encuentra en revisión. No es posible enviarlo nuevamente hasta que sea devuelto, aprobado, publicado o cerrado por el flujo correspondiente.";
+    }
+    if (stateClass === "closed_blocking") {
+        return "El reporte ya fue aprobado o publicado. No es posible enviarlo nuevamente desde App Reporte sin una reapertura formal autorizada.";
+    }
+    if (stateClass === "unknown_blocking") {
+        return `El reporte tiene una solicitud de revisión en estado no clasificado (${estadoActual || "sin estado"}). Requiere validación OAP/TI antes de reenviar.`;
+    }
+    return "";
+}
+
+function chooseWorkflowSolicitudForSubmit(features) {
+    const list = Array.isArray(features) ? features.filter(Boolean) : [];
+    if (!list.length) return null;
+
+    const blockingActive = list.filter(f => classifyWorkflowState((f?.attributes || f || {}).EstadoActual) === "active_blocking");
+    if (blockingActive.length) return selectMostRecentFeature(blockingActive);
+
+    const unknown = list.filter(f => classifyWorkflowState((f?.attributes || f || {}).EstadoActual) === "unknown_blocking");
+    if (unknown.length) return selectMostRecentFeature(unknown);
+
+    return selectMostRecentFeature(list);
+}
+
+async function queryWorkflowSolicitudByWhere(where, context) {
+    if (!where) return [];
+    const q = await fetchJson(`${URL_WF_SOLICITUD}/query`, {
+        f: "json",
+        where,
+        outFields: "*",
+        orderByFields: "FechaUltimoMovimiento DESC, EditDate DESC, FechaSolicitud DESC, Version DESC, OBJECTID DESC"
+    });
+    if (q && Array.isArray(q.features) && q.features.length) {
+        registerDuplicateDiagnostic("workflow", q.features, context);
+        return q.features;
+    }
+    return [];
+}
+
 async function findExistingWorkflowSolicitud(claveUnicaSolicitud, narrativaAttrs) {
     try {
-        let q = await fetchJson(`${URL_WF_SOLICITUD}/query`, {
-            f: "json",
-            where: `ClaveUnicaSolicitud='${claveUnicaSolicitud}'`,
-            outFields: "*"
-        });
+        const candidatesByObjectId = new Map();
+        const addCandidates = (features) => {
+            (features || []).forEach(feature => {
+                const attrs = feature.attributes || {};
+                const key = attrs.OBJECTID ?? attrs.GlobalID ?? `${attrs.ClaveUnicaSolicitud || ""}|${attrs.EstadoActual || ""}`;
+                candidatesByObjectId.set(String(key), feature);
+            });
+        };
 
-        if (q && q.features && q.features.length > 0) {
-            registerDuplicateDiagnostic("workflow", q.features, { claveUnicaSolicitud, source: "findExistingWorkflowSolicitud.clave" });
-            return selectMostRecentFeature(q.features).attributes;
+        if (claveUnicaSolicitud) {
+            addCandidates(await queryWorkflowSolicitudByWhere(
+                `ClaveUnicaSolicitud='${escapeSql(claveUnicaSolicitud)}'`,
+                { claveUnicaSolicitud, source: "findExistingWorkflowSolicitud.clave" }
+            ));
         }
 
         if (narrativaAttrs) {
-            let fallbackWhere = "";
             if (narrativaAttrs.GlobalID) {
-                fallbackWhere = `ReporteNarrativoGlobalID='${normalizeGuidLiteral(narrativaAttrs.GlobalID)}'`;
-            } else if (narrativaAttrs.ActividadGlobalID && narrativaAttrs.Vigencia && narrativaAttrs.Periodo) {
-                fallbackWhere = `ActividadGlobalID='${normalizeGuidLiteral(narrativaAttrs.ActividadGlobalID)}' AND Vigencia=${narrativaAttrs.Vigencia} AND Periodo='${narrativaAttrs.Periodo}'`;
+                addCandidates(await queryWorkflowSolicitudByWhere(
+                    `ReporteNarrativoGlobalID='${normalizeGuidLiteral(narrativaAttrs.GlobalID)}'`,
+                    { claveUnicaSolicitud, reporteNarrativoGlobalID: narrativaAttrs.GlobalID, source: "findExistingWorkflowSolicitud.reporte" }
+                ));
             }
 
-            if (fallbackWhere) {
-                let qFall = await fetchJson(`${URL_WF_SOLICITUD}/query`, {
-                    f: "json",
-                    where: fallbackWhere,
-                    outFields: "*"
-                });
-
-                if (qFall && qFall.features && qFall.features.length > 0) {
-                    const allowedStates = ["Borrador", "Devuelto", "Enviado", "EnVistoBuenoDirector", "EnRevisionEnlace", "EnAprobacionSubdirector", "EnRevisionOAP"];
-                    const validFeatures = qFall.features.filter(f => allowedStates.includes(f.attributes.EstadoActual));
-                    if (validFeatures.length > 0) {
-                        registerDuplicateDiagnostic("workflow", validFeatures, { claveUnicaSolicitud, source: "findExistingWorkflowSolicitud.fallback" });
-                        return selectMostRecentFeature(validFeatures).attributes;
+            if (narrativaAttrs.ActividadGlobalID && narrativaAttrs.Vigencia && narrativaAttrs.Periodo) {
+                addCandidates(await queryWorkflowSolicitudByWhere(
+                    `ActividadGlobalID='${normalizeGuidLiteral(narrativaAttrs.ActividadGlobalID)}' AND Vigencia=${Number(narrativaAttrs.Vigencia)} AND ${buildPeriodoWhere(narrativaAttrs.Periodo)}`,
+                    {
+                        claveUnicaSolicitud,
+                        actividadGlobalID: narrativaAttrs.ActividadGlobalID,
+                        vigencia: narrativaAttrs.Vigencia,
+                        periodo: narrativaAttrs.Periodo,
+                        source: "findExistingWorkflowSolicitud.actividad"
                     }
-                }
+                ));
             }
         }
-        return null;
+
+        const candidates = [...candidatesByObjectId.values()];
+        if (candidates.length > 1) {
+            registerDuplicateDiagnostic("workflow", candidates, { claveUnicaSolicitud, source: "findExistingWorkflowSolicitud.consolidated" });
+        }
+
+        const selected = chooseWorkflowSolicitudForSubmit(candidates);
+        return selected ? (selected.attributes || selected) : null;
     } catch (error) {
         auditError("FIND_EXISTING_WF", error, { claveUnicaSolicitud });
         return null;
@@ -1895,10 +1971,9 @@ async function prepareWorkflowSolicitudEdit({ narrativaAttrs, planAct, isSubmit 
         return { adds: [{ attributes: wfAttrs }], updates: [], result, auditEventAdds };
     } else {
         const currentEst = existingWf.EstadoActual;
-        const blockStates = ["Aprobado", "AprobadoOAP", "Publicado"];
-
-        if (blockStates.includes(currentEst) && !(wfSeq.tipoFlujoWorkflow === "PUBLICACION_DIRECTA" && currentEst === "AprobadoOAP")) {
-            throw new Error("El reporte ya tiene una solicitud aprobada o publicada. No se puede reenviar desde App Reporte sin habilitar corrección controlada.");
+        const stateClass = classifyWorkflowState(currentEst);
+        if (stateClass !== "resubmit") {
+            throw new Error(getWorkflowStateBlockMessage(currentEst));
         }
 
         const updateAttrs = truncateKnownTechnicalFields("WF_SolicitudRevision", {
