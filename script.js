@@ -1975,17 +1975,18 @@ async function prepareWorkflowSolicitudEdit({ narrativaAttrs, planAct, isSubmit 
         if (stateClass !== "resubmit") {
             throw new Error(getWorkflowStateBlockMessage(currentEst));
         }
+        const shouldRestartWorkflow = stateClass === "resubmit";
 
         const updateAttrs = truncateKnownTechnicalFields("WF_SolicitudRevision", {
             OBJECTID: existingWf.OBJECTID,
             [F_WF.objId]: wfObjectId,
-            [F_WF.est]: currentEst === "Devuelto" ? wfSeq.estadoInicial : (currentEst === "Borrador" ? wfSeq.estadoInicial : currentEst),
-            [F_WF.rolActual]: currentEst === "Devuelto" || currentEst === "Borrador" ? wfSeq.rolInicial : existingWf.RolResponsableActual,
-            [F_WF.etapaActual]: currentEst === "Devuelto" || currentEst === "Borrador" ? wfSeq.etapaInicial : existingWf.EtapaActual,
+            [F_WF.est]: shouldRestartWorkflow ? wfSeq.estadoInicial : currentEst,
+            [F_WF.rolActual]: shouldRestartWorkflow ? wfSeq.rolInicial : existingWf.RolResponsableActual,
+            [F_WF.etapaActual]: shouldRestartWorkflow ? wfSeq.etapaInicial : existingWf.EtapaActual,
             [F_WF.fecUltMov]: Date.now(),
             [F_WF.tipoFlujo]: wfSeq.tipoFlujoWorkflow,
             [F_WF.pasos]: wfSeq.pasosRequeridosWorkflow,
-            [F_WF.pasoOrden]: currentEst === "Devuelto" || currentEst === "Borrador" ? wfSeq.pasoActualOrden : existingWf.PasoActualOrden,
+            [F_WF.pasoOrden]: shouldRestartWorkflow ? wfSeq.pasoActualOrden : existingWf.PasoActualOrden,
             [F_WF.repNarGid]: narrativaAttrs.GlobalID,
             [F_WF.planActGid]: planAct ? planAct.GlobalID : null,
             [F_WF.objGid]: narrativaAttrs.GlobalID,
