@@ -33,7 +33,7 @@
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
 const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/MpiosCAR/FeatureServer";
 const CAR_JUR_LAYER_ID = 0;
-const APP_VERSION = "reporte-wf-bloqueo-paralelo-20260617";
+const APP_VERSION = "reporte-aporte-operativo-20260617";
 
 // URL PowerAutomate OTP.
 // Versión funcional controlada DATA-PAC V4.
@@ -650,15 +650,41 @@ function calculateActivityOperationalProgress() {
     return { ...weighted, subActivities, blockingErrors: [...new Set(blockingErrors)] };
 }
 
+function calculateOperationalActivityContribution(operational) {
+    const normalizedPct = operational?.pct === null || operational?.pct === undefined
+        ? null
+        : Number(operational.pct);
+    const weightSum = operational?.weightSum === null || operational?.weightSum === undefined
+        ? null
+        : Number(operational.weightSum);
+    const aportePct = Number.isFinite(normalizedPct) && Number.isFinite(weightSum)
+        ? (normalizedPct * weightSum) / 100
+        : null;
+
+    return {
+        cumplimientoOperativoTareasNormalizado: Number.isFinite(normalizedPct) ? normalizedPct : null,
+        pesoAplicableSubactividades: Number.isFinite(weightSum) ? weightSum : null,
+        aporteOperativoPonderadoActividad: aportePct,
+        formula: Number.isFinite(normalizedPct) && Number.isFinite(weightSum)
+            ? `${formatNumberForUi(normalizedPct)} * ${formatNumberForUi(weightSum)} / 100 = ${formatNumberForUi(aportePct)}`
+            : "N/D"
+    };
+}
+
 function calculateIndicatorProgress(currentValue = getCurrentIndicadorValue()) {
     return calculateIndicadorValues(currentValue);
 }
 
+function resolveOfficialActivityProgress(source, operationalPct, indicatorPct) {
+    return source === "PONDERADO_TAREAS" ? operationalPct : indicatorPct;
+}
+
 function buildActivityProgressSummary() {
     const operational = calculateActivityOperationalProgress();
+    const operationalContribution = calculateOperationalActivityContribution(operational);
     const indicator = calculateIndicatorProgress();
     const source = getPlanTipoCalculoActividad();
-    const official = source === "PONDERADO_TAREAS" ? operational.pct : indicator.pct;
+    const official = resolveOfficialActivityProgress(source, operational.pct, indicator.pct);
     const warnings = [...(operational.warnings || []), ...(operational.errors || [])];
     const errors = [];
 
@@ -676,6 +702,7 @@ function buildActivityProgressSummary() {
     return {
         source,
         operational,
+        operationalContribution,
         indicator,
         official,
         readyForSubmit: errors.length === 0,
@@ -697,6 +724,7 @@ function renderActivityProgressSummaryInContext() {
 
     const summary = buildActivityProgressSummary();
     const op = summary.operational;
+    const opContribution = summary.operationalContribution;
     const ind = summary.indicator;
     const warnHtml = summary.errors.length || summary.warnings.length
         ? `<div class="msg-inline ${summary.errors.length ? 'msg--warning' : 'msg--info'}" style="margin-top:8px;">${escapeHtml([...summary.errors, ...summary.warnings].slice(0, 3).join(" "))}</div>`
@@ -707,7 +735,9 @@ function renderActivityProgressSummaryInContext() {
         <div style="display:flex; gap:10px; flex-wrap:wrap;">
             <span class="ctx-badge ${summary.readyForSubmit ? '' : 'ctx-badge--tech'}">${summary.progressLabel}</span>
             <span class="ctx-badge">Subactividades calculables: ${op.completedCount}/${op.applicableCount}</span>
-            <span class="ctx-badge">Avance operativo tareas: ${op.pct === null ? "N/D" : formatNumberForUi(op.pct) + "%"}</span>
+            <span class="ctx-badge">Cumplimiento operativo tareas: ${op.pct === null ? "N/D" : formatNumberForUi(op.pct) + "%"}</span>
+            <span class="ctx-badge">Peso aplicable subactividades: ${opContribution.pesoAplicableSubactividades === null ? "N/D" : formatNumberForUi(opContribution.pesoAplicableSubactividades) + "%"}</span>
+            <span class="ctx-badge">Aporte operativo ponderado actividad: ${opContribution.aporteOperativoPonderadoActividad === null ? "N/D" : formatNumberForUi(opContribution.aporteOperativoPonderadoActividad) + "%"}</span>
             <span class="ctx-badge">Avance indicador: ${ind.pct === null ? "N/D" : formatNumberForUi(ind.pct) + "%"}</span>
             <span class="ctx-badge" style="background:#dcfce7; color:#166534;">Avance fisico oficial: ${summary.official === null ? "N/D" : formatNumberForUi(summary.official) + "%"}</span>
             <span class="ctx-badge ctx-badge--tech">Fuente: ${summary.source}</span>
@@ -937,6 +967,8 @@ document.getElementById("btn-copy-diagnostico").addEventListener("click", () => 
     const actGid = getActividadId();
     const comboInput = document.querySelector("#combo-actividad .combo-input");
     const actName = comboInput ? (comboInput.value || "Ninguna") : "Ninguna";
+    const progressSummary = planActCtx ? buildActivityProgressSummary() : null;
+    const opContribution = progressSummary?.operationalContribution;
 
     const data = `
 DATA-PAC V4 | DIAGNÓSTICO UAT
@@ -952,6 +984,12 @@ Tareas Bloqueadas: ${document.querySelectorAll(".row.is-readonly:not(.is-not-app
 Tareas No Aplicables: ${document.querySelectorAll(".row.is-not-applicable").length}
 Diag. Subs (Vis/Load/Match): ${diagSubsVis} / ${diagSubsLoad} / ${diagSubsMatch}
 Diag. Tars (Vis/Load/Match): ${diagTarsVis} / ${diagTarsLoad} / ${diagTarsMatch}
+TipoCalculoAvanceActividad: ${progressSummary?.source || "N/D"}
+Cumplimiento operativo tareas normalizado: ${opContribution?.cumplimientoOperativoTareasNormalizado === null || opContribution?.cumplimientoOperativoTareasNormalizado === undefined ? "N/D" : formatNumberForUi(opContribution.cumplimientoOperativoTareasNormalizado) + "%"}
+Peso aplicable subactividades: ${opContribution?.pesoAplicableSubactividades === null || opContribution?.pesoAplicableSubactividades === undefined ? "N/D" : formatNumberForUi(opContribution.pesoAplicableSubactividades) + "%"}
+Aporte operativo ponderado actividad: ${opContribution?.aporteOperativoPonderadoActividad === null || opContribution?.aporteOperativoPonderadoActividad === undefined ? "N/D" : formatNumberForUi(opContribution.aporteOperativoPonderadoActividad) + "%"}
+Formula aporte operativo: ${opContribution?.formula || "N/D"}
+Avance fisico oficial: ${progressSummary?.official === null || progressSummary?.official === undefined ? "N/D" : formatNumberForUi(progressSummary.official) + "%"}
 Último Mensaje Global: ${lastGlobalMsg}
 Último Error Técnico: ${typeof lastCapturedError === 'object' ? JSON.stringify(lastCapturedError) : String(lastCapturedError)}
 Diagnóstico Longitud: ${lastLengthDiagnostics.length ? JSON.stringify(lastLengthDiagnostics.slice(-5)) : "Ninguno"}
@@ -3289,6 +3327,7 @@ function openSubmitPreview() {
     const txt3 = document.getElementById("txt-logros-principales")?.value.trim() !== "" ? "Sí" : "No";
     const calcInd = calculateIndicadorValues();
     const progressSummary = buildActivityProgressSummary();
+    const opContribution = progressSummary.operationalContribution;
     const pctGestionImg = getCurrentImgGestionPercent();
     const pctGestionImgDisplay = isPlanActividadIMG() ? (pctGestionImg === null ? "No registrado" : `${formatNumberForUi(pctGestionImg)}%`) : "No aplica";
     const odsReq = getPlanFlag("ReportaODS") === "SI" ? ((byId("txt-avance-ods")?.value || "").trim() !== "" ? "Sí" : "Pendiente") : "No aplica";
@@ -3310,7 +3349,9 @@ function openSubmitPreview() {
         <div class="summary-item"><strong>Valor trimestre:</strong> <span>${calcInd.current === null ? "No registrado" : formatNumberForUi(calcInd.current)}</span></div>
         <div class="summary-item"><strong>Acumulado / %:</strong> <span>${calcInd.accumulated === null ? "N/D" : formatNumberForUi(calcInd.accumulated)} / ${calcInd.pct === null ? "N/D" : formatNumberForUi(calcInd.pct) + "%"}</span></div>
         <div class="summary-item"><strong>Estado del calculo:</strong> <span>${progressSummary.progressLabel}</span></div>
-        <div class="summary-item"><strong>Avance operativo tareas:</strong> <span>${progressSummary.operational.pct === null ? "N/D" : formatNumberForUi(progressSummary.operational.pct) + "%"}</span></div>
+        <div class="summary-item"><strong>Cumplimiento operativo tareas:</strong> <span>${progressSummary.operational.pct === null ? "N/D" : formatNumberForUi(progressSummary.operational.pct) + "%"}</span></div>
+        <div class="summary-item"><strong>Peso aplicable subactividades:</strong> <span>${opContribution.pesoAplicableSubactividades === null ? "N/D" : formatNumberForUi(opContribution.pesoAplicableSubactividades) + "%"}</span></div>
+        <div class="summary-item"><strong>Aporte operativo ponderado actividad:</strong> <span>${opContribution.aporteOperativoPonderadoActividad === null ? "N/D" : formatNumberForUi(opContribution.aporteOperativoPonderadoActividad) + "%"}</span></div>
         <div class="summary-item"><strong>Fuente avance fisico:</strong> <span>${progressSummary.source}</span></div>
         <div class="summary-item"><strong>Avance fisico oficial:</strong> <span>${progressSummary.official === null ? "N/D" : formatNumberForUi(progressSummary.official) + "%"}</span></div>
         <div class="summary-item"><strong>Avance gestión IMG:</strong> <span>${pctGestionImgDisplay}</span></div>
