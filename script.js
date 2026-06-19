@@ -33,7 +33,7 @@
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
 const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/MpiosCAR/FeatureServer";
 const CAR_JUR_LAYER_ID = 0;
-const APP_VERSION = "reporte-aporte-operativo-20260617";
+const APP_VERSION = "reporte-ubicacion-fk-padre-20260619";
 
 // URL PowerAutomate OTP.
 // Versión funcional controlada DATA-PAC V4.
@@ -349,6 +349,7 @@ let map, view, graphicsLayer, webMercatorUtils, sketchVM, jurisdiccionLayerView;
 let lastCapturedError = null;
 let lastGlobalMsg = null;
 let lastLengthDiagnostics = [];
+let lastLocationParentDiagnostics = [];
 let entityFieldMetadataCache = new Map();
 let lastDuplicateDiagnostics = {
     narrativa: { count: 0, records: [] },
@@ -1048,10 +1049,19 @@ function refreshSupportPanel() {
         const duplicateDiagText = (lastDuplicateDiagnostics.narrativa.count > 1 || lastDuplicateDiagnostics.workflow.count > 1)
             ? ` | Duplicados: ${JSON.stringify(lastDuplicateDiagnostics)}`
             : "";
-        errEl.textContent = `${typeof lastCapturedError === 'object' ? JSON.stringify(lastCapturedError) : String(lastCapturedError)}${lengthDiagText}${duplicateDiagText}`;
+        const locationParentDiagText = lastLocationParentDiagnostics.length
+            ? ` | Diagnostico ubicaciones: ${JSON.stringify(lastLocationParentDiagnostics.slice(-5))}`
+            : "";
+        errEl.textContent = `${typeof lastCapturedError === 'object' ? JSON.stringify(lastCapturedError) : String(lastCapturedError)}${lengthDiagText}${duplicateDiagText}${locationParentDiagText}`;
         errEl.style.display = "block";
     } else {
         errEl.textContent = "Ninguno";
+    }
+    const locDiagEl = document.getElementById("sup-location-diagnostics");
+    if (locDiagEl) {
+        locDiagEl.textContent = lastLocationParentDiagnostics.length
+            ? JSON.stringify(lastLocationParentDiagnostics.slice(-10))
+            : "Ninguno";
     }
 }
 
@@ -1379,6 +1389,180 @@ function validateFunctionalTextDraftLocally(draft) {
     });
 
     if (diagnostics.length) throw createLengthValidationError(diagnostics);
+}
+
+function getTaskInfoForDiagnostic(tareaGid) {
+    const tarea = cacheTareas.find(t => normalizeGuidKey(t.GlobalID) === normalizeGuidKey(tareaGid));
+    return {
+        codigoTarea: tarea?.CodigoTarea || "",
+        tareaGlobalID: normalizeGuidLiteral(tareaGid) || tareaGid || ""
+    };
+}
+
+function registerLocationParentDiagnostic(item = {}) {
+    const diag = {
+        ActividadID: getCurrentActividadFunctionalId(item.actividadID || ""),
+        CodigoTarea: item.codigoTarea || "",
+        TareaGlobalID: item.tareaGlobalID || "",
+        AvanceTareaGlobalID: item.avanceTareaGlobalID || "",
+        existePadreREP_AvanceTarea: Boolean(item.existePadreREP_AvanceTarea),
+        operacion: item.operacion || "skip",
+        tablaDestino: item.tablaDestino || "REP_TareaUbicacion_PT",
+        error: sanitizeValuePreview(item.error || "", 220)
+    };
+    lastLocationParentDiagnostics.push(diag);
+    if (lastLocationParentDiagnostics.length > 30) {
+        lastLocationParentDiagnostics = lastLocationParentDiagnostics.slice(-30);
+    }
+    refreshSupportPanel();
+    return diag;
+}
+
+function createLocationParentError(message, diagnostics = []) {
+    const err = new Error(message || "No fue posible guardar la ubicación porque el avance de tarea aún no fue confirmado por el servidor. Guarde nuevamente o contacte a soporte OAP/TI.");
+    err._locationParentDiagnostics = diagnostics;
+    lastCapturedError = {
+        tipo: "Validacion padre REP_AvanceTarea",
+        error: err.message,
+        diagnostics: diagnostics.slice(-5)
+    };
+    refreshSupportPanel();
+    return err;
+}
+
+function stripFeatureEditMetadata(feature) {
+    if (!feature || typeof feature !== "object") return feature;
+    const clean = {};
+    if (feature.attributes) clean.attributes = feature.attributes;
+    if (feature.geometry) clean.geometry = feature.geometry;
+    return clean;
+}
+
+function stripFeatureEditMetadataList(features = []) {
+    return (features || []).map(stripFeatureEditMetadata);
+}
+
+function replaceAuditObjectGlobalId(draft, tempGlobalID, realGlobalID) {
+    const tempKey = normalizeGuidKey(tempGlobalID);
+    const realLiteral = normalizeGuidLiteral(realGlobalID) || realGlobalID;
+    if (!tempKey || !realLiteral) return;
+    (draft.auditHistoryAdds || []).forEach(feature => {
+        const attrs = feature.attributes || {};
+        if (normalizeGuidKey(attrs.ObjetoGlobalID) === tempKey) attrs.ObjetoGlobalID = realLiteral;
+        if (normalizeGuidKey(attrs.ValorNuevo).includes(tempKey)) {
+            attrs.ValorNuevo = String(attrs.ValorNuevo).replace(tempGlobalID, realLiteral);
+        }
+    });
+}
+
+async function resolveAvanceTareaGlobalIdAfterAdd(addFeature, addResult) {
+    const tareaGid = addFeature?._tareaGid || addFeature?.attributes?.[F_AVA.fkTarea];
+    const vig = addFeature?.attributes?.[F_AVA.vig] || addFeature?.attributes?.Vigencia;
+    const per = addFeature?.attributes?.[F_AVA.per] || addFeature?.attributes?.Periodo;
+    const taskInfo = getTaskInfoForDiagnostic(tareaGid);
+
+    if (addResult?.globalId) {
+        return normalizeGuidLiteral(addResult.globalId);
+    }
+
+    if (addResult?.objectId || addResult?.objectId === 0) {
+        const qByOid = await fetchJson(`${URL_AVANCE_TAREA}/query`, {
+            f: "json",
+            where: `OBJECTID=${Number(addResult.objectId)}`,
+            outFields: "OBJECTID,GlobalID,TareaGlobalID,Vigencia,Periodo",
+            returnGeometry: false
+        });
+        const attrs = qByOid?.features?.[0]?.attributes;
+        if (attrs?.GlobalID) return normalizeGuidLiteral(attrs.GlobalID);
+    }
+
+    if (tareaGid && vig && per) {
+        const qByKey = await fetchJson(`${URL_AVANCE_TAREA}/query`, {
+            f: "json",
+            where: `${buildGuidWhere(F_AVA.fkTarea, tareaGid)} AND Vigencia=${Number(vig)} AND Periodo='${escapeSql(per)}'`,
+            outFields: "OBJECTID,GlobalID,TareaGlobalID,Vigencia,Periodo,FechaUltimaEdicionFuncional,EditDate,FechaRegistro,Version",
+            orderByFields: "FechaUltimaEdicionFuncional DESC, EditDate DESC, FechaRegistro DESC, Version DESC, OBJECTID DESC",
+            returnGeometry: false
+        });
+        const attrs = selectMostRecentFeature(qByKey?.features || [])?.attributes;
+        if (attrs?.GlobalID) return normalizeGuidLiteral(attrs.GlobalID);
+    }
+
+    registerLocationParentDiagnostic({
+        ...taskInfo,
+        avanceTareaGlobalID: addFeature?._clientTempGlobalID || "",
+        existePadreREP_AvanceTarea: false,
+        operacion: "skip",
+        error: "No se pudo resolver GlobalID real del padre despues del add REP_AvanceTarea."
+    });
+    return null;
+}
+
+async function parentExistsInRepAvanceTarea(avanceTareaGlobalID) {
+    const literal = normalizeGuidLiteral(avanceTareaGlobalID);
+    if (!literal) return false;
+    const q = await fetchJson(`${URL_AVANCE_TAREA}/query`, {
+        f: "json",
+        where: buildGuidWhere("GlobalID", literal),
+        outFields: "OBJECTID,GlobalID",
+        returnGeometry: false,
+        resultRecordCount: 1
+    });
+    return Boolean(q?.features?.length);
+}
+
+async function confirmLocationParentsBeforeApply(draft) {
+    const diagnostics = [];
+    for (const feature of (draft.ubicAdds || [])) {
+        const attrs = feature.attributes || {};
+        const parentGid = attrs[F_UBI.fkAvance];
+        const tareaGid = feature._tareaGid;
+        const taskInfo = getTaskInfoForDiagnostic(tareaGid);
+        const exists = await parentExistsInRepAvanceTarea(parentGid);
+        const diag = registerLocationParentDiagnostic({
+            ...taskInfo,
+            avanceTareaGlobalID: parentGid,
+            existePadreREP_AvanceTarea: exists,
+            operacion: exists ? "add" : "skip",
+            error: exists ? "" : "Padre REP_AvanceTarea no confirmado antes del add de ubicacion."
+        });
+        if (!exists) diagnostics.push(diag);
+    }
+    if (diagnostics.length) {
+        throw createLocationParentError("No fue posible guardar la ubicación porque el avance de tarea aún no fue confirmado por el servidor. Guarde nuevamente o contacte a soporte OAP/TI.", diagnostics);
+    }
+}
+
+async function reconcileLocationAddsWithAvanceResults(draft, avanceApplyData) {
+    const addResults = avanceApplyData?.addResults || [];
+    for (let i = 0; i < (draft.adds || []).length; i += 1) {
+        const addFeature = draft.adds[i];
+        const addResult = addResults[i];
+        if (!addResult || addResult.success === false) continue;
+
+        const realGlobalID = await resolveAvanceTareaGlobalIdAfterAdd(addFeature, addResult);
+        if (!realGlobalID) continue;
+
+        const tempKey = normalizeGuidKey(addFeature._clientTempGlobalID);
+        const tareaKey = normalizeGuidKey(addFeature._tareaGid || addFeature.attributes?.[F_AVA.fkTarea]);
+        if (tempKey) replaceAuditObjectGlobalId(draft, addFeature._clientTempGlobalID, realGlobalID);
+
+        (draft.ubicAdds || []).forEach(locationFeature => {
+            const locAttrs = locationFeature.attributes || {};
+            const locParentKey = normalizeGuidKey(locAttrs[F_UBI.fkAvance]);
+            const locTaskKey = normalizeGuidKey(locationFeature._tareaGid);
+            if ((tempKey && locParentKey === tempKey) || (tareaKey && locTaskKey === tareaKey)) {
+                locAttrs[F_UBI.fkAvance] = realGlobalID;
+                registerLocationParentDiagnostic({
+                    ...getTaskInfoForDiagnostic(locationFeature._tareaGid),
+                    avanceTareaGlobalID: realGlobalID,
+                    existePadreREP_AvanceTarea: true,
+                    operacion: "add",
+                    error: ""
+                });
+            }
+        });
+    }
 }
 
 async function validateAuditPayloadsBeforeApply(draft) {
@@ -2550,6 +2734,7 @@ async function loadActividades() {
 async function loadSubactividadesYTareas(actividadGlobalId) {
     elIndicadores.innerHTML = ""; cacheSubactividades = []; cacheTareas = [];
     rowLocations.clear(); existingAvances.clear(); existingWFSolicitudes.clear(); deletedLocations = []; existingNarrativa = null;
+    clearMapGraphics(); activeRowId = null; pillActive.textContent = "Tarea activa para georreferenciar: —";
     planActCtx = null; biActCtx = null; planSubCtx.clear(); biSubCtx.clear(); planTarCtx.clear(); biTarCtx.clear();
     viewOnlyMode = false;
     setStatus("Cargando estructura, contexto de planeación y reportes...");
@@ -3686,8 +3871,7 @@ function collectDraft(isSubmit) {
             baseAttrs[F_AVA.fkTarea] = tareaGid; baseAttrs.Vigencia = vig; baseAttrs.Periodo = per;
             baseAttrs[F_AVA.ver] = versionActual; baseAttrs[F_AVA.val] = val; baseAttrs[F_AVA.obs] = obs; baseAttrs[F_AVA.evi] = evi;
             baseAttrs.FechaRegistro = epochNow; baseAttrs.Responsable = currentUser.nombre;
-            baseAttrs.GlobalID = avanceGidFinal;
-            res.adds.push({ attributes: baseAttrs });
+            res.adds.push({ attributes: baseAttrs, _clientTempGlobalID: avanceGidFinal, _tareaGid: tareaGid });
 
             res.auditHistoryAdds.push({
                 attributes: prepareAuditHistoryAttrs(
@@ -3712,8 +3896,8 @@ function collectDraft(isSubmit) {
         locs.forEach(pt => {
             const uAttrs = { [F_UBI.mun]: pt.mun, [F_UBI.dane]: pt.dane, [F_UBI.desc]: pt.desc, [F_UBI.fec]: epochNow };
             const geom = { x: pt.lon, y: pt.lat, spatialReference: { wkid: 4326 } };
-            if (pt.isExisting) { uAttrs.OBJECTID = pt.ptId; res.ubicUpdates.push({ attributes: uAttrs, geometry: geom }); }
-            else { uAttrs[F_UBI.fkAvance] = avanceGidFinal; res.ubicAdds.push({ attributes: uAttrs, geometry: geom }); }
+            if (pt.isExisting) { uAttrs.OBJECTID = pt.ptId; res.ubicUpdates.push({ attributes: uAttrs, geometry: geom, _tareaGid: tareaGid }); }
+            else { uAttrs[F_UBI.fkAvance] = avanceGidFinal; res.ubicAdds.push({ attributes: uAttrs, geometry: geom, _tareaGid: tareaGid }); }
         });
     });
 
@@ -3858,9 +4042,14 @@ async function executeSave(draft) {
 
     const applyAndCheck = async (entityName, url, payload) => {
         await validateApplyEditsPayload(entityName, payload);
+        const payloadToSend = {
+            ...payload,
+            adds: stripFeatureEditMetadataList(payload.adds || []),
+            updates: stripFeatureEditMetadataList(payload.updates || [])
+        };
         let data;
         try {
-            data = await postForm(`${url}/applyEdits`, payload);
+            data = await postForm(`${url}/applyEdits`, payloadToSend);
         } catch (error) {
             if (/truncated|truncat|string or binary data/i.test(String(error?.message || error))) {
                 const operation = Array.isArray(payload.adds) && payload.adds.length ? "adds" : "updates";
@@ -3875,7 +4064,12 @@ async function executeSave(draft) {
     };
 
     try {
-        if (draft.adds.length || draft.updates.length) await applyAndCheck("REP_AvanceTarea", URL_AVANCE_TAREA, { f: "json", adds: draft.adds, updates: draft.updates });
+        lastLocationParentDiagnostics = [];
+        if (draft.adds.length || draft.updates.length) {
+            const avanceApplyData = await applyAndCheck("REP_AvanceTarea", URL_AVANCE_TAREA, { f: "json", adds: draft.adds, updates: draft.updates });
+            await reconcileLocationAddsWithAvanceResults(draft, avanceApplyData);
+        }
+        if (draft.ubicAdds.length) await confirmLocationParentsBeforeApply(draft);
         if (draft.ubicAdds.length || draft.ubicUpdates.length || deletedLocations.length) await applyAndCheck("REP_TareaUbicacion_PT", URL_TAREA_UBICACION, { f: "json", adds: draft.ubicAdds, updates: draft.ubicUpdates, deletes: deletedLocations });
         if (draft.narrAdds.length || draft.narrUpdates.length) await applyAndCheck("REP_ReporteNarrativo", URL_NARRATIVA, { f: "json", adds: draft.narrAdds, updates: draft.narrUpdates });
     } catch (e) {
