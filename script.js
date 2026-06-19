@@ -512,6 +512,93 @@ function isPercentageTask(tareaGid) {
     return tipoValor.includes("PORCENTAJE") || tipoValor.includes("PORCENTUAL") || tipoValor === "%";
 }
 
+function normalizePeriodoForCalc(periodo) {
+    const p = normalizeText(periodo);
+    if (p === "1" || p === "T1") return "T1";
+    if (p === "2" || p === "T2") return "T2";
+    if (p === "3" || p === "T3") return "T3";
+    if (p === "4" || p === "T4") return "T4";
+    return p;
+}
+
+function normalizeTipoValorAvance(tipoValorAvance) {
+    const tipo = normalizeText(tipoValorAvance);
+    if (tipo.includes("PORCENTAJE") || tipo.includes("PORCENTUAL") || tipo === "%") return "PORCENTAJE";
+    if (tipo.includes("NUM")) return "NUMERICO";
+    return tipo;
+}
+
+function getTopeAcumuladoPeriodo(planTarea, periodo) {
+    const p = normalizePeriodoForCalc(periodo);
+    if (p === "T1") return parseDataPacDecimal(planTarea?.TopeAcumT1);
+    if (p === "T2") return parseDataPacDecimal(planTarea?.TopeAcumT2);
+    if (p === "T3") return parseDataPacDecimal(planTarea?.TopeAcumT3);
+    if (p === "T4") return parseDataPacDecimal(planTarea?.TopeAcumT4);
+    return null;
+}
+
+function calcularAvanceEfectivoTarea({ valorReportado, tipoValorAvance, planTarea, periodo }) {
+    const valor = parseDataPacDecimal(valorReportado);
+
+    if (!Number.isFinite(valor)) {
+        return {
+            valorReportado: null,
+            avanceEfectivo: null,
+            topeAplicado: null,
+            aplicaTope: false,
+            topado: false,
+            mensaje: "Valor reportado no valido."
+        };
+    }
+
+    const esPorcentaje = normalizeTipoValorAvance(tipoValorAvance) === "PORCENTAJE";
+    const aplicaTope = esPorcentaje && normalizeSiNo(planTarea?.AplicaTopeAcumulado, "NO") === "SI";
+
+    if (!aplicaTope) {
+        return {
+            valorReportado: valor,
+            avanceEfectivo: valor,
+            topeAplicado: null,
+            aplicaTope: false,
+            topado: false,
+            mensaje: null
+        };
+    }
+
+    const periodoNormalizado = normalizePeriodoForCalc(periodo);
+    const tope = getTopeAcumuladoPeriodo(planTarea, periodoNormalizado);
+
+    if (!Number.isFinite(tope)) {
+        return {
+            valorReportado: valor,
+            avanceEfectivo: valor,
+            topeAplicado: null,
+            aplicaTope: true,
+            topado: false,
+            mensaje: "La tarea tiene regla de tope acumulado, pero no tiene tope definido para el periodo."
+        };
+    }
+
+    const avanceEfectivo = Math.min(valor, tope);
+    return {
+        valorReportado: valor,
+        avanceEfectivo,
+        topeAplicado: tope,
+        aplicaTope: true,
+        topado: valor > tope,
+        mensaje: valor > tope
+            ? `El avance reportado supera el maximo reconocido para este periodo. El valor se conservara como reportado, pero para el calculo del avance se reconocera hasta el tope definido en la planeacion. Avance reportado: ${formatNumberForUi(valor)}%. Tope permitido ${periodoNormalizado}: ${formatNumberForUi(tope)}%. Avance reconocido para calculo: ${formatNumberForUi(avanceEfectivo)}%.`
+            : null
+    };
+}
+
+function getValorParaValidarMetaProgramada(valorReportado, avanceEfectivo) {
+    if (avanceEfectivo?.aplicaTope && Number.isFinite(avanceEfectivo.avanceEfectivo)) {
+        return avanceEfectivo.avanceEfectivo;
+    }
+    return parseDataPacDecimal(valorReportado);
+}
+
 function getTaskDisplayLabel(tarea) {
     return `Tarea ${tarea?.CodigoTarea || tarea?.GlobalID || "sin identificar"}`;
 }
@@ -532,7 +619,25 @@ function calculateTaskProgressPercent(tarea, value = getReportedTaskValue(tarea?
 
     if (isPercentageTask(tareaGid)) {
         if (value < 0 || value > 100) errors.push("El porcentaje de tarea debe estar entre 0 y 100.");
-        return { pct: value, value, applies: true, warnings, errors };
+        const tipoValor = getTipoValorAvanceByTarea(tareaGid);
+        const avanceEfectivo = calcularAvanceEfectivoTarea({
+            valorReportado: value,
+            tipoValorAvance: tipoValor,
+            planTarea: planTar,
+            periodo: getPeriodo()
+        });
+        if (avanceEfectivo.mensaje) warnings.push(avanceEfectivo.mensaje);
+        if (planTar?.ObservacionReglaAvance && avanceEfectivo.aplicaTope) {
+            warnings.push(`Regla de planeacion: ${planTar.ObservacionReglaAvance}`);
+        }
+        return {
+            pct: avanceEfectivo.avanceEfectivo,
+            value,
+            avanceEfectivo,
+            applies: true,
+            warnings,
+            errors
+        };
     }
 
     const meta = getMetaProgramadaByTarea(tareaGid);
@@ -3099,7 +3204,8 @@ function validateTaskRows(isSubmit) {
                 rowErrors.push("El Valor Reportado debe ser numerico, con coma o punto decimal y sin separadores de miles.");
             } else {
                 const tipoValor = getTipoValorAvanceByTarea(tareaGid);
-                if (tipoValor.includes("PORCENTAJE") || tipoValor === "%") {
+                let avanceEfectivo = null;
+                if (normalizeTipoValorAvance(tipoValor) === "PORCENTAJE") {
                     if (numVal < 0) {
                         rowErrors.push("El porcentaje no puede ser menor a 0.");
                     } else if (numVal > 100) {
@@ -3109,15 +3215,30 @@ function validateTaskRows(isSubmit) {
                             rowWarnings.push("Esta tarea está configurada como porcentaje. El valor no debe superar 100.");
                         }
                     }
+
+                    const planTar = planTarCtx.get(normalizeGuidKey(tareaGid));
+                    avanceEfectivo = calcularAvanceEfectivoTarea({
+                        valorReportado: numVal,
+                        tipoValorAvance: tipoValor,
+                        planTarea: planTar,
+                        periodo: getPeriodo()
+                    });
+                    if (avanceEfectivo.mensaje) rowWarnings.push(avanceEfectivo.mensaje);
+                    if (planTar?.ObservacionReglaAvance && avanceEfectivo.aplicaTope) {
+                        rowWarnings.push(`Regla de planeacion: ${planTar.ObservacionReglaAvance}`);
+                    }
                 }
 
                 const metaProg = getMetaProgramadaByTarea(tareaGid);
-                if (metaProg !== null && numVal > metaProg) {
+                const valorParaMeta = getValorParaValidarMetaProgramada(numVal, avanceEfectivo);
+                if (metaProg !== null && valorParaMeta !== null && valorParaMeta > metaProg) {
                     if (isSubmit) {
-                        rowErrors.push(`El valor reportado supera la meta programada de la tarea para esta vigencia. Meta programada: ${metaProg}. Valor reportado: ${numVal}.`);
+                        rowErrors.push(`El avance reconocido supera la meta programada de la tarea para esta vigencia. Meta programada: ${metaProg}. Avance reconocido: ${valorParaMeta}. Valor reportado: ${numVal}.`);
                     } else {
-                        rowWarnings.push(`El valor reportado supera la meta programada. Meta: ${metaProg}, Reportado: ${numVal}.`);
+                        rowWarnings.push(`El avance reconocido supera la meta programada. Meta: ${metaProg}, Avance reconocido: ${valorParaMeta}, Reportado: ${numVal}.`);
                     }
+                } else if (metaProg !== null && avanceEfectivo?.topado && numVal > metaProg) {
+                    rowWarnings.push(`El valor reportado supera la meta programada (${metaProg}), pero el avance reconocido para el calculo es ${valorParaMeta}; esta condicion no bloquea el envio.`);
                 }
             }
         }
@@ -3141,7 +3262,7 @@ function validateTaskRows(isSubmit) {
             showRowMessage(rowId, rowErrors.join(" "), "error");
             rowEl.classList.add("row--error");
             errorCount++;
-        } else if (rowWarnings.length > 0 && !isSubmit) {
+        } else if (rowWarnings.length > 0) {
             showRowMessage(rowId, rowWarnings.join(" "), "warning");
             rowEl.classList.add("row--warning");
             warningCount++;
@@ -3286,7 +3407,7 @@ function validateBeforeSubmit() {
         setStatus(`No se puede enviar a revisión. Corrija los errores indicados (${taskValidation.errors} tareas con error, ${narrValidation.errors + progressValidation.errors} errores de reporte consolidado).`, "error");
         return { valid: false, warnings: 0 };
     }
-    return { valid: true, warnings: 0 };
+    return { valid: true, warnings: taskValidation.warnings + narrValidation.warnings + progressValidation.warnings };
 }
 
 // --- GUARDAR Y ENVIAR V4 ---
