@@ -33,7 +33,7 @@
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
 const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/MpiosCAR/FeatureServer";
 const CAR_JUR_LAYER_ID = 0;
-const APP_VERSION = "reporte-ubicacion-fk-padre-20260619";
+const APP_VERSION = "reporte-devolucion-editor-20260622";
 
 // URL PowerAutomate OTP.
 // Versión funcional controlada DATA-PAC V4.
@@ -232,6 +232,7 @@ const WORKFLOW_MATRIX = {
 };
 
 const WF_RESUBMIT_STATES = new Set(["Borrador", "Devuelto", "DevueltoDirector"]);
+const WF_RETURNED_TO_EDITOR_STATES = new Set(["Devuelto", "DevueltoDirector", "DevueltoEnlace", "DevueltoSubdirector", "DevueltoOAP"]);
 const WF_ACTIVE_BLOCKING_STATES = new Set(["Enviado", "EnVistoBuenoDirector", "ConVistoBuenoDirector", "EnRevisionEnlace", "DevueltoEnlace", "AjustadoPorEnlace", "ValidadoPorEnlace", "EnAprobacionSubdirector", "DevueltoSubdirector", "AprobadoSubdireccion", "EnRevisionOAP", "DevueltoOAP", "AprobadoOAP"]);
 const WF_CLOSED_BLOCKING_STATES = new Set(["Aprobado", "Publicado"]);
 
@@ -2085,16 +2086,37 @@ async function resolveNarrativaAfterSave({ actividadGlobalID, vigencia, periodo,
     }
 }
 
-function classifyWorkflowState(estadoActual) {
-    const estado = String(estadoActual || "").trim() || "Borrador";
-    if (WF_RESUBMIT_STATES.has(estado)) return "resubmit";
+function getWorkflowAttrs(workflowOrEstado, rolResponsableActual = "") {
+    if (workflowOrEstado && typeof workflowOrEstado === "object") {
+        const attrs = workflowOrEstado.attributes || workflowOrEstado;
+        return {
+            estado: String(attrs.EstadoActual || "").trim() || "Borrador",
+            rol: String(attrs.RolResponsableActual || "").trim().toUpperCase()
+        };
+    }
+    return {
+        estado: String(workflowOrEstado || "").trim() || "Borrador",
+        rol: String(rolResponsableActual || "").trim().toUpperCase()
+    };
+}
+
+function isWorkflowReturnedToEditor(workflowOrEstado, rolResponsableActual = "") {
+    const { estado, rol } = getWorkflowAttrs(workflowOrEstado, rolResponsableActual);
+    return WF_RETURNED_TO_EDITOR_STATES.has(estado) && rol === "EDITOR";
+}
+
+function classifyWorkflowState(workflowOrEstado, rolResponsableActual = "") {
+    const { estado, rol } = getWorkflowAttrs(workflowOrEstado, rolResponsableActual);
+    if (isWorkflowReturnedToEditor(estado, rol)) return "resubmit";
+    if (estado === "Borrador") return "resubmit";
     if (WF_ACTIVE_BLOCKING_STATES.has(estado)) return "active_blocking";
     if (WF_CLOSED_BLOCKING_STATES.has(estado)) return "closed_blocking";
     return "unknown_blocking";
 }
 
-function getWorkflowStateBlockMessage(estadoActual) {
-    const stateClass = classifyWorkflowState(estadoActual);
+function getWorkflowStateBlockMessage(workflowOrEstado, rolResponsableActual = "") {
+    const { estado, rol } = getWorkflowAttrs(workflowOrEstado, rolResponsableActual);
+    const stateClass = classifyWorkflowState(estado, rol);
     if (stateClass === "active_blocking") {
         return "Este reporte ya se encuentra en revisión. No es posible enviarlo nuevamente hasta que sea devuelto, aprobado, publicado o cerrado por el flujo correspondiente.";
     }
@@ -2102,7 +2124,7 @@ function getWorkflowStateBlockMessage(estadoActual) {
         return "El reporte ya fue aprobado o publicado. No es posible enviarlo nuevamente desde App Reporte sin una reapertura formal autorizada.";
     }
     if (stateClass === "unknown_blocking") {
-        return `El reporte tiene una solicitud de revisión en estado no clasificado (${estadoActual || "sin estado"}). Requiere validación OAP/TI antes de reenviar.`;
+        return `El reporte tiene una solicitud de revisión en estado no clasificado (${estado || "sin estado"}). Requiere validación OAP/TI antes de reenviar.`;
     }
     return "";
 }
@@ -2111,10 +2133,10 @@ function chooseWorkflowSolicitudForSubmit(features) {
     const list = Array.isArray(features) ? features.filter(Boolean) : [];
     if (!list.length) return null;
 
-    const blockingActive = list.filter(f => classifyWorkflowState((f?.attributes || f || {}).EstadoActual) === "active_blocking");
+    const blockingActive = list.filter(f => classifyWorkflowState(f?.attributes || f) === "active_blocking");
     if (blockingActive.length) return selectMostRecentFeature(blockingActive);
 
-    const unknown = list.filter(f => classifyWorkflowState((f?.attributes || f || {}).EstadoActual) === "unknown_blocking");
+    const unknown = list.filter(f => classifyWorkflowState(f?.attributes || f) === "unknown_blocking");
     if (unknown.length) return selectMostRecentFeature(unknown);
 
     return selectMostRecentFeature(list);
@@ -2298,9 +2320,9 @@ async function prepareWorkflowSolicitudEdit({ narrativaAttrs, planAct, isSubmit 
         return { adds: [{ attributes: wfAttrs }], updates: [], result, auditEventAdds };
     } else {
         const currentEst = existingWf.EstadoActual;
-        const stateClass = classifyWorkflowState(currentEst);
+        const stateClass = classifyWorkflowState(existingWf);
         if (stateClass !== "resubmit") {
-            throw new Error(getWorkflowStateBlockMessage(currentEst));
+            throw new Error(getWorkflowStateBlockMessage(existingWf));
         }
         const shouldRestartWorkflow = stateClass === "resubmit";
 
