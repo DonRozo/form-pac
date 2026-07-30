@@ -80,14 +80,17 @@
           </div>
           <div class="field">
             <label>Periodo (Trimestre)</label>
-            <select id="sel-periodo">
-              <option value="">Selecciona periodo</option>
+            <select id="sel-periodo" disabled>
+              <option value="">Seleccione una actividad</option>
               <option value="T1">T1</option>
               <option value="T2">T2</option>
               <option value="T3">T3</option>
               <option value="T4">T4</option>
             </select>
           </div>
+        </div>
+        <div id="period-context-msg" class="msg-inline msg--info" style="margin-top:8px;">
+          Seleccione una actividad para determinar el periodo.
         </div>
 
         <div class="field">
@@ -255,6 +258,10 @@
                     <div class="support-kv" style="flex-direction:column; align-items:flex-start; margin-top:4px;">
                         <span>Diagnostico ubicaciones REP_TareaUbicacion_PT:</span>
                         <div id="sup-location-diagnostics" class="mono" style="color:#334155; font-size:10px; background:#f8fafc; padding:4px; border-radius:4px; width:100%; word-break:break-all;">Ninguno</div>
+                    </div>
+                    <div class="support-kv" style="flex-direction:column; align-items:flex-start; margin-top:4px;">
+                        <span>Diagnóstico read-only de secuencia trimestral:</span>
+                        <div id="sup-period-diagnostics" class="mono" style="color:#334155; font-size:10px; background:#f8fafc; padding:4px; border-radius:4px; width:100%; word-break:break-all;">Ninguno</div>
                     </div>
                 </div>
                 <div style="margin-top: 10px; text-align:right;">

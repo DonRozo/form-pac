@@ -33,7 +33,7 @@
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
 const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/MpiosCAR/FeatureServer";
 const CAR_JUR_LAYER_ID = 0;
-const APP_VERSION = "reporte-t2-2026-temporal-20260730";
+const APP_VERSION = "reporte-periodo-secuencial-20260730";
 
 // URL PowerAutomate OTP.
 // Versión funcional controlada DATA-PAC V4.
@@ -236,14 +236,22 @@ const WF_RETURNED_TO_EDITOR_STATES = new Set(["Devuelto", "DevueltoDirector", "D
 const WF_ACTIVE_BLOCKING_STATES = new Set(["Enviado", "EnVistoBuenoDirector", "ConVistoBuenoDirector", "EnRevisionEnlace", "DevueltoEnlace", "AjustadoPorEnlace", "ValidadoPorEnlace", "EnAprobacionSubdirector", "DevueltoSubdirector", "AprobadoSubdireccion", "EnRevisionOAP", "DevueltoOAP", "AprobadoOAP"]);
 const WF_CLOSED_BLOCKING_STATES = new Set(["Aprobado", "Publicado"]);
 
-// --- REGLAS DE NEGOCIO TEMPORALES ---
-const OPERATIVE_VIGENCIA = 2026;
-const OPERATIVE_PERIODO = 'T1';
-
-// Excepción funcional temporal aprobada por OAP: T2 2026 permanece abierto
-// hasta que OAP comunique formalmente su cierre. No altera roles, alcances,
-// asignaciones, workflow ni los bloqueos por estado del registro.
-const TEMPORARY_EDITABLE_PERIODS = new Set(["2026|T2"]);
+// --- APERTURA SECUENCIAL DE PERIODOS ---
+const DEFAULT_REPORTING_VIGENCIA = new Date().getFullYear();
+const PERIOD_ORDER = ["T1", "T2", "T3", "T4"];
+const PERIOD_SUBMITTED_STATES = new Set(["Enviado", "EnRevision", "Aprobado", "Publicado"]);
+const PERIOD_CONTEXT_OUT_FIELDS = [
+    "OBJECTID",
+    "GlobalID",
+    "ActividadGlobalID",
+    "Vigencia",
+    "Periodo",
+    "EstadoRegistro",
+    "Version",
+    "FechaRegistro",
+    "FechaUltimaEdicionFuncional",
+    "EditDate"
+].join(",");
 
 // DOM
 const elVigencia = document.getElementById("sel-vigencia"), elPeriodo = document.getElementById("sel-periodo"), elIndicadores = document.getElementById("indicadores");
@@ -326,9 +334,10 @@ function populateTopSubactSelector() {
 
 window.toggleAccordion = function (cardEl) { if (cardEl) cardEl.classList.toggle('collapsed'); };
 
-// Inicializar selectores de UI con el Contexto Operativo
-elVigencia.value = OPERATIVE_VIGENCIA;
-elPeriodo.value = OPERATIVE_PERIODO;
+// El periodo se determina después de seleccionar una actividad.
+elVigencia.value = DEFAULT_REPORTING_VIGENCIA;
+elPeriodo.value = "";
+elPeriodo.disabled = true;
 
 // Estado Global
 let currentUser = null;
@@ -350,6 +359,9 @@ let deletedLocations = [];
 let rowLocations = new Map();
 let activeRowId = null;
 let viewOnlyMode = false;
+let activityPeriodContext = null;
+let activityPeriodContextRequestId = 0;
+let existingWorkflowSolicitud = null;
 let map, view, graphicsLayer, webMercatorUtils, sketchVM, jurisdiccionLayerView;
 
 let lastCapturedError = null;
@@ -361,34 +373,246 @@ let lastDuplicateDiagnostics = {
     narrativa: { count: 0, records: [] },
     workflow: { count: 0, records: [] }
 };
+let lastPeriodSequenceDiagnostics = null;
 
 // Diagnósticos de filtrado
 let diagSubsVis = 0, diagSubsLoad = 0, diagSubsMatch = 0;
 let diagTarsVis = 0, diagTarsLoad = 0, diagTarsMatch = 0;
-
-function getTemporalScore(v, p) { return parseInt(v) * 10 + parseInt(String(p).replace('T', '')); }
 
 function normalizeTemporalPeriodo(periodo) {
     const trimestre = parseInt(String(periodo || "").replace(/[^0-9]/g, ""), 10);
     return trimestre >= 1 && trimestre <= 4 ? `T${trimestre}` : String(periodo || "").trim().toUpperCase();
 }
 
-function isTemporaryEditablePeriod(vigencia, periodo) {
-    return TEMPORARY_EDITABLE_PERIODS.has(`${Number(vigencia)}|${normalizeTemporalPeriodo(periodo)}`);
+function getCalendarQuarter(date = new Date()) {
+    const month = date instanceof Date && !Number.isNaN(date.getTime()) ? date.getMonth() : new Date().getMonth();
+    return `T${Math.floor(month / 3) + 1}`;
+}
+
+function isPeriodSubmittedState(estado) {
+    return PERIOD_SUBMITTED_STATES.has(normalizeState(estado));
+}
+
+function selectLatestReportByPeriod(features) {
+    const grouped = Object.fromEntries(PERIOD_ORDER.map(period => [period, []]));
+    const invalidPeriods = [];
+
+    (Array.isArray(features) ? features : []).forEach(feature => {
+        const attrs = feature?.attributes || feature || {};
+        const period = normalizeTemporalPeriodo(attrs.Periodo);
+        if (!PERIOD_ORDER.includes(period)) {
+            invalidPeriods.push({
+                OBJECTID: attrs.OBJECTID ?? null,
+                GlobalID: attrs.GlobalID || "",
+                Periodo: attrs.Periodo ?? null
+            });
+            return;
+        }
+        grouped[period].push(feature);
+    });
+
+    const latestByPeriod = {};
+    const duplicates = [];
+    PERIOD_ORDER.forEach(period => {
+        const records = grouped[period];
+        if (!records.length) return;
+        const latest = selectMostRecentFeature(records);
+        latestByPeriod[period] = latest?.attributes || latest || null;
+        if (records.length > 1) {
+            duplicates.push({
+                period,
+                count: records.length,
+                selected: buildNarrativeDiagnosticRecord(latestByPeriod[period]),
+                records: records.map(record => buildNarrativeDiagnosticRecord(record?.attributes || record))
+            });
+        }
+    });
+
+    return {
+        latestByPeriod,
+        duplicates,
+        invalidPeriods,
+        countsByPeriod: Object.fromEntries(PERIOD_ORDER.map(period => [period, grouped[period].length]))
+    };
+}
+
+function resolveSequentialReportingPeriod(features, calendarQuarter) {
+    const selection = selectLatestReportByPeriod(features);
+    const normalizedCalendarQuarter = normalizeTemporalPeriodo(calendarQuarter);
+    const calendarIndex = PERIOD_ORDER.indexOf(normalizedCalendarQuarter);
+    const existingPeriods = PERIOD_ORDER.filter(period => Boolean(selection.latestByPeriod[period]));
+
+    let requiredIndex = 0;
+    let reason = existingPeriods.length ? "missing_period" : "no_reports";
+    for (; requiredIndex < PERIOD_ORDER.length; requiredIndex++) {
+        const period = PERIOD_ORDER[requiredIndex];
+        const report = selection.latestByPeriod[period];
+        if (!report) {
+            reason = existingPeriods.length ? "missing_period" : "no_reports";
+            break;
+        }
+        if (!isPeriodSubmittedState(report.EstadoRegistro)) {
+            reason = "open_period";
+            break;
+        }
+        reason = "next_period";
+    }
+
+    const requiredPeriod = PERIOD_ORDER[requiredIndex] || null;
+    const isCalendarBlocked = Boolean(requiredPeriod) && (calendarIndex < 0 || requiredIndex > calendarIndex);
+    const capturePeriod = requiredPeriod && !isCalendarBlocked ? requiredPeriod : null;
+    const laterExistingPeriods = requiredPeriod
+        ? existingPeriods.filter(period => PERIOD_ORDER.indexOf(period) > requiredIndex)
+        : [];
+
+    let firstMissingBeforeExisting = null;
+    for (let index = 0; index < PERIOD_ORDER.length; index++) {
+        const period = PERIOD_ORDER[index];
+        if (!selection.latestByPeriod[period] && existingPeriods.some(existing => PERIOD_ORDER.indexOf(existing) > index)) {
+            firstMissingBeforeExisting = period;
+            break;
+        }
+    }
+
+    const currentReport = requiredPeriod ? selection.latestByPeriod[requiredPeriod] || null : null;
+    const currentState = currentReport ? normalizeState(currentReport.EstadoRegistro) : null;
+    const returnedAfterLater = currentState === "Devuelto" && laterExistingPeriods.length > 0;
+    const sequenceWarnings = [];
+    if (firstMissingBeforeExisting) {
+        sequenceWarnings.push({
+            type: "missing_before_existing",
+            period: firstMissingBeforeExisting,
+            message: `Se detectó una inconsistencia en la secuencia de reportes. Debe completar el periodo ${firstMissingBeforeExisting} antes de continuar.`
+        });
+    }
+    if (returnedAfterLater) {
+        sequenceWarnings.push({
+            type: "returned_before_existing_later",
+            period: requiredPeriod,
+            laterPeriods: laterExistingPeriods,
+            message: `El periodo ${requiredPeriod} fue devuelto y existen reportes posteriores. Se requiere revisión OAP de la secuencia.`
+        });
+    }
+
+    let selectedPeriod = capturePeriod;
+    if (!selectedPeriod) {
+        const selectableExisting = existingPeriods.filter(period => PERIOD_ORDER.indexOf(period) <= calendarIndex);
+        selectedPeriod = selectableExisting[selectableExisting.length - 1] || "";
+    }
+
+    return {
+        calendarQuarter: normalizedCalendarQuarter,
+        calendarIndex,
+        capturePeriod,
+        requiredPeriod,
+        selectedPeriod,
+        reason,
+        isCalendarBlocked,
+        isComplete: requiredIndex >= PERIOD_ORDER.length,
+        latestByPeriod: selection.latestByPeriod,
+        countsByPeriod: selection.countsByPeriod,
+        duplicates: selection.duplicates,
+        invalidPeriods: selection.invalidPeriods,
+        existingPeriods,
+        laterExistingPeriods,
+        sequenceWarnings,
+        currentState
+    };
+}
+
+function buildSequentialPeriodMessage(context) {
+    const firstWarning = context?.sequenceWarnings?.[0];
+    if (firstWarning) return firstWarning.message;
+    if (!context) return "Seleccione una actividad para determinar el periodo.";
+    if (context.reason === "no_reports" && context.capturePeriod === "T1") {
+        return "Periodo habilitado: T1. La actividad aún no tiene reportes registrados para la vigencia.";
+    }
+    if (context.reason === "open_period" && context.capturePeriod) {
+        const nextIndex = PERIOD_ORDER.indexOf(context.capturePeriod) + 1;
+        const nextPeriod = PERIOD_ORDER[nextIndex];
+        return nextPeriod
+            ? `Debe completar o corregir el reporte de ${context.capturePeriod} antes de habilitar ${nextPeriod}.`
+            : `Debe completar o corregir el reporte de ${context.capturePeriod}.`;
+    }
+    if (context.capturePeriod === "T2") {
+        return "Periodo habilitado: T2. El reporte de T1 ya fue enviado.";
+    }
+    if (context.capturePeriod === "T3") {
+        return "Periodo habilitado: T3. Los reportes de T1 y T2 ya fueron enviados.";
+    }
+    if (context.capturePeriod === "T4") {
+        return "Periodo habilitado: T4. Los reportes de T1, T2 y T3 ya fueron enviados.";
+    }
+    if (context.isCalendarBlocked && context.requiredPeriod) {
+        return `El periodo ${context.requiredPeriod} todavía no está habilitado según el calendario operativo.`;
+    }
+    if (context.isComplete) {
+        return "La actividad ya tiene entregados los cuatro periodos de la vigencia.";
+    }
+    return "No fue posible determinar un periodo de captura para la actividad.";
+}
+
+function isPeriodEditableBySequence(context, periodo) {
+    if (!context || !context.capturePeriod) return false;
+    return normalizeTemporalPeriodo(periodo) === normalizeTemporalPeriodo(context.capturePeriod);
+}
+
+function classifyPeriodSelection(context, selectedVigencia, selectedPeriodo, currentYear = new Date().getFullYear()) {
+    const v = Number(selectedVigencia);
+    const p = normalizeTemporalPeriodo(selectedPeriodo);
+    const periodIndex = PERIOD_ORDER.indexOf(p);
+    const calendarIndex = context?.calendarIndex ?? PERIOD_ORDER.indexOf(getCalendarQuarter());
+    const captureIndex = context?.capturePeriod ? PERIOD_ORDER.indexOf(context.capturePeriod) : -1;
+    const requiredIndex = context?.requiredPeriod ? PERIOD_ORDER.indexOf(context.requiredPeriod) : -1;
+    const hasExistingReport = Boolean(context?.latestByPeriod?.[p]);
+    const isPastVigencia = v < currentYear;
+    const isFutureVigencia = v > currentYear;
+    const isCalendarFuture = periodIndex < 0 || periodIndex > calendarIndex;
+    const isCapturePeriod = isPeriodEditableBySequence(context, p);
+    const isPreviousPeriod = Boolean(
+        context
+        && periodIndex >= 0
+        && (
+            (captureIndex >= 0 && periodIndex < captureIndex)
+            || (captureIndex < 0 && requiredIndex >= 0 && periodIndex < requiredIndex)
+            || (captureIndex < 0 && requiredIndex < 0 && hasExistingReport)
+        )
+    );
+    const isSequenceFuture = Boolean(
+        context
+        && periodIndex >= 0
+        && (
+            (captureIndex >= 0 && periodIndex > captureIndex)
+            || (captureIndex < 0 && requiredIndex >= 0 && periodIndex >= requiredIndex && !hasExistingReport)
+            || (captureIndex < 0 && requiredIndex < 0 && !hasExistingReport)
+        )
+    );
+    const isEditableBySequence = isPeriodEditableBySequence(context, p);
+    const isFuture = isFutureVigencia || isCalendarFuture || isSequenceFuture;
+
+    return {
+        isFuture,
+        isPastVigencia,
+        isPreviousPeriod,
+        isPastQuarter: isPreviousPeriod,
+        isCurrent: isCapturePeriod,
+        isCapturePeriod,
+        isSequenceFuture,
+        isCalendarFuture,
+        isEditableBySequence,
+        hasExistingReport,
+        v,
+        p
+    };
 }
 
 function evaluateHistoricalSelection(selectedVigencia, selectedPeriodo) {
-    const v = parseInt(selectedVigencia);
-    const selScore = getTemporalScore(v, selectedPeriodo);
-    const currScore = getTemporalScore(OPERATIVE_VIGENCIA, OPERATIVE_PERIODO);
-    const isTemporaryEditable = isTemporaryEditablePeriod(v, selectedPeriodo);
-
-    let isFuture = !isTemporaryEditable && (v > OPERATIVE_VIGENCIA || selScore > currScore);
-    let isPastVigencia = v < OPERATIVE_VIGENCIA;
-    let isPastQuarter = v === OPERATIVE_VIGENCIA && selScore < currScore;
-    let isCurrent = selScore === currScore;
-
-    return { isFuture, isPastVigencia, isPastQuarter, isCurrent, isTemporaryEditable, v, p: selectedPeriodo };
+    const v = Number(selectedVigencia);
+    const contextMatches = activityPeriodContext
+        && Number(activityPeriodContext.vigencia) === v
+        && normalizeGuidKey(activityPeriodContext.actividadGlobalID) === normalizeGuidKey(getActividadId());
+    const context = contextMatches ? activityPeriodContext : null;
+    return classifyPeriodSelection(context, v, selectedPeriodo);
 }
 
 function getTipoValorAvanceByTarea(tareaGid) {
@@ -405,8 +629,6 @@ function getMetaProgramadaByTarea(tareaGid) {
 }
 
 // --- FASE 2: REPORTE CONSOLIDADO DE ACTIVIDAD ---
-const PERIOD_ORDER = ["T1", "T2", "T3", "T4"];
-
 function byId(id) { return document.getElementById(id); }
 
 function normalizeSiNo(value, defaultValue = "NO") {
@@ -980,22 +1202,69 @@ function syncReporteConsolidadoUI() {
     updateIndicatorCalculatedUI();
 }
 
+function calculatePriorIndicatorAccumulated(features, periodo) {
+    const periodIndex = PERIOD_ORDER.indexOf(normalizeTemporalPeriodo(periodo));
+    if (periodIndex <= 0) return { total: 0, duplicates: [], countsByPeriod: {} };
+
+    const selection = selectLatestReportByPeriod(features);
+    const total = PERIOD_ORDER.slice(0, periodIndex).reduce((sum, priorPeriod) => {
+        const report = selection.latestByPeriod[priorPeriod];
+        const value = parseDataPacDecimal(report?.ValorIndicadorTrimestre);
+        return sum + (Number.isFinite(value) ? value : 0);
+    }, 0);
+
+    return {
+        total,
+        duplicates: selection.duplicates.filter(item => PERIOD_ORDER.indexOf(item.period) < periodIndex),
+        countsByPeriod: selection.countsByPeriod
+    };
+}
+
+function registerPriorIndicatorDuplicateDiagnostic(result, context) {
+    const diagnostics = lastPeriodSequenceDiagnostics ? { ...lastPeriodSequenceDiagnostics } : {};
+    if (result.duplicates.length) {
+        diagnostics.acumuladoIndicador = {
+            ...context,
+            conteosPorPeriodo: result.countsByPeriod,
+            duplicados: result.duplicates
+        };
+    } else {
+        delete diagnostics.acumuladoIndicador;
+    }
+    lastPeriodSequenceDiagnostics = Object.keys(diagnostics).length ? diagnostics : null;
+    refreshSupportPanel();
+}
+
 async function fetchIndicadorPriorAccumulated(actGid, vig, periodo) {
-    const idx = PERIOD_ORDER.indexOf(periodo);
-    if (!actGid || !vig || idx <= 0) return 0;
-    const priorPeriods = PERIOD_ORDER.slice(0, idx).map(p => `'${p}'`).join(",");
-    if (!priorPeriods) return 0;
+    const idx = PERIOD_ORDER.indexOf(normalizeTemporalPeriodo(periodo));
+    if (!actGid || !vig) return 0;
+    if (idx <= 0) {
+        registerPriorIndicatorDuplicateDiagnostic(
+            { total: 0, duplicates: [], countsByPeriod: {} },
+            {
+                actividadGlobalID: normalizeGuidLiteral(actGid),
+                vigencia: Number(vig),
+                periodoObjetivo: normalizeTemporalPeriodo(periodo)
+            }
+        );
+        return 0;
+    }
+    const priorPeriodsWhere = PERIOD_ORDER.slice(0, idx).map(buildPeriodoWhere).join(" OR ");
+    if (!priorPeriodsWhere) return 0;
     try {
         const q = await fetchJson(`${URL_NARRATIVA}/query`, {
             f: "json",
-            where: `ActividadGlobalID='${actGid}' AND Vigencia=${vig} AND Periodo IN (${priorPeriods})`,
-            outFields: "Periodo,ValorIndicadorTrimestre",
+            where: `${buildGuidWhere("ActividadGlobalID", actGid)} AND Vigencia=${vig} AND (${priorPeriodsWhere})`,
+            outFields: "Periodo,ValorIndicadorTrimestre,OBJECTID,GlobalID,EstadoRegistro,Version,FechaRegistro,FechaUltimaEdicionFuncional,EditDate",
             returnGeometry: false
         });
-        return (q.features || []).reduce((sum, f) => {
-            const val = parseDataPacDecimal(f.attributes?.ValorIndicadorTrimestre);
-            return sum + (Number.isFinite(val) ? val : 0);
-        }, 0);
+        const result = calculatePriorIndicatorAccumulated(q.features || [], periodo);
+        registerPriorIndicatorDuplicateDiagnostic(result, {
+            actividadGlobalID: normalizeGuidLiteral(actGid),
+            vigencia: Number(vig),
+            periodoObjetivo: normalizeTemporalPeriodo(periodo)
+        });
+        return result.total;
     } catch (e) {
         console.warn("No fue posible calcular acumulado previo del indicador.", e);
         auditError("CALC_INDICADOR_PREVIO", e, { actGid, vig, periodo });
@@ -1068,7 +1337,10 @@ function refreshSupportPanel() {
         const locationParentDiagText = lastLocationParentDiagnostics.length
             ? ` | Diagnostico ubicaciones: ${JSON.stringify(lastLocationParentDiagnostics.slice(-5))}`
             : "";
-        errEl.textContent = `${typeof lastCapturedError === 'object' ? JSON.stringify(lastCapturedError) : String(lastCapturedError)}${lengthDiagText}${duplicateDiagText}${locationParentDiagText}`;
+        const periodSequenceDiagText = lastPeriodSequenceDiagnostics
+            ? ` | Diagnostico secuencia: ${JSON.stringify(lastPeriodSequenceDiagnostics)}`
+            : "";
+        errEl.textContent = `${typeof lastCapturedError === 'object' ? JSON.stringify(lastCapturedError) : String(lastCapturedError)}${lengthDiagText}${duplicateDiagText}${locationParentDiagText}${periodSequenceDiagText}`;
         errEl.style.display = "block";
     } else {
         errEl.textContent = "Ninguno";
@@ -1077,6 +1349,12 @@ function refreshSupportPanel() {
     if (locDiagEl) {
         locDiagEl.textContent = lastLocationParentDiagnostics.length
             ? JSON.stringify(lastLocationParentDiagnostics.slice(-10))
+            : "Ninguno";
+    }
+    const periodDiagEl = document.getElementById("sup-period-diagnostics");
+    if (periodDiagEl) {
+        periodDiagEl.textContent = lastPeriodSequenceDiagnostics
+            ? JSON.stringify(lastPeriodSequenceDiagnostics)
             : "Ninguno";
     }
 }
@@ -1126,6 +1404,7 @@ Avance fisico oficial: ${progressSummary?.official === null || progressSummary?.
 Diagnóstico Longitud: ${lastLengthDiagnostics.length ? JSON.stringify(lastLengthDiagnostics.slice(-5)) : "Ninguno"}
 Diagnóstico Duplicados REP_ReporteNarrativo: ${JSON.stringify(lastDuplicateDiagnostics.narrativa)}
 Diagnóstico Duplicados WF_SolicitudRevision: ${JSON.stringify(lastDuplicateDiagnostics.workflow)}
+Diagnóstico Secuencia Trimestral: ${lastPeriodSequenceDiagnostics ? JSON.stringify(lastPeriodSequenceDiagnostics) : "Ninguno"}
 `.trim();
     navigator.clipboard.writeText(data).then(() => {
         const btn = document.getElementById("btn-copy-diagnostico");
@@ -1884,7 +2163,7 @@ function setComboValue(containerId, value, label) {
 }
 
 function getActividadId() { const h = document.querySelector("#combo-actividad .combo-value"); return h ? h.value : ""; }
-function getPeriodo() { return elPeriodo.value || OPERATIVE_PERIODO; }
+function getPeriodo() { return normalizeTemporalPeriodo(elPeriodo.value || ""); }
 
 function buildPeriodoWhere(periodo) {
     const raw = String(periodo || "").trim().toUpperCase();
@@ -1898,6 +2177,137 @@ function buildPeriodoWhere(periodo) {
 
     if (!values.size) return "1=0";
     return `Periodo IN (${[...values].map(v => `'${escapeSql(v)}'`).join(",")})`;
+}
+
+function setPeriodContextMessage(message, type = "info") {
+    const element = document.getElementById("period-context-msg");
+    if (!element) return;
+    element.textContent = message;
+    element.className = `msg-inline msg--${type}`;
+}
+
+function resetActivityPeriodContext(message = "Seleccione una actividad para determinar el periodo.") {
+    activityPeriodContextRequestId++;
+    activityPeriodContext = null;
+    lastPeriodSequenceDiagnostics = null;
+    elPeriodo.value = "";
+    elPeriodo.disabled = true;
+    [...elPeriodo.options].forEach(option => {
+        option.disabled = option.value !== "";
+    });
+    setPeriodContextMessage(message, "info");
+    refreshSupportPanel();
+}
+
+function registerPeriodSequenceDiagnostic(context) {
+    const hasDiagnostics = Boolean(
+        context?.sequenceWarnings?.length
+        || context?.duplicates?.length
+        || context?.invalidPeriods?.length
+    );
+    lastPeriodSequenceDiagnostics = hasDiagnostics ? {
+        actividadGlobalID: context.actividadGlobalID,
+        vigencia: context.vigencia,
+        trimestreCalendario: context.calendarQuarter,
+        periodoCaptura: context.capturePeriod,
+        periodoRequerido: context.requiredPeriod,
+        conteosPorPeriodo: context.countsByPeriod,
+        advertencias: context.sequenceWarnings,
+        duplicados: context.duplicates,
+        periodosInvalidos: context.invalidPeriods
+    } : null;
+    refreshSupportPanel();
+}
+
+async function loadActivityPeriodContext(actividadGlobalID, vigencia) {
+    const normalizedActividadGlobalID = normalizeGuidLiteral(actividadGlobalID);
+    const numericVigencia = Number(vigencia);
+    const currentYear = new Date().getFullYear();
+    const calendarQuarter = numericVigencia < currentYear
+        ? "T4"
+        : numericVigencia === currentYear
+            ? getCalendarQuarter()
+            : "";
+    const where = `${buildGuidWhere("ActividadGlobalID", normalizedActividadGlobalID)} AND Vigencia=${numericVigencia}`;
+    const features = await fetchAllByWhere(URL_NARRATIVA, where, PERIOD_CONTEXT_OUT_FIELDS);
+    const context = {
+        ...resolveSequentialReportingPeriod(features, calendarQuarter),
+        actividadGlobalID: normalizedActividadGlobalID,
+        vigencia: numericVigencia,
+        totalReports: features.length
+    };
+    context.message = buildSequentialPeriodMessage(context);
+    registerPeriodSequenceDiagnostic(context);
+    return context;
+}
+
+function getSelectablePeriodsForContext(context) {
+    const selectablePeriods = new Set();
+    const captureIndex = PERIOD_ORDER.indexOf(context.capturePeriod);
+    const preserveLaterExisting = context.sequenceWarnings.some(
+        warning => warning.type === "returned_before_existing_later"
+    );
+
+    if (captureIndex >= 0) {
+        PERIOD_ORDER.slice(0, captureIndex + 1).forEach(period => selectablePeriods.add(period));
+    }
+    context.existingPeriods.forEach(period => {
+        const periodIndex = PERIOD_ORDER.indexOf(period);
+        if (captureIndex < 0 || periodIndex <= captureIndex || preserveLaterExisting) {
+            selectablePeriods.add(period);
+        }
+    });
+    return PERIOD_ORDER.filter(period => selectablePeriods.has(period));
+}
+
+function applyPeriodOptionsToSelector(context) {
+    activityPeriodContext = context;
+    const selectablePeriods = new Set(getSelectablePeriodsForContext(context));
+    [...elPeriodo.options].forEach(option => {
+        if (!option.value) {
+            option.disabled = true;
+            return;
+        }
+        option.disabled = !selectablePeriods.has(normalizeTemporalPeriodo(option.value));
+    });
+
+    elPeriodo.disabled = selectablePeriods.size === 0;
+    elPeriodo.value = context.selectedPeriod || context.capturePeriod || "";
+    const messageType = context.sequenceWarnings.length || context.isCalendarBlocked ? "warning" : "info";
+    setPeriodContextMessage(context.message, messageType);
+    refreshSupportPanel();
+}
+
+async function resolveAndLoadActivityPeriod(actividadGlobalID) {
+    const requestId = ++activityPeriodContextRequestId;
+    elPeriodo.disabled = true;
+    setPeriodContextMessage("Consultando el historial de la actividad para determinar el periodo...", "info");
+    setStatus("Determinando el periodo de captura de la actividad...", "info");
+
+    try {
+        const context = await loadActivityPeriodContext(actividadGlobalID, elVigencia.value);
+        if (requestId !== activityPeriodContextRequestId || normalizeGuidKey(actividadGlobalID) !== normalizeGuidKey(getActividadId())) return;
+        applyPeriodOptionsToSelector(context);
+        if (!getPeriodo()) {
+            elIndicadores.innerHTML = "";
+            actContextPanel.style.display = "none";
+            evaluateHistoricalMode(true);
+            setStatus(context.message, context.isCalendarBlocked ? "warning" : "info");
+            return;
+        }
+        await loadSubactividadesYTareas(actividadGlobalID);
+    } catch (error) {
+        if (requestId !== activityPeriodContextRequestId) return;
+        activityPeriodContext = null;
+        elPeriodo.value = "";
+        elPeriodo.disabled = true;
+        setPeriodContextMessage("No fue posible determinar el periodo de la actividad. Comuníquese con soporte.", "error");
+        setStatus("Error al consultar el historial trimestral de la actividad.", "error");
+        auditError("LOAD_ACTIVITY_PERIOD_CONTEXT", error, {
+            actividadGlobalID: normalizeGuidLiteral(actividadGlobalID),
+            vigencia: Number(elVigencia.value)
+        });
+    }
 }
 
 function initCombosFijos() { renderCombo("combo-actividad", [], "Cargando..."); }
@@ -2753,10 +3163,18 @@ async function loadActividades() {
             }
         }
 
+        resetActivityPeriodContext();
         renderCombo("combo-actividad", data, data.length ? "— Selecciona o busca —" : `Sin actividades operativas en ${vig}`, async (val) => {
-            if (!val) { elIndicadores.innerHTML = ""; actContextPanel.style.display = "none"; document.getElementById("lbl-responsable").textContent = "Responsable: —"; refreshSupportPanel(); return; }
+            if (!val) {
+                elIndicadores.innerHTML = "";
+                actContextPanel.style.display = "none";
+                document.getElementById("lbl-responsable").textContent = "Responsable: —";
+                resetActivityPeriodContext();
+                refreshSupportPanel();
+                return;
+            }
             document.getElementById("lbl-responsable").textContent = `Responsable: ${currentUser.nombre}`;
-            await loadSubactividadesYTareas(val);
+            await resolveAndLoadActivityPeriod(val);
             refreshSupportPanel();
         });
 
@@ -2771,6 +3189,7 @@ async function loadActividades() {
 async function loadSubactividadesYTareas(actividadGlobalId) {
     elIndicadores.innerHTML = ""; cacheSubactividades = []; cacheTareas = [];
     rowLocations.clear(); existingAvances.clear(); existingWFSolicitudes.clear(); deletedLocations = []; existingNarrativa = null;
+    existingWorkflowSolicitud = null;
     clearMapGraphics(); activeRowId = null; pillActive.textContent = "Tarea activa para georreferenciar: —";
     planActCtx = null; biActCtx = null; planSubCtx.clear(); biSubCtx.clear(); planTarCtx.clear(); biTarCtx.clear();
     viewOnlyMode = false;
@@ -2915,24 +3334,37 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
 
                 if (histCtx.isFuture) {
                     evaluateHistoricalMode(true);
-                    setStatus("La vigencia seleccionada no está habilitada para reporte.", "error");
+                    const futureMessage = histCtx.isCalendarFuture
+                        ? `El periodo ${histCtx.p} todavía no está habilitado según el calendario operativo.`
+                        : activityPeriodContext?.message || "Debe completar el periodo anterior antes de continuar.";
+                    setStatus(futureMessage, "warning");
                 } else if (histCtx.isPastVigencia) {
                     evaluateHistoricalMode(true);
                     setStatus("No existen reportes previos para la combinación seleccionada.", "info");
                 } else {
                     evaluateHistoricalMode(false);
-                    setStatus("No existen reportes previos para esta actividad y periodo. (Primer Cargue)", "info");
+                    const contextMessage = activityPeriodContext?.message || "No existen reportes previos para esta actividad y periodo. (Primer cargue)";
+                    setStatus(contextMessage, activityPeriodContext?.sequenceWarnings?.length ? "warning" : "info");
                 }
             } else {
                 if (histCtx.isFuture) {
                     evaluateHistoricalMode(true);
-                    setStatus("La vigencia seleccionada no está habilitada para reporte.", "error");
-                } else if (histCtx.isPastVigencia || histCtx.isPastQuarter) {
-                    evaluateHistoricalMode(histCtx.isPastVigencia);
-                    setStatus(`Está visualizando un trimestre ya reportado: ${histCtx.p} ${histCtx.v}. Verifique si desea continuar o cambie a ${OPERATIVE_PERIODO} ${OPERATIVE_VIGENCIA}.`, "warning");
+                    const futureMessage = histCtx.isCalendarFuture
+                        ? `El periodo ${histCtx.p} todavía no está habilitado según el calendario operativo.`
+                        : activityPeriodContext?.message || "Debe completar el periodo anterior antes de continuar.";
+                    setStatus(futureMessage, "warning");
+                } else if (histCtx.isPastVigencia) {
+                    evaluateHistoricalMode(true);
+                    setStatus(`Consulta histórica del periodo ${histCtx.p} ${histCtx.v}.`, "info");
+                } else if (!histCtx.isCapturePeriod) {
+                    evaluateHistoricalMode(false);
+                    const anomalyNote = activityPeriodContext?.sequenceWarnings?.length
+                        ? ` ${activityPeriodContext.sequenceWarnings[0].message}`
+                        : "";
+                    setStatus(`Consulta del periodo ${histCtx.p}. Su edición depende del estado individual del reporte y del workflow.${anomalyNote}`, anomalyNote ? "warning" : "info");
                 } else {
                     evaluateHistoricalMode(false);
-                    setStatus("Formulario operativo cargado.", "success");
+                    setStatus(activityPeriodContext?.message || "Formulario operativo cargado.", activityPeriodContext?.sequenceWarnings?.length ? "warning" : "success");
                 }
             }
         } catch (err) {
@@ -3067,6 +3499,7 @@ async function loadExistingData(actGid) {
     existingAvances.clear();
     existingWFSolicitudes.clear();
     existingNarrativa = null;
+    existingWorkflowSolicitud = null;
     deletedLocations = [];
     clearMapGraphics();
     document.querySelectorAll(".row").forEach(rowEl => {
@@ -3078,7 +3511,7 @@ async function loadExistingData(actGid) {
 
     indicatorPriorAccumulated = await fetchIndicadorPriorAccumulated(actGid, vig, per);
 
-    const narrativaWhere = `ActividadGlobalID='${normalizeGuidLiteral(actGid)}' AND Vigencia=${vig} AND Periodo='${per}'`;
+    const narrativaWhere = `${buildGuidWhere("ActividadGlobalID", actGid)} AND Vigencia=${vig} AND ${buildPeriodoWhere(per)}`;
     const qNar = await fetchJson(`${URL_NARRATIVA}/query`, {
         f: "json",
         where: narrativaWhere,
@@ -3107,8 +3540,13 @@ async function loadExistingData(actGid) {
             outFields: "*",
             orderByFields: "FechaUltimoMovimiento DESC, EditDate DESC, FechaSolicitud DESC, Version DESC, OBJECTID DESC"
         });
-        registerDuplicateDiagnostic("workflow", qWfDup?.features || [], { actividadGlobalID: actGid, vigencia: vig, periodo: per, source: "loadExistingData" });
+        const workflowFeatures = qWfDup?.features || [];
+        registerDuplicateDiagnostic("workflow", workflowFeatures, { actividadGlobalID: actGid, vigencia: vig, periodo: per, source: "loadExistingData" });
+        existingWorkflowSolicitud = workflowFeatures.length
+            ? (selectMostRecentFeature(workflowFeatures)?.attributes || null)
+            : null;
     } catch (error) {
+        existingWorkflowSolicitud = null;
         console.warn("No fue posible ejecutar diagnostico read-only de duplicados WF.", error);
     }
 
@@ -3119,7 +3557,7 @@ async function loadExistingData(actGid) {
         const chunkSize = 15;
         for (let i = 0; i < cacheTareas.length; i += chunkSize) {
             const chunk = cacheTareas.slice(i, i + chunkSize).map(t => `'${t.GlobalID}'`).join(",");
-            const qAv = await fetchJson(`${URL_AVANCE_TAREA}/query`, { f: "json", where: `TareaGlobalID IN (${chunk}) AND Vigencia=${vig} AND Periodo='${per}'`, outFields: "*" });
+            const qAv = await fetchJson(`${URL_AVANCE_TAREA}/query`, { f: "json", where: `TareaGlobalID IN (${chunk}) AND Vigencia=${vig} AND ${buildPeriodoWhere(per)}`, outFields: "*" });
             if (qAv && Array.isArray(qAv.features)) allAvancesFeatures.push(...qAv.features);
         }
 
@@ -3204,31 +3642,44 @@ function applyReadonlyStateNarrativa(estado) {
     ["txt-reporte-narrativo", "txt-logros-descripcion", "txt-logros-principales", "txt-motivo-narrativa", "txt-valor-indicador", "txt-observacion-indicador", "txt-evidencia-indicador", "txt-avance-ods", "txt-avance-rezago", "txt-avance-reserva", "txt-porcentaje-gestion-img"].forEach(id => { const el = document.getElementById(id); if (el) el.disabled = isReadonly; });
 }
 
+function isWorkflowReadOnlyForEditor(workflow) {
+    if (!workflow) return false;
+    return classifyWorkflowState(workflow) !== "resubmit";
+}
+
+function getPeriodModeLabel(histCtx, reportState = "", workflowReadOnly = false) {
+    if (histCtx.isPastVigencia) return "Modo: Consulta histórica";
+    if (histCtx.isCalendarFuture || histCtx.isSequenceFuture) return "Modo: Periodo aún no habilitado";
+    if (!histCtx.isEditableBySequence) return "Modo: Consulta de periodo anterior";
+    if (isPeriodSubmittedState(reportState) || workflowReadOnly) return "Modo: Solo lectura por estado del reporte";
+    return `Modo: Captura habilitada ${histCtx.p}`;
+}
+
+function shouldUseViewOnlyMode(histCtx, reportState = "", workflowReadOnly = false, forceReadOnly = false) {
+    return Boolean(
+        forceReadOnly
+        || histCtx.isPastVigencia
+        || histCtx.isFuture
+        || !histCtx.isEditableBySequence
+        || isPeriodSubmittedState(reportState)
+        || workflowReadOnly
+    );
+}
+
 function evaluateHistoricalMode(forceReadOnly = false) {
-    let allLocked = true;
-    let hasData = false;
-
-    document.querySelectorAll(".row").forEach(rowEl => {
-        if (!rowEl.classList.contains("is-not-applicable")) {
-            hasData = true;
-            if (!rowEl.classList.contains("is-readonly")) allLocked = false;
-        }
-    });
-
-    if (existingNarrativa) {
-        hasData = true;
-        if (!["Enviado", "EnRevision", "Aprobado", "Publicado"].includes(existingNarrativa.EstadoRegistro)) allLocked = false;
-    }
-
     const histCtx = evaluateHistoricalSelection(elVigencia.value, getPeriodo());
-    if (histCtx.isPastVigencia || histCtx.isFuture || forceReadOnly) {
-        allLocked = true;
-    }
+    const workflowReadOnly = isWorkflowReadOnlyForEditor(existingWorkflowSolicitud);
+    const mustUseViewOnlyMode = shouldUseViewOnlyMode(
+        histCtx,
+        existingNarrativa?.EstadoRegistro,
+        workflowReadOnly,
+        forceReadOnly
+    );
 
-    if ((hasData && allLocked) || forceReadOnly || histCtx.isPastVigencia || histCtx.isFuture) {
+    if (mustUseViewOnlyMode) {
         viewOnlyMode = true;
         elModo.style.display = "flex";
-        elModo.textContent = "Modo: Histórico (Solo Lectura)";
+        elModo.textContent = getPeriodModeLabel(histCtx, existingNarrativa?.EstadoRegistro, workflowReadOnly || forceReadOnly);
         elModo.style.background = "#fef2f2";
         elModo.style.color = "#991b1b";
         btnGuardar.style.display = "none";
@@ -3249,9 +3700,9 @@ function evaluateHistoricalMode(forceReadOnly = false) {
     } else {
         viewOnlyMode = false;
         elModo.style.display = "flex";
-        elModo.textContent = "Modo: Edición";
-        elModo.style.background = "#eff6ff";
-        elModo.style.color = "#1d4ed8";
+        elModo.textContent = getPeriodModeLabel(histCtx, existingNarrativa?.EstadoRegistro, workflowReadOnly);
+        elModo.style.background = "#ecfdf5";
+        elModo.style.color = "#166534";
         btnGuardar.style.display = "inline-flex";
         btnEnviar.style.display = "inline-flex";
         setConsolidatedFieldsDisabled(false);
@@ -3814,8 +4265,8 @@ async function processSave(isSubmit) {
             }
 
             setStatus(successMsg, "success");
-            await loadExistingData(actGid);
-            evaluateHistoricalMode();
+            await resolveAndLoadActivityPeriod(actGid);
+            setStatus(`${successMsg} ${activityPeriodContext?.message || ""}`.trim(), activityPeriodContext?.sequenceWarnings?.length ? "warning" : "success");
 
         } else {
             if (!hasChanges) {
@@ -3832,8 +4283,8 @@ async function processSave(isSubmit) {
             let successMsg = "Borrador guardado exitosamente.";
             if (validation.warnings > 0) successMsg = `Se guardó el borrador, pero revise las advertencias de los valores reportados (${validation.warnings} advertencias).`;
             setStatus(successMsg, validation.warnings > 0 ? "warning" : "success");
-            await loadExistingData(getActividadId());
-            evaluateHistoricalMode();
+            await resolveAndLoadActivityPeriod(getActividadId());
+            setStatus(`${successMsg} ${activityPeriodContext?.message || ""}`.trim(), validation.warnings > 0 || activityPeriodContext?.sequenceWarnings?.length ? "warning" : "success");
         }
 
     } catch (e) {
@@ -4150,6 +4601,7 @@ btnRefresh.addEventListener("click", async () => {
         if (elSubactNav) elSubactNav.style.display = "none";
         if (elTopSubactSelector) elTopSubactSelector.style.display = "none";
 
+        resetActivityPeriodContext();
         renderCombo("combo-actividad", [], "Cargando...");
         await loadAsignaciones();
         await loadActividades();
@@ -4173,6 +4625,7 @@ elVigencia.addEventListener("change", async () => {
     if (elSubactNav) elSubactNav.style.display = "none";
     if (elTopSubactSelector) elTopSubactSelector.style.display = "none";
 
+    resetActivityPeriodContext();
     renderCombo("combo-actividad", [], "Cargando...");
     await loadAsignaciones();
     await loadActividades();
@@ -4182,8 +4635,13 @@ elVigencia.addEventListener("change", async () => {
 // Evento de Cambio de Periodo nativo
 elPeriodo.addEventListener("change", async () => {
     const actGid = getActividadId();
-    if (actGid) {
-        await loadSubactividadesYTareas(actGid);
-        refreshSupportPanel();
+    if (!actGid || !activityPeriodContext) return;
+    const selectedOption = elPeriodo.options[elPeriodo.selectedIndex];
+    if (!selectedOption || selectedOption.disabled) {
+        elPeriodo.value = activityPeriodContext.selectedPeriod || activityPeriodContext.capturePeriod || "";
+        setPeriodContextMessage(activityPeriodContext.message, "warning");
+        return;
     }
+    await loadSubactividadesYTareas(actGid);
+    refreshSupportPanel();
 });
