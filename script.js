@@ -3361,7 +3361,7 @@ async function loadSubactividadesYTareas(actividadGlobalId) {
                     const anomalyNote = activityPeriodContext?.sequenceWarnings?.length
                         ? ` ${activityPeriodContext.sequenceWarnings[0].message}`
                         : "";
-                    setStatus(`Consulta del periodo ${histCtx.p}. Su edición depende del estado individual del reporte y del workflow.${anomalyNote}`, anomalyNote ? "warning" : "info");
+                    setStatus(`Consulta del periodo ${histCtx.p}. Este periodo está disponible únicamente en modo de consulta.${anomalyNote}`, anomalyNote ? "warning" : "info");
                 } else {
                     evaluateHistoricalMode(false);
                     setStatus(activityPeriodContext?.message || "Formulario operativo cargado.", activityPeriodContext?.sequenceWarnings?.length ? "warning" : "success");
