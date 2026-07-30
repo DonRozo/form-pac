@@ -33,7 +33,7 @@
 const SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/DATAPAC_V4/FeatureServer";
 const CAR_SERVICE_URL = "https://services6.arcgis.com/yq6pe3Lw2oWFjWtF/arcgis/rest/services/MpiosCAR/FeatureServer";
 const CAR_JUR_LAYER_ID = 0;
-const APP_VERSION = "reporte-devolucion-editor-20260622";
+const APP_VERSION = "reporte-t2-2026-temporal-20260730";
 
 // URL PowerAutomate OTP.
 // Versión funcional controlada DATA-PAC V4.
@@ -240,6 +240,11 @@ const WF_CLOSED_BLOCKING_STATES = new Set(["Aprobado", "Publicado"]);
 const OPERATIVE_VIGENCIA = 2026;
 const OPERATIVE_PERIODO = 'T1';
 
+// Excepción funcional temporal aprobada por OAP: T2 2026 permanece abierto
+// hasta que OAP comunique formalmente su cierre. No altera roles, alcances,
+// asignaciones, workflow ni los bloqueos por estado del registro.
+const TEMPORARY_EDITABLE_PERIODS = new Set(["2026|T2"]);
+
 // DOM
 const elVigencia = document.getElementById("sel-vigencia"), elPeriodo = document.getElementById("sel-periodo"), elIndicadores = document.getElementById("indicadores");
 const btnGuardar = document.getElementById("btn-guardar"), btnEnviar = document.getElementById("btn-enviar"), btnLimpiar = document.getElementById("btn-limpiar"), btnRefresh = document.getElementById("btn-refresh");
@@ -363,17 +368,27 @@ let diagTarsVis = 0, diagTarsLoad = 0, diagTarsMatch = 0;
 
 function getTemporalScore(v, p) { return parseInt(v) * 10 + parseInt(String(p).replace('T', '')); }
 
+function normalizeTemporalPeriodo(periodo) {
+    const trimestre = parseInt(String(periodo || "").replace(/[^0-9]/g, ""), 10);
+    return trimestre >= 1 && trimestre <= 4 ? `T${trimestre}` : String(periodo || "").trim().toUpperCase();
+}
+
+function isTemporaryEditablePeriod(vigencia, periodo) {
+    return TEMPORARY_EDITABLE_PERIODS.has(`${Number(vigencia)}|${normalizeTemporalPeriodo(periodo)}`);
+}
+
 function evaluateHistoricalSelection(selectedVigencia, selectedPeriodo) {
     const v = parseInt(selectedVigencia);
     const selScore = getTemporalScore(v, selectedPeriodo);
     const currScore = getTemporalScore(OPERATIVE_VIGENCIA, OPERATIVE_PERIODO);
+    const isTemporaryEditable = isTemporaryEditablePeriod(v, selectedPeriodo);
 
-    let isFuture = v > OPERATIVE_VIGENCIA || selScore > currScore;
+    let isFuture = !isTemporaryEditable && (v > OPERATIVE_VIGENCIA || selScore > currScore);
     let isPastVigencia = v < OPERATIVE_VIGENCIA;
     let isPastQuarter = v === OPERATIVE_VIGENCIA && selScore < currScore;
     let isCurrent = selScore === currScore;
 
-    return { isFuture, isPastVigencia, isPastQuarter, isCurrent, v, p: selectedPeriodo };
+    return { isFuture, isPastVigencia, isPastQuarter, isCurrent, isTemporaryEditable, v, p: selectedPeriodo };
 }
 
 function getTipoValorAvanceByTarea(tareaGid) {
